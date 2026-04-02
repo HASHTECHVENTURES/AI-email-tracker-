@@ -1,0 +1,10 @@
+# Monorepo: API lives in /backend. Explicit commands so Railpack can create a build plan.
+# In Railway, add env vars (Supabase, Google OAuth, INTERNAL_API_KEY, etc.).
+# Optional: set FRONTEND_URL to your Next.js URL for CORS (see backend/src/main.ts).
+
+[build]
+builder = "railpack"
+buildCommand = "npm ci --prefix backend && npm run build --prefix backend"
+
+[deploy]
+startCommand = "npm run start --prefix backend"
