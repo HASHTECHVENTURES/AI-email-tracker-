@@ -1,5 +1,8 @@
 export function apiBase(): string {
-  const base = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '') ?? 'http://localhost:3000';
+  const fromEnv =
+    process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '') ??
+    process.env.NEXT_PUBLIC_BACKEND_URL?.replace(/\/$/, '');
+  const base = fromEnv ?? 'http://localhost:3000';
   return base;
 }
 

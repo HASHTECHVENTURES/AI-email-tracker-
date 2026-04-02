@@ -31,6 +31,7 @@ async function bootstrap() {
       if (/^http:\/\/192\.168\.\d{1,3}\.\d{1,3}:3001$/.test(origin)) return cb(null, true);
       if (/^http:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}:3001$/.test(origin)) return cb(null, true);
       if (/^https:\/\/[a-z0-9-]+\.up\.railway\.app$/i.test(origin)) return cb(null, true);
+      if (/^https:\/\/[a-z0-9.-]+\.vercel\.app$/i.test(origin)) return cb(null, true);
       return cb(new Error(`CORS blocked: ${origin}`), false);
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
