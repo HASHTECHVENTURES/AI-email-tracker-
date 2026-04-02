@@ -1,11 +1,21 @@
+import 'dotenv/config';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { assertRequiredEnv } from './modules/common/env';
+import rateLimit from 'express-rate-limit';
 
 async function bootstrap() {
   assertRequiredEnv();
   const app = await NestFactory.create(AppModule);
+  const limiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests', code: 'RATE_LIMITED' },
+  });
+  app.use(['/auth', '/email-ingestion/run', '/conversations'], limiter);
   app.enableCors({
     // Allow both local dev and LAN access to the frontend.
     // If you want to tighten this later, replace with your exact deployed URL(s).
@@ -18,16 +28,8 @@ async function bootstrap() {
       return cb(new Error(`CORS blocked: ${origin}`), false);
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'x-api-key',
-      'x-company-id',
-      'x-role',
-      'x-employee-id',
-      'x-department-id',
-    ],
-    credentials: false,
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+    credentials: true,
   });
   // Bind on all interfaces so other devices can reach it.
   await app.listen(3000, '0.0.0.0');

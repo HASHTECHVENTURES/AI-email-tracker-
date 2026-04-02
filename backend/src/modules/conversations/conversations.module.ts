@@ -4,14 +4,16 @@ import { FollowupModule } from '../followup/followup.module';
 import { AiEnrichmentModule } from '../ai-enrichment/ai-enrichment.module';
 import { AlertsModule } from '../alerts/alerts.module';
 import { SettingsModule } from '../settings/settings.module';
+import { EmailModule } from '../email/email.module';
 import { supabaseProvider } from '../common/supabase.provider';
+import { AuditLogService } from '../common/audit-log.service';
 import { ConversationsService } from './conversations.service';
 import { ConversationsController } from './conversations.controller';
 
 @Module({
-  imports: [FollowupModule, EmployeesModule, AiEnrichmentModule, AlertsModule, SettingsModule],
+  imports: [FollowupModule, EmployeesModule, AiEnrichmentModule, AlertsModule, SettingsModule, EmailModule],
   controllers: [ConversationsController],
-  providers: [supabaseProvider, ConversationsService],
+  providers: [supabaseProvider, AuditLogService, ConversationsService],
   exports: [ConversationsService],
 })
 export class ConversationsModule {}

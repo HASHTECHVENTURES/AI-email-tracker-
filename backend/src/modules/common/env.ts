@@ -3,8 +3,8 @@ const REQUIRED_ENV_VARS = [
   'GOOGLE_CLIENT_SECRET',
   'GOOGLE_REDIRECT_URI',
   'SUPABASE_URL',
-  'GEMINI_API_KEY',
   'INTERNAL_API_KEY',
+  'ENCRYPTION_KEY',
 ] as const;
 
 const REQUIRE_ONE_OF: Array<readonly string[]> = [

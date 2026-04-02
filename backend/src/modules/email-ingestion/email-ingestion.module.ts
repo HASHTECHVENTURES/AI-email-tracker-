@@ -8,11 +8,12 @@ import { supabaseProvider } from '../common/supabase.provider';
 import { GmailService } from './gmail.service';
 import { EmailIngestionService } from './email-ingestion.service';
 import { EmailIngestionController } from './email-ingestion.controller';
+import { IngestionCronService } from './ingestion-cron.service';
 
 @Module({
   imports: [AuthModule, EmployeesModule, ConversationsModule, SettingsModule, DashboardModule],
   controllers: [EmailIngestionController],
-  providers: [supabaseProvider, GmailService, EmailIngestionService],
+  providers: [supabaseProvider, GmailService, EmailIngestionService, IngestionCronService],
   exports: [EmailIngestionService],
 })
 export class EmailIngestionModule {}

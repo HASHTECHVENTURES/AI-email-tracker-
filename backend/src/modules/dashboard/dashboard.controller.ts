@@ -1,19 +1,36 @@
-import { Controller, Get, Post, Query, Req } from '@nestjs/common';
+import { Controller, ForbiddenException, Get, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { getRequestContext } from '../common/request-context';
 import { DashboardService } from './dashboard.service';
+import { EmployeesService } from '../employees/employees.service';
 
 @Controller('dashboard')
 export class DashboardController {
-  constructor(private readonly dashboardService: DashboardService) {}
+  constructor(
+    private readonly dashboardService: DashboardService,
+    private readonly employeesService: EmployeesService,
+  ) {}
 
   @Get()
-  async getDashboard(@Req() req: Request) {
+  async getDashboard(
+    @Req() req: Request,
+    @Query('status') status?: string,
+    @Query('employee_id') filterEmployeeId?: string,
+    @Query('priority') priority?: string,
+  ) {
     const ctx = getRequestContext(req);
-    return this.dashboardService.getDashboard(ctx.companyId, {
-      departmentId: ctx.role === 'HEAD' ? ctx.departmentId : undefined,
-      employeeId: ctx.role === 'EMPLOYEE' ? ctx.employeeId : undefined,
-    });
+    const u = req.user!;
+    return this.dashboardService.getDashboard(
+      ctx.companyId,
+      {
+        departmentId: ctx.role === 'HEAD' ? ctx.departmentId : undefined,
+        employeeId: ctx.role === 'EMPLOYEE' ? ctx.employeeId : undefined,
+        role: u.role,
+      },
+      u.role === 'EMPLOYEE'
+        ? { status, priority }
+        : { status, employeeId: filterEmployeeId, priority },
+    );
   }
 
   @Get('metrics')
@@ -52,16 +69,79 @@ export class DashboardController {
     };
   }
 
-  @Post('ai-report')
-  async generateAiReport(@Req() req: Request) {
-    const ctx = getRequestContext(req);
-    return this.dashboardService.generateAiReport(ctx.companyId, true);
-  }
-
   @Get('ai-report')
   async getLastAiReport(@Req() req: Request) {
     const ctx = getRequestContext(req);
-    const report = await this.dashboardService.getLastAiReport(ctx.companyId);
+    const report =
+      ctx.role === 'CEO'
+        ? await this.dashboardService.getLastAiReport(ctx.companyId, { scope: 'EXECUTIVE' })
+        : ctx.role === 'HEAD' && ctx.departmentId
+          ? await this.dashboardService.getLastAiReport(ctx.companyId, {
+              scope: 'DEPARTMENT_HEAD',
+              departmentId: ctx.departmentId,
+            })
+          : null;
     return report ?? { generated_at: null, key_issues: [], employee_insights: [], patterns: [], recommendation: '' };
+  }
+
+  @Get('ai-report/generate')
+  async generateAiReportNow(@Req() req: Request) {
+    const ctx = getRequestContext(req);
+    if (ctx.role === 'HEAD') {
+      if (!ctx.departmentId) {
+        throw new ForbiddenException('Department manager must have a department assigned');
+      }
+      return this.dashboardService.generateAiReport(ctx.companyId, {
+        force: true,
+        minCooldownMs: 0,
+        scope: 'DEPARTMENT_HEAD',
+        departmentId: ctx.departmentId,
+      });
+    }
+    if (ctx.role !== 'CEO') {
+      throw new ForbiddenException('Only CEO or department managers can generate AI reports');
+    }
+    return this.dashboardService.generateAiReport(ctx.companyId, {
+      force: true,
+      minCooldownMs: 0,
+      scope: 'EXECUTIVE',
+    });
+  }
+
+  @Get('ai-reports')
+  async getAiReportArchive(@Req() req: Request, @Query('limit') limit?: string) {
+    const ctx = getRequestContext(req);
+    const n = Number(limit ?? '50');
+    const lim = Number.isFinite(n) ? n : 50;
+    if (ctx.role === 'HEAD' && ctx.departmentId) {
+      const items = await this.dashboardService.getAiReportArchive(ctx.companyId, lim, {
+        scope: 'DEPARTMENT_HEAD',
+        departmentId: ctx.departmentId,
+      });
+      return { total: items.length, items };
+    }
+    if (ctx.role === 'CEO') {
+      const items = await this.dashboardService.getAiReportArchive(ctx.companyId, lim, { scope: 'EXECUTIVE' });
+      return { total: items.length, items };
+    }
+    return { total: 0, items: [] };
+  }
+
+  /** Ingested mail archive (same data as legacy GET /employees/mail-archive). */
+  @Get('email-archive')
+  async emailArchive(
+    @Req() req: Request,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('employee_id') employeeId?: string,
+  ) {
+    const ctx = getRequestContext(req);
+    const l = Number(limit ?? '30');
+    const o = Number(offset ?? '0');
+    return this.employeesService.listMailArchive(ctx, {
+      limit: Number.isFinite(l) ? l : 30,
+      offset: Number.isFinite(o) ? o : 0,
+      employeeId: employeeId?.trim() || undefined,
+    });
   }
 }

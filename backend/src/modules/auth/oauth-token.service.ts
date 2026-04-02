@@ -3,6 +3,7 @@ import { google } from 'googleapis';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { retryWithBackoff } from '../common/retry.util';
+import { EncryptionService } from './encryption.service';
 
 interface OAuthTokenRow {
   employee_id: string;
@@ -18,6 +19,7 @@ export class OauthTokenService {
 
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   private createOAuth2Client() {
@@ -26,6 +28,16 @@ export class OauthTokenService {
       process.env.GOOGLE_CLIENT_SECRET,
       process.env.GOOGLE_REDIRECT_URI,
     );
+  }
+
+  async hasToken(employeeId: string): Promise<boolean> {
+    const { data, error } = await this.supabase
+      .from('employee_oauth_tokens')
+      .select('employee_id')
+      .eq('employee_id', employeeId)
+      .maybeSingle();
+    if (error) return false;
+    return data !== null;
   }
 
   async getValidAccessToken(employeeId: string): Promise<string> {
@@ -47,7 +59,7 @@ export class OauthTokenService {
       return this.refresh(employeeId, row);
     }
 
-    return row.access_token_enc;
+    return this.encryptionService.decrypt(row.access_token_enc);
   }
 
   async getRefreshToken(employeeId: string): Promise<string> {
@@ -61,7 +73,9 @@ export class OauthTokenService {
       throw new Error(`No refresh token found for employee ${employeeId}`);
     }
 
-    return (data as Pick<OAuthTokenRow, 'refresh_token_enc'>).refresh_token_enc;
+    return this.encryptionService.decrypt(
+      (data as Pick<OAuthTokenRow, 'refresh_token_enc'>).refresh_token_enc,
+    );
   }
 
   async upsertTokens(
@@ -76,8 +90,8 @@ export class OauthTokenService {
       .upsert(
         {
           employee_id: employeeId,
-          access_token_enc: accessToken,
-          refresh_token_enc: refreshToken,
+          access_token_enc: this.encryptionService.encrypt(accessToken),
+          refresh_token_enc: this.encryptionService.encrypt(refreshToken),
           expires_at: expiresAt.toISOString(),
           scope: scope ?? null,
           updated_at: new Date().toISOString(),
@@ -95,7 +109,9 @@ export class OauthTokenService {
     this.logger.log(`Refreshing OAuth token for employee ${employeeId}`);
 
     const oauth2 = this.createOAuth2Client();
-    oauth2.setCredentials({ refresh_token: row.refresh_token_enc });
+    oauth2.setCredentials({
+      refresh_token: this.encryptionService.decrypt(row.refresh_token_enc),
+    });
 
     try {
       const { credentials } = await retryWithBackoff(
@@ -117,14 +133,25 @@ export class OauthTokenService {
       await this.upsertTokens(
         employeeId,
         newAccessToken,
-        row.refresh_token_enc,
+        this.encryptionService.decrypt(row.refresh_token_enc),
         newExpiry,
         row.scope ?? undefined,
       );
 
+      await this.supabase
+        .from('employees')
+        .update({ gmail_status: 'CONNECTED' })
+        .eq('id', employeeId);
+
       return newAccessToken;
     } catch (err) {
       this.logger.error(`OAuth refresh failed for ${employeeId}`, (err as Error).message);
+      const msg = String((err as Error).message || '').toLowerCase();
+      const status = msg.includes('invalid_grant') || msg.includes('revoked') ? 'REVOKED' : 'EXPIRED';
+      await this.supabase
+        .from('employees')
+        .update({ gmail_status: status })
+        .eq('id', employeeId);
       throw new Error(`Token refresh failed for employee ${employeeId}: ${(err as Error).message}`);
     }
   }

@@ -1,14 +1,34 @@
-import { Controller, Delete, Get, Param, Post, Query, Req } from '@nestjs/common';
+import {
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  NotFoundException,
+  Param,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
 import { Request } from 'express';
 import { enforceConversationAccess, getRequestContext } from '../common/request-context';
 import { ConversationsService } from './conversations.service';
+import { AuditLogService } from '../common/audit-log.service';
 
 @Controller('conversations')
 export class ConversationsController {
-  constructor(private readonly conversationsService: ConversationsService) {}
+  constructor(
+    private readonly conversationsService: ConversationsService,
+    private readonly auditLogService: AuditLogService,
+  ) {}
 
   @Get('recompute')
-  async recompute() {
+  async recompute(@Req() req: Request) {
+    if (!req.internalApiAuth) {
+      const ctx = getRequestContext(req);
+      if (ctx.role !== 'CEO') {
+        throw new ForbiddenException('Only CEO or internal API key can trigger recompute');
+      }
+    }
     const result = await this.conversationsService.recomputeRecent();
     return { status: 'completed', timestamp: new Date().toISOString(), ...result };
   }
@@ -29,8 +49,19 @@ export class ConversationsController {
     const ctx = getRequestContext(req);
     const conversationId = decodeURIComponent(id);
     const row = await this.conversationsService.getConversationScopeRow(ctx.companyId, conversationId);
-    if (row) enforceConversationAccess(ctx, row);
-    await this.conversationsService.markAsDone(ctx.companyId, conversationId);
+    if (!row) throw new NotFoundException('Conversation not found');
+    enforceConversationAccess(ctx, row);
+    const ok = await this.conversationsService.markAsDone(ctx.companyId, conversationId);
+    if (!ok) throw new NotFoundException('Conversation not found');
+    if (req.user) {
+      await this.auditLogService.log({
+        userId: req.user.id,
+        companyId: ctx.companyId,
+        action: 'mark_done',
+        entity: 'conversation',
+        entityId: conversationId,
+      });
+    }
     return { status: 'ok', action: 'marked_done' };
   }
 
@@ -39,8 +70,19 @@ export class ConversationsController {
     const ctx = getRequestContext(req);
     const conversationId = decodeURIComponent(id);
     const row = await this.conversationsService.getConversationScopeRow(ctx.companyId, conversationId);
-    if (row) enforceConversationAccess(ctx, row);
-    await this.conversationsService.markAsDone(ctx.companyId, conversationId);
+    if (!row) throw new NotFoundException('Conversation not found');
+    enforceConversationAccess(ctx, row);
+    const ok = await this.conversationsService.markAsDone(ctx.companyId, conversationId);
+    if (!ok) throw new NotFoundException('Conversation not found');
+    if (req.user) {
+      await this.auditLogService.log({
+        userId: req.user.id,
+        companyId: ctx.companyId,
+        action: 'mark_done',
+        entity: 'conversation',
+        entityId: conversationId,
+      });
+    }
     return { status: 'ok', action: 'marked_done' };
   }
 
@@ -49,8 +91,19 @@ export class ConversationsController {
     const ctx = getRequestContext(req);
     const conversationId = decodeURIComponent(id);
     const row = await this.conversationsService.getConversationScopeRow(ctx.companyId, conversationId);
-    if (row) enforceConversationAccess(ctx, row);
-    await this.conversationsService.ignoreThread(ctx.companyId, conversationId);
+    if (!row) throw new NotFoundException('Conversation not found');
+    enforceConversationAccess(ctx, row);
+    const ok = await this.conversationsService.ignoreThread(ctx.companyId, conversationId);
+    if (!ok) throw new NotFoundException('Conversation not found');
+    if (req.user) {
+      await this.auditLogService.log({
+        userId: req.user.id,
+        companyId: ctx.companyId,
+        action: 'ignore',
+        entity: 'conversation',
+        entityId: conversationId,
+      });
+    }
     return { status: 'ok', action: 'ignored' };
   }
 
@@ -65,7 +118,13 @@ export class ConversationsController {
   }
 
   @Post('auto-archive')
-  async autoArchive() {
+  async autoArchive(@Req() req: Request) {
+    if (!req.internalApiAuth) {
+      const ctx = getRequestContext(req);
+      if (ctx.role !== 'CEO') {
+        throw new ForbiddenException('Only CEO or internal API key can auto-archive');
+      }
+    }
     const count = await this.conversationsService.autoArchiveResolved();
     return { status: 'ok', archived: count };
   }

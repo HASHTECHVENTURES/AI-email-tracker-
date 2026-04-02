@@ -19,12 +19,13 @@ const NOISE_LABEL_IDS = new Set([
 
 /**
  * Gmail search query modifiers applied to every fetch.
- * - in:inbox         → only real inbox (no spam/trash/sent)
- * - -category:…      → strip Gmail auto-categorised tabs
- * - -is:muted        → skip muted threads
+ * We must ingest BOTH inbox + sent messages so follow-up status can turn DONE
+ * after an employee reply.
  */
 const BASE_QUERY_FILTERS = [
-  'in:inbox',
+  '{in:inbox in:sent}',
+  '-in:spam',
+  '-in:trash',
   '-category:promotions',
   '-category:social',
   '-category:updates',
@@ -98,6 +99,27 @@ export class GmailService {
     return labelIds.some((l) => NOISE_LABEL_IDS.has(l));
   }
 
+  /**
+   * List + fetch up to `maxResults` messages (after optional cursor), for ingestion or tooling.
+   */
+  async fetchRecentEmails(
+    employeeId: string,
+    employeeEmail: string,
+    afterTimestamp: Date | null,
+    maxResults = 20,
+  ): Promise<EmailMessage[]> {
+    const ids = await this.fetchNewMessageIds(employeeId, afterTimestamp, maxResults);
+    const out: EmailMessage[] = [];
+    for (const id of ids) {
+      try {
+        out.push(await this.fetchFullMessage(employeeId, employeeEmail, id));
+      } catch (err) {
+        this.logger.warn(`fetchRecentEmails: skip message ${id}: ${(err as Error).message}`);
+      }
+    }
+    return out;
+  }
+
   async fetchFullMessage(
     employeeId: string,
     employeeEmail: string,
@@ -140,7 +162,7 @@ export class GmailService {
     const fromEmail = this.extractEmail(fromRaw);
     const toEmails = this.extractEmails(toRaw);
     const sentAt = dateStr ? new Date(dateStr) : new Date(Number(msg.internalDate));
-    const bodyText = this.extractPlainText(msg.payload ?? {});
+    const bodyText = this.extractBestBodyText(msg.payload ?? {});
     const labelIds = (msg.labelIds ?? []) as string[];
 
     const direction: 'INBOUND' | 'OUTBOUND' =
@@ -160,21 +182,69 @@ export class GmailService {
     };
   }
 
-  private extractPlainText(payload: gmail_v1.Schema$MessagePart): string {
-    if (payload.mimeType === 'text/plain' && payload.body?.data) {
-      return Buffer.from(payload.body.data, 'base64').toString('utf-8');
+  /**
+   * Prefer HTML over plain text when both exist (multipart/alternative).
+   * Gmail's text/plain often contains only `[image: file.png]` while marketing copy
+   * and layout live in text/html.
+   */
+  private extractBestBodyText(payload: gmail_v1.Schema$MessagePart): string {
+    const html = this.findPartBodyByMime(payload, 'text/html');
+    if (html) {
+      const asText = this.htmlToPlainText(html);
+      if (asText.trim()) return asText;
     }
+    const plain = this.findPartBodyByMime(payload, 'text/plain');
+    if (plain) return plain;
 
     for (const part of payload.parts ?? []) {
-      const text = this.extractPlainText(part);
-      if (text) return text;
+      const nested = this.extractBestBodyText(part);
+      if (nested.trim()) return nested;
     }
 
-    if (payload.body?.data) {
+    if (payload.body?.data && payload.mimeType?.startsWith('text/')) {
       return Buffer.from(payload.body.data, 'base64').toString('utf-8');
     }
 
     return '';
+  }
+
+  private findPartBodyByMime(
+    payload: gmail_v1.Schema$MessagePart,
+    mime: string,
+  ): string | null {
+    if (payload.mimeType === mime && payload.body?.data) {
+      return Buffer.from(payload.body.data, 'base64').toString('utf-8');
+    }
+    for (const part of payload.parts ?? []) {
+      const found = this.findPartBodyByMime(part, mime);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /** Strip HTML to readable plain text; surface alt text for images. */
+  private htmlToPlainText(html: string): string {
+    let s = html
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ');
+    s = s.replace(/<img[^>]*\salt=["']([^"']*)["'][^>]*>/gi, (_m, alt: string) =>
+      alt ? ` [Image: ${alt}] ` : ' [Image] ',
+    );
+    s = s.replace(/<img[^>]*>/gi, ' [Image] ');
+    s = s
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|tr|h[1-6])>/gi, '\n')
+      .replace(/<li[^>]*>/gi, '\n• ');
+    s = s.replace(/<[^>]+>/g, ' ');
+    s = s
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&apos;/g, "'");
+    return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').trim();
   }
 
   private extractEmail(raw: string): string {

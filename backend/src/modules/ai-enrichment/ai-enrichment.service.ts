@@ -22,9 +22,11 @@ Analyze the email thread below and return ONLY a valid JSON object with no addit
 }
 
 Priority rules:
-- HIGH: urgent requests, angry tone, escalations, payment/billing issues, repeated follow-ups, deadlines
-- MEDIUM: normal pending follow-up, standard business questions awaiting response
-- LOW: informational messages, FYI, thank-you notes, no action required
+- HIGH: genuine urgent business or support requests, angry tone, escalations, payment/billing issues, legal/compliance, repeated follow-ups on real work, deadlines tied to deliverables or contracts
+- MEDIUM: a real person expects a reply about work, projects, orders, or support — standard business questions
+- LOW: informational/FYI, thank-you notes, auto-replies, newsletters, and especially unsolicited product selling, retail-style promotions, marketing banners, "buy now / learn more / shop" style offers, product catalogs, or decorative images with no specific question — even if the subject line says "urgent" or "ASAP"
+
+Critical: Subject-line words like "urgent" or "important" alone do NOT justify HIGH or MEDIUM if the body is marketing, a sales pitch, or generic promotional content. Those must be LOW.
 
 Return ONLY the JSON object. No markdown, no explanation.`;
 
@@ -41,22 +43,37 @@ export class AiEnrichmentService {
       this.logger.warn('GEMINI_API_KEY not set — AI enrichment will use fallback values');
     }
     const genAI = new GoogleGenerativeAI(apiKey ?? '');
-    this.model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
   }
 
   shouldEnrich(conversation: {
     follow_up_required: boolean;
     priority: string | null;
     summary: string | null;
+    follow_up_status: string;
+    delay_hours: number;
+    sla_hours: number;
   }): boolean {
     if (!conversation.follow_up_required) {
       return false;
     }
 
-    const hasPriority = conversation.priority && conversation.priority !== 'MEDIUM';
-    const hasSummary = conversation.summary && conversation.summary.length > 0;
+    const summary = (conversation.summary ?? '').trim();
+    if (summary.length < 12) return true;
 
-    return !hasPriority || !hasSummary;
+    if (conversation.follow_up_status === 'MISSED') return true;
+
+    const sla = Math.max(1, conversation.sla_hours);
+    if (conversation.delay_hours >= sla * 0.85) return true;
+
+    if (conversation.priority === 'MEDIUM' && conversation.delay_hours > 2) return true;
+
+    return false;
+  }
+
+  /** Run Gemini on raw thread text (e.g. tests or tooling). */
+  async enrichThreadText(threadText: string): Promise<AiOutput> {
+    return this.callGemini(threadText);
   }
 
   async enrichConversation(conversationId: string, employeeId: string, threadId: string): Promise<AiOutput> {

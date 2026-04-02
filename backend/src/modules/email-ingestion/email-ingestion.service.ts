@@ -1,4 +1,5 @@
 import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { Employee, EmailMessage } from '../common/types';
@@ -7,6 +8,8 @@ import { ConversationsService } from '../conversations/conversations.service';
 import { SettingsService } from '../settings/settings.service';
 import { DashboardService } from '../dashboard/dashboard.service';
 import { GmailService } from './gmail.service';
+import { isRelevantEmail } from './email-filter.util';
+import { OauthTokenService } from '../auth/oauth-token.service';
 
 interface IngestionResult {
   companyId?: string;
@@ -22,57 +25,88 @@ interface IngestionResult {
 @Injectable()
 export class EmailIngestionService {
   private readonly logger = new Logger(EmailIngestionService.name);
+  private readonly relevanceModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | null;
 
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
     private readonly employeesService: EmployeesService,
     private readonly gmailService: GmailService,
+    private readonly oauthTokenService: OauthTokenService,
     private readonly conversationsService: ConversationsService,
     private readonly settingsService: SettingsService,
     private readonly dashboardService: DashboardService,
-  ) {}
+  ) {
+    const key = process.env.GEMINI_API_KEY?.trim();
+    if (!key) {
+      this.relevanceModel = null;
+      return;
+    }
+    const genAI = new GoogleGenerativeAI(key);
+    this.relevanceModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+  }
 
+  /**
+   * Full multi-tenant cycle: every company with at least one active employee.
+   */
   async runIncrementalCycle(): Promise<IngestionResult[]> {
     const acquired = await this.settingsService.tryAcquireIngestionLock();
     if (!acquired) {
       throw new ConflictException('Ingestion cycle is already running');
     }
-    const companyId = process.env.DEFAULT_COMPANY_ID?.trim();
-    if (!companyId) {
-      throw new ConflictException('DEFAULT_COMPANY_ID is required for ingestion');
+
+    const { data: companies, error: companiesErr } = await this.supabase.from('companies').select('id');
+    if (companiesErr) {
+      await this.settingsService.markIngestionFinished({
+        status: 'failed',
+        error: companiesErr.message,
+        employees: 0,
+        messages: 0,
+      });
+      throw companiesErr;
     }
-    const employees = await this.employeesService.listActive(companyId);
+
     const results: IngestionResult[] = [];
 
     try {
-      for (const employee of employees) {
-        try {
-          const result = await this.ingestForEmployee(companyId, employee);
-          results.push(result);
-        } catch (err) {
-          this.logger.error(
-            `Ingestion failed for ${employee.name} (${employee.id})`,
-            (err as Error).message,
-          );
-          results.push({
-            companyId,
-            employeeId: employee.id,
-            employeeName: employee.name,
-            newMessages: 0,
-            skippedFiltered: 0,
-            affectedThreads: 0,
-            conversationsUpdated: 0,
-            error: (err as Error).message,
-          });
+      for (const row of companies ?? []) {
+        const companyId = (row as { id: string }).id;
+        const employees = await this.employeesService.listActive(companyId);
+
+        for (const employee of employees) {
+          const hasOAuth = await this.oauthTokenService.hasToken(employee.id);
+          if (!hasOAuth) {
+            continue;
+          }
+
+          try {
+            const result = await this.ingestForEmployee(companyId, employee);
+            results.push(result);
+          } catch (err) {
+            this.logger.error(
+              `Ingestion failed for ${employee.name} (${employee.id})`,
+              (err as Error).message,
+            );
+            results.push({
+              companyId,
+              employeeId: employee.id,
+              employeeName: employee.name,
+              newMessages: 0,
+              skippedFiltered: 0,
+              affectedThreads: 0,
+              conversationsUpdated: 0,
+              error: (err as Error).message,
+            });
+          }
         }
+
+        this.dashboardService
+          .generateAiReport(companyId, { minCooldownMs: 3_600_000, scope: 'EXECUTIVE' })
+          .catch((err) => {
+            this.logger.warn(`Auto AI report failed for ${companyId}: ${(err as Error).message}`);
+          });
       }
 
       await this.conversationsService.autoArchiveResolved();
-
-      // Auto-generate AI report after ingestion (non-blocking)
-      this.dashboardService.generateAiReport(companyId).catch((err) => {
-        this.logger.warn(`Auto AI report failed: ${(err as Error).message}`);
-      });
 
       await this.settingsService.markIngestionFinished({
         status: 'success',
@@ -133,6 +167,7 @@ export class EmailIngestionService {
 
     const excludePatterns = await this.getExcludePatterns(employee.id);
     const messages: EmailMessage[] = [];
+    const relevantMessages: EmailMessage[] = [];
     const affectedThreads = new Set<string>();
     let skippedFiltered = 0;
 
@@ -150,12 +185,22 @@ export class EmailIngestionService {
           continue;
         }
 
-        if (!this.isRelevantEmail(msg, employee.email, excludePatterns)) {
+        // Always persist fetched inbound messages so operators can verify ingestion in UI.
+        // Relevance controls follow-up/conversation generation only.
+        messages.push(msg);
+
+        const relevant = await this.isRelevantEmailWithAi(
+          msg,
+          employee.email,
+          excludePatterns,
+          this.gmailService.isNoise(msg.labelIds),
+        );
+        if (!relevant) {
           skippedFiltered++;
           continue;
         }
 
-        messages.push(msg);
+        relevantMessages.push(msg);
         affectedThreads.add(msg.providerThreadId);
       } catch (err) {
         this.logger.warn(`Failed to fetch message ${msgId}: ${(err as Error).message}`);
@@ -177,15 +222,26 @@ export class EmailIngestionService {
       conversationsUpdated = recomputeResult.threadsProcessed;
     }
 
+    // Cursor must advance based on all seen messages (not only relevant ones),
+    // otherwise filtered messages can be fetched repeatedly and block progress.
     const latestSentAt = messages.reduce<Date | null>((latest, msg) => {
       if (!latest || msg.sentAt > latest) return msg.sentAt;
       return latest;
-    }, afterDate);
+    }, null);
 
-    await this.updateSyncState(employee.id, latestSentAt, syncState);
+    const cursor = latestSentAt ?? afterDate;
+    await this.updateSyncState(employee.id, cursor, syncState);
+    await this.supabase
+      .from('employees')
+      .update({
+        last_synced_at: new Date().toISOString(),
+        gmail_status: 'CONNECTED',
+      })
+      .eq('id', employee.id)
+      .eq('company_id', companyId);
 
     this.logger.log(
-      `Ingested ${messages.length} messages (${skippedFiltered} filtered), updated ${conversationsUpdated} conversations for ${employee.name}`,
+      `Ingested ${messages.length} messages (${relevantMessages.length} relevant, ${skippedFiltered} filtered), updated ${conversationsUpdated} conversations for ${employee.name}`,
     );
 
     return {
@@ -199,24 +255,6 @@ export class EmailIngestionService {
     };
   }
 
-  private shouldFilter(fromEmail: string, patterns: string[]): boolean {
-    const lower = fromEmail.toLowerCase();
-    return patterns.some((p) => lower.includes(p.toLowerCase()));
-  }
-
-  private isRelevantEmail(message: EmailMessage, employeeEmail: string, patterns: string[]): boolean {
-    const from = message.fromEmail.toLowerCase();
-    const subject = message.subject.toLowerCase();
-    const body = message.bodyText.toLowerCase();
-    const emailDomain = employeeEmail.split('@')[1]?.toLowerCase() ?? '';
-    const internal = emailDomain ? from.endsWith(`@${emailDomain}`) : false;
-    const keywordHit = /(newsletter|promotion|unsubscribe|weekly digest|deal)/.test(`${subject} ${body}`);
-    const automatedDomain = from.includes('mailer-daemon') || from.includes('notifications');
-    if (this.shouldFilter(from, patterns) || automatedDomain || internal || keywordHit) return false;
-    if (this.gmailService.isNoise(message.labelIds)) return false;
-    return true;
-  }
-
   private async getExcludePatterns(employeeId: string): Promise<string[]> {
     const { data } = await this.supabase
       .from('employees')
@@ -227,6 +265,39 @@ export class EmailIngestionService {
     return (data as { exclude_patterns: string[] } | null)?.exclude_patterns ?? [
       'noreply', 'no-reply', 'notifications', 'alerts', 'mailer-daemon',
     ];
+  }
+
+  private async isRelevantEmailWithAi(
+    message: EmailMessage,
+    employeeEmail: string,
+    excludePatterns: string[],
+    hasNoiseGmailLabel: boolean,
+  ): Promise<boolean> {
+    const heuristic = isRelevantEmail(message, employeeEmail, excludePatterns, hasNoiseGmailLabel);
+    if (!this.relevanceModel) return heuristic;
+
+    const prompt = [
+      'Classify whether this email should be tracked for follow-up monitoring.',
+      'Return ONLY strict JSON: {"relevant":true|false}.',
+      'Relevant means a real person-to-person or client-to-business message that may need a reply (support, project, order, meeting, question).',
+      'Not relevant: newsletters, promos, automated mail, internal system noise, AND unsolicited product selling or retail-style marketing (catalogs, "buy now", generic sales pitches, decorative promo images with no specific question), even if the subject looks urgent.',
+      `employee_email: ${employeeEmail}`,
+      `from: ${message.fromEmail}`,
+      `to: ${(message.toEmails ?? []).join(', ')}`,
+      `subject: ${message.subject ?? ''}`,
+      `body_snippet: ${(message.bodyText ?? '').slice(0, 1200)}`,
+    ].join('\n');
+
+    try {
+      const result = await this.relevanceModel.generateContent(prompt);
+      const text = result.response.text().replace(/```json\s*/gi, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(text) as { relevant?: boolean };
+      if (typeof parsed.relevant === 'boolean') return parsed.relevant;
+      return heuristic;
+    } catch (err) {
+      this.logger.debug(`AI relevance fallback to heuristic: ${(err as Error).message}`);
+      return heuristic;
+    }
   }
 
   private async messageExists(providerMessageId: string): Promise<boolean> {
@@ -248,7 +319,8 @@ export class EmailIngestionService {
       from_email: msg.fromEmail,
       to_emails: msg.toEmails,
       subject: msg.subject,
-      body_text: msg.bodyText,
+      // Basic data minimization: store snippet rather than full body.
+      body_text: (msg.bodyText ?? '').slice(0, 2000),
       sent_at: msg.sentAt.toISOString(),
       ingested_at: new Date().toISOString(),
     }));

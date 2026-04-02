@@ -7,6 +7,7 @@ import { FollowupService } from '../followup/followup.service';
 import { AiEnrichmentService } from '../ai-enrichment/ai-enrichment.service';
 import { AlertsService } from '../alerts/alerts.service';
 import { SettingsService } from '../settings/settings.service';
+import { EmailService } from '../email/email.service';
 
 interface ThreadKey {
   companyId?: string;
@@ -43,6 +44,7 @@ interface ConversationRow {
   confidence: number;
   lifecycle_status: string;
   short_reason: string;
+  reason: string;
   manually_closed: boolean;
   is_ignored: boolean;
   updated_at: string;
@@ -67,6 +69,7 @@ export class ConversationsService {
     private readonly aiEnrichmentService: AiEnrichmentService,
     private readonly alertsService: AlertsService,
     private readonly settingsService: SettingsService,
+    private readonly emailService: EmailService,
   ) {}
 
   async recomputeForThreads(threadKeys: ThreadKey[]): Promise<RecomputeResult> {
@@ -117,41 +120,47 @@ export class ConversationsService {
     return data as ConversationRow[];
   }
 
-  async markAsDone(companyId: string, conversationId: string): Promise<void> {
-    const { error } = await this.supabase
+  async markAsDone(companyId: string, conversationId: string): Promise<boolean> {
+    const { data, error } = await this.supabase
       .from('conversations')
       .update({
         manually_closed: true,
         follow_up_status: 'DONE',
         lifecycle_status: 'RESOLVED',
         short_reason: 'Manually marked as done.',
+        reason: 'Marked done by user. No follow-up required for this thread.',
         updated_at: new Date().toISOString(),
       })
       .eq('company_id', companyId)
-      .eq('conversation_id', conversationId);
+      .eq('conversation_id', conversationId)
+      .select('conversation_id');
 
     if (error) {
       this.logger.error(`Failed to mark ${conversationId} as done`, error.message);
       throw error;
     }
+    return (data?.length ?? 0) > 0;
   }
 
-  async ignoreThread(companyId: string, conversationId: string): Promise<void> {
-    const { error } = await this.supabase
+  async ignoreThread(companyId: string, conversationId: string): Promise<boolean> {
+    const { data, error } = await this.supabase
       .from('conversations')
       .update({
         is_ignored: true,
         lifecycle_status: 'ARCHIVED',
         short_reason: 'Ignored by user.',
+        reason: 'Thread ignored — excluded from follow-up monitoring.',
         updated_at: new Date().toISOString(),
       })
       .eq('company_id', companyId)
-      .eq('conversation_id', conversationId);
+      .eq('conversation_id', conversationId)
+      .select('conversation_id');
 
     if (error) {
       this.logger.error(`Failed to ignore ${conversationId}`, error.message);
       throw error;
     }
+    return (data?.length ?? 0) > 0;
   }
 
   async deleteConversation(companyId: string, conversationId: string): Promise<void> {
@@ -273,6 +282,7 @@ export class ConversationsService {
       delay_hours: result.delayHours,
       lifecycle_status: result.lifecycleStatus,
       short_reason: result.shortReason,
+      reason: result.shortReason,
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,
       priority: existing?.priority ?? 'MEDIUM',
@@ -292,6 +302,7 @@ export class ConversationsService {
 
     const oldFollowUpStatus = (existing?.follow_up_status as FollowUpStatus | undefined) ?? null;
     await this.alertsService.notifyPendingToMissedIfNeeded({
+      companyId,
       conversationId,
       employeeId,
       oldStatus: oldFollowUpStatus,
@@ -304,15 +315,35 @@ export class ConversationsService {
       shortReason: result.shortReason,
     });
 
+    if (
+      result.followUpStatus === 'PENDING' &&
+      row.priority === 'HIGH' &&
+      result.delayHours > slaHours
+    ) {
+      void this.emailService.maybeSendMissedAlert(companyId, {
+        employee: employee.name,
+        hours: result.delayHours,
+        status: 'HIGH priority SLA',
+        client_email: clientEmail ?? '',
+      }, conversationId);
+    }
+
     // AI enrichment: global + per-employee
     let enriched = false;
     const aiEnabled = await this.isAiEnabled();
     const employeeAiEnabled = await this.employeesService.isAutoAiEnabledForEmployee(companyId, employeeId);
-    if (aiEnabled && employeeAiEnabled && this.aiEnrichmentService.shouldEnrich({
-      follow_up_required: result.followUpRequired,
-      priority: row.priority,
-      summary: row.summary,
-    })) {
+    if (
+      aiEnabled &&
+      employeeAiEnabled &&
+      this.aiEnrichmentService.shouldEnrich({
+        follow_up_required: result.followUpRequired,
+        priority: row.priority,
+        summary: row.summary,
+        follow_up_status: result.followUpStatus,
+        delay_hours: result.delayHours,
+        sla_hours: slaHours,
+      })
+    ) {
       try {
         await this.aiEnrichmentService.enrichConversation(conversationId, employeeId, threadId);
         enriched = true;

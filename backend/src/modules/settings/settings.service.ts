@@ -137,10 +137,10 @@ export class SettingsService {
       : null;
 
     const lastReportAt = map.get('last_ai_report_at') ?? null;
-    // No report yet → tie to next ingestion window; else hourly from last report (rolled forward)
+    // No report yet -> start hourly window from "now"; else hourly from last report (rolled forward)
     const nextReportAt = lastReportAt
       ? alignNext(lastReportAt, REPORT_INTERVAL_SECONDS)
-      : nextIngestionAt;
+      : alignNext(new Date().toISOString(), REPORT_INTERVAL_SECONDS);
 
     const serverNow = Date.now();
     const nextReportMs = nextReportAt ? new Date(nextReportAt).getTime() : NaN;
@@ -175,7 +175,7 @@ export class SettingsService {
     ]);
   }
 
-  async tryAcquireIngestionLock(maxLockMinutes = 30): Promise<boolean> {
+  async tryAcquireIngestionLock(maxLockMinutes = 5): Promise<boolean> {
     const runtime = await this.getRuntimeStatus();
     const startedAtMs = runtime.lastIngestionStartedAt
       ? new Date(runtime.lastIngestionStartedAt).getTime()
@@ -185,6 +185,12 @@ export class SettingsService {
 
     if (runtime.ingestionRunning && !isStale) {
       return false;
+    }
+
+    if (runtime.ingestionRunning && isStale) {
+      this.logger.warn(
+        `Recovering stale ingestion lock (age: ${Math.round(lockAgeMs / 1000)}s)`,
+      );
     }
 
     await this.markIngestionStarted();
@@ -212,21 +218,60 @@ export class SettingsService {
     last_sync_at: string | null;
     employees_tracked: number;
     ai_status: boolean;
+    seconds_until_next_ingestion: number | null;
+    last_report_at: string | null;
+    seconds_until_next_report: number | null;
+    smtp_configured: boolean;
+    ai_model_configured: boolean;
   }> {
-    const [runtime, settings, employeeCount] = await Promise.all([
+    const [runtime, settings, tracked] = await Promise.all([
       this.getRuntimeStatus(),
       this.getAll(),
-      this.supabase
-        .from('employees')
-        .select('*', { count: 'exact', head: true })
-        .eq('company_id', companyId)
-        .eq('is_active', true),
+      this.countActiveEmployeesWithOAuth(companyId),
     ]);
+    const lastSyncAt = runtime.lastIngestionFinishedAt;
+    // Align with upstream repo: do not mark inactive just because last sync is >5m ago
+    // (cron is every 2m; locks/Gemini latency can exceed a short window). Only treat as
+    // inactive when the last ingestion cycle explicitly failed.
+    const ingestionFailed = runtime.lastIngestionStatus === 'failed';
+    const smtpConfigured = Boolean(
+      process.env.SMTP_HOST?.trim() &&
+      process.env.SMTP_USER?.trim() &&
+      process.env.SMTP_PASS?.trim(),
+    );
+    const aiModelConfigured = Boolean(process.env.GEMINI_API_KEY?.trim());
+    const nextIngestionMs = runtime.nextIngestionAt
+      ? new Date(runtime.nextIngestionAt).getTime()
+      : NaN;
+    const secondsUntilNextIngestion =
+      runtime.nextIngestionAt != null && !Number.isNaN(nextIngestionMs)
+        ? Math.max(0, Math.ceil((nextIngestionMs - Date.now()) / 1000))
+        : null;
     return {
-      is_active: true,
-      last_sync_at: runtime.lastIngestionFinishedAt,
-      employees_tracked: employeeCount.count ?? 0,
+      is_active: !ingestionFailed,
+      last_sync_at: lastSyncAt,
+      employees_tracked: tracked,
       ai_status: settings.ai_enabled,
+      seconds_until_next_ingestion: secondsUntilNextIngestion,
+      last_report_at: runtime.lastReportAt,
+      seconds_until_next_report: runtime.secondsUntilNextReport,
+      smtp_configured: smtpConfigured,
+      ai_model_configured: aiModelConfigured,
     };
+  }
+
+  private async countActiveEmployeesWithOAuth(companyId: string): Promise<number> {
+    const { data: emps, error } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('is_active', true);
+    if (error || !emps?.length) return 0;
+    const ids = (emps as { id: string }[]).map((e) => e.id);
+    const { data: tokens } = await this.supabase
+      .from('employee_oauth_tokens')
+      .select('employee_id')
+      .in('employee_id', ids);
+    return new Set((tokens ?? []).map((t: { employee_id: string }) => t.employee_id)).size;
   }
 }
