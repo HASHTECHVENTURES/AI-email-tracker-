@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.followupmonitor.backend</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>/Users/sujalpatel/Documents/Automation Email /scripts/start-backend.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sujalpatel/Library/Logs/followupmonitor-backend.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sujalpatel/Library/Logs/followupmonitor-backend.err.log</string>
+  </dict>
+</plist>
+

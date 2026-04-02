@@ -1,0 +1,435 @@
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { SupabaseClient } from '@supabase/supabase-js';
+import { SUPABASE_CLIENT } from '../common/supabase.provider';
+import { FollowUpStatus } from '../common/types';
+import { EmployeesService } from '../employees/employees.service';
+import { FollowupService } from '../followup/followup.service';
+import { AiEnrichmentService } from '../ai-enrichment/ai-enrichment.service';
+import { AlertsService } from '../alerts/alerts.service';
+import { SettingsService } from '../settings/settings.service';
+
+interface ThreadKey {
+  companyId?: string;
+  employeeId: string;
+  threadId: string;
+}
+
+interface EmailRow {
+  provider_message_id: string;
+  provider_thread_id: string;
+  employee_id: string;
+  direction: string;
+  from_email: string;
+  to_emails: string[];
+  subject: string;
+  sent_at: string;
+}
+
+interface ConversationRow {
+  conversation_id: string;
+  provider_thread_id: string;
+  employee_id: string;
+  company_id: string;
+  department_id: string | null;
+  client_name: string | null;
+  client_email: string | null;
+  last_client_msg_at: string | null;
+  last_employee_reply_at: string | null;
+  follow_up_required: boolean;
+  follow_up_status: string;
+  delay_hours: number;
+  priority: string;
+  summary: string;
+  confidence: number;
+  lifecycle_status: string;
+  short_reason: string;
+  manually_closed: boolean;
+  is_ignored: boolean;
+  updated_at: string;
+}
+
+export interface RecomputeResult {
+  threadsProcessed: number;
+  created: number;
+  updated: number;
+  aiEnriched: number;
+  statusBreakdown: Record<FollowUpStatus, number>;
+}
+
+@Injectable()
+export class ConversationsService {
+  private readonly logger = new Logger(ConversationsService.name);
+
+  constructor(
+    @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
+    private readonly followupService: FollowupService,
+    private readonly employeesService: EmployeesService,
+    private readonly aiEnrichmentService: AiEnrichmentService,
+    private readonly alertsService: AlertsService,
+    private readonly settingsService: SettingsService,
+  ) {}
+
+  async recomputeForThreads(threadKeys: ThreadKey[]): Promise<RecomputeResult> {
+    const globalSla = await this.settingsService.getDefaultSlaHours();
+    const result: RecomputeResult = {
+      threadsProcessed: 0,
+      created: 0,
+      updated: 0,
+      aiEnriched: 0,
+      statusBreakdown: { DONE: 0, PENDING: 0, MISSED: 0 },
+    };
+
+    for (const key of threadKeys) {
+      const outcome = await this.recomputeThread(key.companyId, key.employeeId, key.threadId, globalSla);
+      result.threadsProcessed++;
+      if (outcome.action === 'created') result.created++;
+      if (outcome.action === 'updated') result.updated++;
+      if (outcome.enriched) result.aiEnriched++;
+    }
+
+    const counts = await this.getStatusCounts();
+    result.statusBreakdown = counts;
+    return result;
+  }
+
+  async recomputeRecent(): Promise<RecomputeResult> {
+    const threadKeys = await this.findStaleThreads();
+    this.logger.log(`Found ${threadKeys.length} threads needing recompute`);
+    return this.recomputeForThreads(threadKeys);
+  }
+
+  async getAll(filters: { companyId: string; employeeId?: string; departmentId?: string }): Promise<ConversationRow[]> {
+    let query = this.supabase
+      .from('conversations')
+      .select('*')
+      .eq('company_id', filters.companyId)
+      .eq('is_ignored', false)
+      .order('updated_at', { ascending: false });
+
+    if (filters.departmentId) query = query.eq('department_id', filters.departmentId);
+    if (filters.employeeId) query = query.eq('employee_id', filters.employeeId);
+
+    const { data, error } = await query;
+    if (error) {
+      this.logger.error('Failed to fetch conversations', error.message);
+      throw error;
+    }
+    return data as ConversationRow[];
+  }
+
+  async markAsDone(companyId: string, conversationId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('conversations')
+      .update({
+        manually_closed: true,
+        follow_up_status: 'DONE',
+        lifecycle_status: 'RESOLVED',
+        short_reason: 'Manually marked as done.',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('company_id', companyId)
+      .eq('conversation_id', conversationId);
+
+    if (error) {
+      this.logger.error(`Failed to mark ${conversationId} as done`, error.message);
+      throw error;
+    }
+  }
+
+  async ignoreThread(companyId: string, conversationId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('conversations')
+      .update({
+        is_ignored: true,
+        lifecycle_status: 'ARCHIVED',
+        short_reason: 'Ignored by user.',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('company_id', companyId)
+      .eq('conversation_id', conversationId);
+
+    if (error) {
+      this.logger.error(`Failed to ignore ${conversationId}`, error.message);
+      throw error;
+    }
+  }
+
+  async deleteConversation(companyId: string, conversationId: string): Promise<void> {
+    // Derive employee_id and provider_thread_id from the composite key
+    const conversation = await this.getConversation(companyId, conversationId);
+    if (!conversation) {
+      throw new Error(`Conversation ${conversationId} not found`);
+    }
+
+    // Delete all email messages in this thread for this employee first
+    const { error: msgError } = await this.supabase
+      .from('email_messages')
+      .delete()
+      .eq('company_id', companyId)
+      .eq('employee_id', conversation.employee_id)
+      .eq('provider_thread_id', conversation.provider_thread_id);
+
+    if (msgError) {
+      this.logger.error(`Failed to delete messages for ${conversationId}`, msgError.message);
+      throw msgError;
+    }
+
+    // Delete the conversation record
+    const { error: convError } = await this.supabase
+      .from('conversations')
+      .delete()
+      .eq('company_id', companyId)
+      .eq('conversation_id', conversationId);
+
+    if (convError) {
+      this.logger.error(`Failed to delete conversation ${conversationId}`, convError.message);
+      throw convError;
+    }
+
+    this.logger.log(`Permanently deleted conversation ${conversationId} and its messages`);
+  }
+
+  async autoArchiveResolved(): Promise<number> {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await this.supabase
+      .from('conversations')
+      .update({ lifecycle_status: 'ARCHIVED', updated_at: new Date().toISOString() })
+      .eq('lifecycle_status', 'RESOLVED')
+      .lt('updated_at', sevenDaysAgo)
+      .select('conversation_id');
+
+    if (error) {
+      this.logger.error('Auto-archive failed', error.message);
+      return 0;
+    }
+    const count = data?.length ?? 0;
+    if (count > 0) this.logger.log(`Auto-archived ${count} resolved conversations`);
+    return count;
+  }
+
+  private async recomputeThread(
+    companyId: string | undefined,
+    employeeId: string,
+    threadId: string,
+    globalSlaHours: number,
+  ): Promise<{ action: 'created' | 'updated'; enriched: boolean }> {
+    if (!companyId) return { action: 'updated', enriched: false };
+    const employee = await this.employeesService.getById(companyId, employeeId);
+    if (!employee) {
+      this.logger.warn(`Employee ${employeeId} not found, skipping thread ${threadId}`);
+      return { action: 'updated', enriched: false };
+    }
+
+    const { data: emails, error } = await this.supabase
+      .from('email_messages')
+      .select('provider_message_id, provider_thread_id, employee_id, direction, from_email, to_emails, subject, sent_at')
+      .eq('company_id', companyId)
+      .eq('employee_id', employeeId)
+      .eq('provider_thread_id', threadId)
+      .order('sent_at', { ascending: true });
+
+    if (error || !emails || emails.length === 0) {
+      return { action: 'updated', enriched: false };
+    }
+
+    const rows = emails as EmailRow[];
+    const inbound = rows.filter((r) => r.direction === 'INBOUND');
+    const outbound = rows.filter((r) => r.direction === 'OUTBOUND');
+
+    const lastInbound = inbound.length ? inbound[inbound.length - 1] : null;
+    const lastOutbound = outbound.length ? outbound[outbound.length - 1] : null;
+
+    const lastClientMsgAt = lastInbound ? new Date(lastInbound.sent_at) : null;
+    const lastEmployeeReplyAt = lastOutbound ? new Date(lastOutbound.sent_at) : null;
+
+    const slaHours = this.employeesService.getSlaHours(employee, globalSlaHours);
+    const existing = await this.getConversation(companyId, `${employeeId}:${threadId}`);
+
+    const manuallyClosed = existing?.manually_closed ?? false;
+    const isIgnored = existing?.is_ignored ?? false;
+
+    // If ignored, don't recompute
+    if (isIgnored) {
+      return { action: 'updated', enriched: false };
+    }
+
+    const result = this.followupService.analyze(lastClientMsgAt, lastEmployeeReplyAt, slaHours, manuallyClosed);
+
+    const clientEmail = lastInbound?.from_email ?? null;
+    const conversationId = `${employeeId}:${threadId}`;
+
+    const row = {
+      conversation_id: conversationId,
+      provider_thread_id: threadId,
+      employee_id: employeeId,
+      company_id: companyId,
+      department_id: employee.departmentId ?? null,
+      client_name: clientEmail,
+      client_email: clientEmail,
+      last_client_msg_at: lastClientMsgAt?.toISOString() ?? null,
+      last_employee_reply_at: lastEmployeeReplyAt?.toISOString() ?? null,
+      follow_up_required: result.followUpRequired,
+      follow_up_status: result.followUpStatus,
+      delay_hours: result.delayHours,
+      lifecycle_status: result.lifecycleStatus,
+      short_reason: result.shortReason,
+      manually_closed: manuallyClosed,
+      is_ignored: isIgnored,
+      priority: existing?.priority ?? 'MEDIUM',
+      summary: existing?.summary ?? '',
+      confidence: existing ? Number(existing.confidence) : 0,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error: upsertError } = await this.supabase
+      .from('conversations')
+      .upsert(row, { onConflict: 'conversation_id' });
+
+    if (upsertError) {
+      this.logger.error(`Failed to upsert conversation ${conversationId}`, upsertError.message);
+      throw upsertError;
+    }
+
+    const oldFollowUpStatus = (existing?.follow_up_status as FollowUpStatus | undefined) ?? null;
+    await this.alertsService.notifyPendingToMissedIfNeeded({
+      conversationId,
+      employeeId,
+      oldStatus: oldFollowUpStatus,
+      newStatus: result.followUpStatus,
+      employeeName: employee.name,
+      employeeEmail: employee.email,
+      clientEmail: clientEmail,
+      delayHours: result.delayHours,
+      slaHours,
+      shortReason: result.shortReason,
+    });
+
+    // AI enrichment: global + per-employee
+    let enriched = false;
+    const aiEnabled = await this.isAiEnabled();
+    const employeeAiEnabled = await this.employeesService.isAutoAiEnabledForEmployee(companyId, employeeId);
+    if (aiEnabled && employeeAiEnabled && this.aiEnrichmentService.shouldEnrich({
+      follow_up_required: result.followUpRequired,
+      priority: row.priority,
+      summary: row.summary,
+    })) {
+      try {
+        await this.aiEnrichmentService.enrichConversation(conversationId, employeeId, threadId);
+        enriched = true;
+        this.logger.log(`AI enriched conversation ${conversationId}`);
+      } catch (err) {
+        this.logger.warn(`AI enrichment failed for ${conversationId}: ${(err as Error).message}`);
+      }
+    }
+
+    return { action: existing ? 'updated' : 'created', enriched };
+  }
+
+  private async isAiEnabled(): Promise<boolean> {
+    const { data } = await this.supabase
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'ai_enabled')
+      .maybeSingle();
+    return data?.value !== 'false';
+  }
+
+  private async getConversation(companyId: string, conversationId: string): Promise<ConversationRow | null> {
+    const { data } = await this.supabase
+      .from('conversations')
+      .select('*')
+      .eq('company_id', companyId)
+      .eq('conversation_id', conversationId)
+      .maybeSingle();
+    return data as ConversationRow | null;
+  }
+
+  async getConversationScopeRow(companyId: string, conversationId: string): Promise<{
+    company_id: string;
+    employee_id: string;
+    department_id: string | null;
+  } | null> {
+    const { data } = await this.supabase
+      .from('conversations')
+      .select('company_id, employee_id, department_id')
+      .eq('company_id', companyId)
+      .eq('conversation_id', conversationId)
+      .maybeSingle();
+    return (data ?? null) as { company_id: string; employee_id: string; department_id: string | null } | null;
+  }
+
+  private async findStaleThreads(): Promise<ThreadKey[]> {
+    const { data, error } = await this.supabase.rpc('find_stale_threads');
+
+    if (!error && data) {
+      return (data as { employee_id: string; provider_thread_id: string; company_id?: string }[]).map((r) => ({
+        companyId: r.company_id,
+        employeeId: r.employee_id,
+        threadId: r.provider_thread_id,
+      }));
+    }
+
+    const { data: allThreads, error: fallbackError } = await this.supabase
+      .from('email_messages')
+      .select('employee_id, provider_thread_id, company_id');
+
+    if (fallbackError || !allThreads) {
+      this.logger.error('Failed to find stale threads', fallbackError?.message);
+      return [];
+    }
+
+    const uniqueKeys = new Map<string, ThreadKey>();
+    for (const row of allThreads as { employee_id: string; provider_thread_id: string; company_id: string }[]) {
+      const key = `${row.employee_id}:${row.provider_thread_id}`;
+      if (!uniqueKeys.has(key)) {
+        uniqueKeys.set(key, { companyId: row.company_id, employeeId: row.employee_id, threadId: row.provider_thread_id });
+      }
+    }
+
+    const stale: ThreadKey[] = [];
+    for (const tk of uniqueKeys.values()) {
+      const convId = `${tk.employeeId}:${tk.threadId}`;
+      const { data: conv } = await this.supabase
+        .from('conversations')
+        .select('updated_at')
+        .eq('conversation_id', convId)
+        .maybeSingle();
+
+      if (!conv) {
+        stale.push(tk);
+        continue;
+      }
+
+      const { data: newerEmail } = await this.supabase
+        .from('email_messages')
+        .select('ingested_at')
+        .eq('employee_id', tk.employeeId)
+        .eq('provider_thread_id', tk.threadId)
+        .gt('ingested_at', (conv as { updated_at: string }).updated_at)
+        .limit(1)
+        .maybeSingle();
+
+      if (newerEmail) {
+        stale.push(tk);
+      }
+    }
+
+    return stale;
+  }
+
+  private async getStatusCounts(): Promise<Record<FollowUpStatus, number>> {
+    const result: Record<FollowUpStatus, number> = { DONE: 0, PENDING: 0, MISSED: 0 };
+
+    for (const status of ['DONE', 'PENDING', 'MISSED'] as FollowUpStatus[]) {
+      const { count } = await this.supabase
+        .from('conversations')
+        .select('*', { count: 'exact', head: true })
+        .eq('follow_up_status', status)
+        .eq('is_ignored', false);
+
+      result[status] = count ?? 0;
+    }
+
+    return result;
+  }
+}

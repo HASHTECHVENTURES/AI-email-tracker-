@@ -1,0 +1,69 @@
+export type FollowUpStatus = 'DONE' | 'PENDING' | 'MISSED';
+export type Priority = 'LOW' | 'MEDIUM' | 'HIGH';
+export type EmployeeRole = 'CEO' | 'HEAD' | 'EMPLOYEE';
+
+export interface Employee {
+  id: string;
+  name: string;
+  email: string;
+  slaHoursDefault?: number;
+  active: boolean;
+  companyId?: string;
+  departmentId?: string;
+  role?: EmployeeRole;
+  isActive?: boolean;
+  aiEnabled?: boolean;
+  trackingStartAt?: string | null;
+  trackingPaused?: boolean;
+  /** Present on GET /employees when including OAuth status */
+  oauthConnected?: boolean;
+  /** When false, skip AI for this employee (rules still run). Default true. */
+  autoAiEnabled?: boolean;
+  /** ISO timestamp — only ingest/analyze mail at or after this time (from mail_sync_state.start_date). */
+  startTrackingAt?: string | null;
+}
+
+export interface EmailMessage {
+  providerMessageId: string;
+  providerThreadId: string;
+  employeeId: string;
+  direction: 'INBOUND' | 'OUTBOUND';
+  fromEmail: string;
+  toEmails: string[];
+  subject: string;
+  bodyText: string;
+  sentAt: Date;
+  /** Gmail label IDs — used for noise filtering (CATEGORY_PROMOTIONS etc.) */
+  labelIds?: string[];
+}
+
+export interface ConversationSnapshot {
+  conversationId: string;
+  providerThreadId: string;
+  clientName: string;
+  clientEmail: string;
+  employeeId: string;
+  employeeName: string;
+  employeeEmail: string;
+  lastClientMsgAt: Date | null;
+  lastEmployeeReplyAt: Date | null;
+  followUpRequired: boolean;
+  followUpStatus: FollowUpStatus;
+  delayHours: number;
+  priority: Priority;
+  summary: string;
+  confidence: number;
+}
+
+export interface AiOutput {
+  priority: Priority;
+  summary: string;
+  confidence: number;
+}
+
+export interface MailSyncState {
+  employeeId: string;
+  startDate: Date;
+  lastProcessedAt: Date | null;
+  lastHistoryId: string | null;
+}

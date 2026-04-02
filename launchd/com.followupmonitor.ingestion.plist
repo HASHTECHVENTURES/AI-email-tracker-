@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.followupmonitor.ingestion</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/bin/curl</string>
+      <string>-fsS</string>
+      <string>-H</string>
+      <string>x-api-key: 5e4093553cbd0141ea7a929b0479f108e7a02665793c422f1be2151e5d1cb1a0</string>
+      <string>http://127.0.0.1:3000/email-ingestion/run</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Every 2 minutes -->
+    <key>StartInterval</key>
+    <integer>120</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sujalpatel/Library/Logs/followupmonitor-ingestion.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sujalpatel/Library/Logs/followupmonitor-ingestion.err.log</string>
+  </dict>
+</plist>
+
