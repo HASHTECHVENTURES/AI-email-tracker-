@@ -65,6 +65,18 @@ type TeamAlertItem = {
   from_manager_email: string | null;
 };
 
+async function parseApiErrorMessage(res: Response): Promise<string> {
+  try {
+    const j = (await res.json()) as { message?: unknown; error?: string };
+    if (typeof j.message === 'string') return j.message;
+    if (typeof j.error === 'string') return j.error;
+    if (j.message != null && typeof j.message === 'object') return JSON.stringify(j.message);
+  } catch {
+    /* non-JSON body */
+  }
+  return `Request failed (${res.status})`;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const { me, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
@@ -101,7 +113,16 @@ export default function DashboardPage() {
       apiFetch('/system/status', token),
       alertResPromise,
     ]);
-    if (dRes.ok) setDash((await dRes.json()) as DashboardPayload);
+    if (dRes.ok) {
+      setDash((await dRes.json()) as DashboardPayload);
+      setError(null);
+    } else {
+      if (dRes.status === 401) {
+        void ctxSignOut();
+        return;
+      }
+      setError(await parseApiErrorMessage(dRes));
+    }
     if (sRes.ok) {
       const nextStatus = (await sRes.json()) as SystemStatus;
       setStatus(nextStatus);
@@ -118,7 +139,7 @@ export default function DashboardPage() {
     } else {
       setTeamAlerts(null);
     }
-  }, [buildDashboardPath, me?.role, token]);
+  }, [buildDashboardPath, ctxSignOut, me?.role, token]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -133,11 +154,15 @@ export default function DashboardPage() {
         void ctxSignOut();
         return;
       }
-      const st = await statusRes.json();
-      if (cancelled) return;
-      if (st.needs_onboarding) {
-        router.replace('/auth');
-        return;
+      if (statusRes.ok) {
+        const st = await statusRes.json();
+        if (cancelled) return;
+        if (st.needs_onboarding) {
+          router.replace('/auth');
+          return;
+        }
+      } else if (!cancelled) {
+        setError(await parseApiErrorMessage(statusRes));
       }
       void refresh();
     })();
@@ -300,7 +325,32 @@ export default function DashboardPage() {
         onRefresh={() => void refresh()}
         onSignOut={() => void ctxSignOut()}
       >
-        <PageSkeleton />
+        {error ? (
+          <div
+            role="alert"
+            className="rounded-xl border border-red-200 bg-red-50 px-4 py-4 text-sm text-red-900 shadow-sm"
+          >
+            <p className="font-semibold">Couldn&apos;t load dashboard</p>
+            <p className="mt-2 text-red-800/95">{error}</p>
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                void refresh();
+              }}
+              className="mt-4 rounded-lg bg-red-100 px-4 py-2 text-xs font-semibold text-red-950 transition hover:bg-red-200"
+            >
+              Retry
+            </button>
+            <p className="mt-3 text-xs text-red-700/90">
+              If this keeps happening, confirm Vercel has{' '}
+              <code className="rounded bg-red-100/80 px-1 py-0.5">NEXT_PUBLIC_API_URL</code> set to your Railway
+              API URL (with <code className="rounded bg-red-100/80 px-1 py-0.5">https://</code>) and redeploy.
+            </p>
+          </div>
+        ) : (
+          <PageSkeleton />
+        )}
       </AppShell>
     );
   }

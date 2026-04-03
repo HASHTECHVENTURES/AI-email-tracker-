@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 
 const PENDING_KEY = 'pendingSignup';
 
@@ -87,6 +88,7 @@ function RoleSegment({
 
 function AuthPageInner() {
   const router = useRouter();
+  const { me, loading: authCtxLoading, error: authCtxError, refreshMe } = useAuth();
   const searchParams = useSearchParams();
   const completeFromEmail = searchParams.get('complete') === '1';
   const err = searchParams.get('error');
@@ -157,6 +159,8 @@ function AuthPageInner() {
     let cancelled = false;
 
     async function run() {
+      if (authCtxLoading) return;
+
       const supabase = createClient();
       const {
         data: { session },
@@ -164,6 +168,12 @@ function AuthPageInner() {
       if (cancelled) return;
 
       if (!session) {
+        setPhase('auth');
+        return;
+      }
+
+      if (authCtxError) {
+        setInfo(authCtxError);
         setPhase('auth');
         return;
       }
@@ -181,6 +191,9 @@ function AuthPageInner() {
       if (cancelled) return;
 
       if (!status.needs_onboarding && status.user) {
+        if (!me) {
+          return;
+        }
         router.replace(safeNext);
         return;
       }
@@ -219,7 +232,7 @@ function AuthPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [router, safeNext, completeFromEmail]);
+  }, [authCtxLoading, authCtxError, me, router, safeNext, completeFromEmail]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -261,6 +274,7 @@ function AuthPageInner() {
           });
           if (onboardRes.ok) {
             clearPending();
+            await refreshMe(session.access_token);
             router.replace(safeNext);
             return;
           }
@@ -268,6 +282,7 @@ function AuthPageInner() {
         setPhase('onboarding');
         return;
       }
+      await refreshMe(session.access_token);
       router.replace(safeNext);
     } finally {
       setLoading(false);

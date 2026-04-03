@@ -29,8 +29,8 @@ type AuthState = {
   loading: boolean;
   error: string | null;
   signOut: () => Promise<void>;
-  /** Re-fetch /auth/me (rarely needed) */
-  refreshMe: () => Promise<void>;
+  /** Re-fetch /auth/me; pass token immediately after sign-in so navigation waits on profile. */
+  refreshMe: (accessToken?: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthState>({
@@ -53,6 +53,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const loadProfile = useCallback(async (accessToken: string) => {
+    const meRes = await apiFetch('/auth/me', accessToken);
+    if (!meRes.ok) {
+      if (meRes.status === 401) {
+        const supabase = createClient();
+        await supabase.auth.signOut();
+        setMe(null);
+        setToken(null);
+        setError(null);
+        return;
+      }
+      setError('Could not load profile.');
+      setMe(null);
+      return;
+    }
+    setMe((await meRes.json()) as AuthMe);
+    setError(null);
+  }, []);
+
   const bootstrap = useCallback(async () => {
     try {
       const supabase = createClient();
@@ -66,45 +85,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       setToken(session.access_token);
-
-      const meRes = await apiFetch('/auth/me', session.access_token);
-      if (!meRes.ok) {
-        if (meRes.status === 401) {
-          await supabase.auth.signOut();
-          setLoading(false);
-          return;
-        }
-        setError('Could not load profile.');
-        setLoading(false);
-        return;
-      }
-
-      setMe((await meRes.json()) as AuthMe);
+      await loadProfile(session.access_token);
     } catch {
       setError('Authentication error.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadProfile]);
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
 
+  /**
+   * Subscribe once (do not depend on `token` — that re-subscribed every refresh and caused request storms).
+   * After sign-in, load `/auth/me` here; bootstrap alone only runs once on mount and would leave `me` null.
+   */
   useEffect(() => {
     const supabase = createClient();
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!session) {
         setMe(null);
         setToken(null);
-      } else if (session.access_token !== token) {
-        setToken(session.access_token);
+        setError(null);
+        return;
       }
+      setToken(session.access_token);
+      if (event === 'INITIAL_SESSION') {
+        return;
+      }
+      await loadProfile(session.access_token);
     });
     return () => subscription.unsubscribe();
-  }, [token]);
+  }, [loadProfile]);
 
   const signOut = useCallback(async () => {
     const supabase = createClient();
@@ -114,11 +129,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.replace('/auth');
   }, [router]);
 
-  const refreshMe = useCallback(async () => {
-    if (!token) return;
-    const res = await apiFetch('/auth/me', token);
-    if (res.ok) setMe((await res.json()) as AuthMe);
-  }, [token]);
+  /** Pass `accessToken` right after sign-in so profile loads before navigation (token state may lag). */
+  const refreshMe = useCallback(
+    async (accessToken?: string) => {
+      const t = accessToken ?? token;
+      if (!t) return;
+      await loadProfile(t);
+    },
+    [token, loadProfile],
+  );
 
   const value = useMemo(
     () => ({ me, token, loading, error, signOut, refreshMe }),
