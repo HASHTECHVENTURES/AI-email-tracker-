@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  Body,
   Controller,
   Delete,
   ForbiddenException,
@@ -115,6 +117,55 @@ export class ConversationsController {
     if (row) enforceConversationAccess(ctx, row);
     await this.conversationsService.deleteConversation(ctx.companyId, conversationId);
     return { status: 'ok', action: 'deleted' };
+  }
+
+  @Post(':id/reassign')
+  async reassign(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Body() body: { targetEmployeeId?: string },
+  ) {
+    const ctx = getRequestContext(req);
+    if (ctx.role === 'EMPLOYEE') {
+      throw new ForbiddenException('Employees cannot reassign conversations');
+    }
+
+    const targetEmployeeId = body?.targetEmployeeId?.trim();
+    if (!targetEmployeeId) {
+      throw new BadRequestException('targetEmployeeId is required');
+    }
+
+    const conversationId = decodeURIComponent(id);
+    const row = await this.conversationsService.getConversationScopeRow(ctx.companyId, conversationId);
+    if (!row) throw new NotFoundException('Conversation not found');
+    enforceConversationAccess(ctx, row);
+
+    // For HEAD, the target employee must be in the same department
+    if (ctx.role === 'HEAD' && ctx.departmentId) {
+      const targetDept = await this.conversationsService.getEmployeeDepartment(ctx.companyId, targetEmployeeId);
+      if (targetDept !== ctx.departmentId) {
+        throw new ForbiddenException('Target employee is not in your department');
+      }
+    }
+
+    const { newConversationId } = await this.conversationsService.reassignConversation(
+      ctx.companyId,
+      conversationId,
+      targetEmployeeId,
+    );
+
+    if (req.user) {
+      await this.auditLogService.log({
+        userId: req.user.id,
+        companyId: ctx.companyId,
+        action: 'reassign',
+        entity: 'conversation',
+        entityId: conversationId,
+        metadata: { targetEmployeeId, newConversationId },
+      });
+    }
+
+    return { status: 'ok', newConversationId };
   }
 
   @Post('auto-archive')

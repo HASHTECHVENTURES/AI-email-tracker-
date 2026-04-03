@@ -2,11 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --brand: #4f46e5;
+  --surface: #f8fafc;
+  --gradient-brand: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+}
+
 html,
 body {
   min-height: 100%;
 }
 
 body {
-  @apply bg-gray-50 text-gray-900 antialiased;
+  @apply bg-surface text-slate-900 antialiased;
 }

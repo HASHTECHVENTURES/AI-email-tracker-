@@ -2,15 +2,11 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
+import { PageSkeleton } from '@/components/PageSkeleton';
 import Link from 'next/link';
-
-type Me = {
-  role: string;
-  company_name?: string | null;
-};
 
 type SentItem = {
   id: string;
@@ -24,18 +20,14 @@ type SentItem = {
 
 export default function ManagerMessagesPage() {
   const router = useRouter();
-  const [me, setMe] = useState<Me | null>(null);
+  const { me, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
   const [items, setItems] = useState<SentItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const supabase = createClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) return;
-    const res = await apiFetch('/team-alerts/sent', session.access_token);
+    if (!token) return;
+    const res = await apiFetch('/team-alerts/sent', token);
     if (!res.ok) {
       setError('Could not load sent messages.');
       setItems([]);
@@ -44,84 +36,76 @@ export default function ManagerMessagesPage() {
     const body = (await res.json()) as { items?: SentItem[] };
     setItems(body.items ?? []);
     setError(null);
-  }, []);
+  }, [token]);
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!me || !token) {
+      router.replace('/auth');
+      return;
+    }
+    if (me.role !== 'HEAD' && me.role !== 'MANAGER') {
+      router.replace('/dashboard');
+      return;
+    }
     (async () => {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) return router.replace('/auth');
-      const meRes = await apiFetch('/auth/me', session.access_token);
-      if (!meRes.ok) return router.replace('/auth');
-      const m = (await meRes.json()) as Me;
-      if (m.role !== 'HEAD' && m.role !== 'MANAGER') {
-        router.replace('/dashboard');
-        return;
-      }
-      setMe(m);
       setLoading(true);
       await load();
       setLoading(false);
     })();
-  }, [router, load]);
+  }, [authLoading, me, token, router, load]);
 
-  async function signOut() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.replace('/auth');
-  }
-
-  if (!me) {
-    return <div className="p-8 text-sm text-gray-500">Loading...</div>;
+  if (!me || authLoading) {
+    return (
+      <AppShell role="HEAD" title="Conversations" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
+        <PageSkeleton />
+      </AppShell>
+    );
   }
 
   return (
     <AppShell
       role={me.role}
       companyName={me.company_name ?? null}
-      title="Messages"
-      subtitle="Alerts you’ve sent to your team. Use Alerts in the sidebar to send a new one."
-      onSignOut={() => void signOut()}
+      title="Conversations"
+      subtitle="Outbound alerts and nudges to your team."
+      onSignOut={() => void ctxSignOut()}
     >
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
 
-      <div className="mb-4">
+      <div className="mb-6">
         <Link
           href="/departments#team-members"
-          className="inline-flex rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700"
+          className="inline-flex rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95"
         >
-          Send new alert
+          New alert
         </Link>
       </div>
 
       {loading ? (
-        <p className="text-sm text-gray-500">Loading…</p>
+        <PageSkeleton />
       ) : items.length === 0 ? (
-        <section className="rounded-xl border border-gray-200 bg-white p-8 text-center shadow-sm">
-          <p className="text-sm text-gray-600">
-            No messages sent yet. Use <span className="font-medium text-gray-800">Alerts</span> in the sidebar, then pick a team member on My department.
-          </p>
+        <section className="rounded-2xl border border-dashed border-slate-200 bg-surface-card p-10 text-center shadow-card">
+          <p className="text-sm text-slate-600">Nothing sent yet. Open <span className="font-semibold text-slate-800">Alerts</span> and pick a teammate.</p>
         </section>
       ) : (
-        <ul className="space-y-3">
+        <ul className="space-y-4">
           {items.map((a) => (
             <li
               key={a.id}
-              className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm"
+              className="rounded-2xl border border-slate-200/60 bg-surface-card p-5 text-sm shadow-card"
             >
-              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                To {a.employee_name}{' '}
-                <span className="font-normal normal-case text-gray-400">({a.employee_email})</span>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                {a.employee_name}{' '}
+                <span className="font-normal normal-case text-slate-500">· {a.employee_email}</span>
               </p>
-              <p className="mt-2 whitespace-pre-wrap text-gray-800">{a.body}</p>
-              <p className="mt-2 text-xs text-gray-500">
-                Sent {new Date(a.created_at).toLocaleString()}
+              <p className="mt-3 whitespace-pre-wrap text-slate-800">{a.body}</p>
+              <p className="mt-3 text-xs text-slate-500">
+                {new Date(a.created_at).toLocaleString()}
                 {a.read_at ? (
-                  <span className="text-emerald-700"> · Seen {new Date(a.read_at).toLocaleString()}</span>
+                  <span className="text-emerald-700"> · Seen</span>
                 ) : (
-                  <span className="text-amber-700"> · Not dismissed yet</span>
+                  <span className="text-amber-700"> · Awaiting</span>
                 )}
               </p>
             </li>

@@ -198,6 +198,108 @@ export class ConversationsService {
     this.logger.log(`Permanently deleted conversation ${conversationId} and its messages`);
   }
 
+  /**
+   * Reassign a conversation thread to a different employee in the same company.
+   *
+   * Because `conversation_id` is the composite key `{employee_id}:{provider_thread_id}`,
+   * reassignment requires:
+   *   1. Migrating email_messages rows to the target employee.
+   *   2. Inserting a new conversation record for the target employee.
+   *   3. Deleting the old conversation record.
+   *
+   * Returns the new `conversation_id`.
+   */
+  async reassignConversation(
+    companyId: string,
+    conversationId: string,
+    targetEmployeeId: string,
+  ): Promise<{ newConversationId: string }> {
+    const old = await this.getConversation(companyId, conversationId);
+    if (!old) {
+      throw new Error(`Conversation ${conversationId} not found`);
+    }
+
+    if (old.employee_id === targetEmployeeId) {
+      return { newConversationId: conversationId };
+    }
+
+    const targetEmployee = await this.employeesService.getById(companyId, targetEmployeeId);
+    if (!targetEmployee) {
+      throw new Error(`Target employee ${targetEmployeeId} not found in this company`);
+    }
+
+    const newConversationId = `${targetEmployeeId}:${old.provider_thread_id}`;
+
+    // 1. Migrate email_messages to the target employee
+    const { error: msgErr } = await this.supabase
+      .from('email_messages')
+      .update({ employee_id: targetEmployeeId })
+      .eq('company_id', companyId)
+      .eq('employee_id', old.employee_id)
+      .eq('provider_thread_id', old.provider_thread_id);
+
+    if (msgErr) {
+      this.logger.error(`Failed to migrate email_messages for reassign ${conversationId}`, msgErr.message);
+      throw msgErr;
+    }
+
+    // 2. Insert the new conversation record (clone + update identity fields)
+    const newRow = {
+      conversation_id: newConversationId,
+      provider_thread_id: old.provider_thread_id,
+      employee_id: targetEmployeeId,
+      company_id: companyId,
+      department_id: targetEmployee.departmentId ?? null,
+      client_name: old.client_name,
+      client_email: old.client_email,
+      last_client_msg_at: old.last_client_msg_at,
+      last_employee_reply_at: old.last_employee_reply_at,
+      follow_up_required: old.follow_up_required,
+      follow_up_status: old.follow_up_status,
+      delay_hours: old.delay_hours,
+      priority: old.priority,
+      summary: old.summary,
+      confidence: old.confidence,
+      lifecycle_status: old.lifecycle_status,
+      short_reason: old.short_reason,
+      reason: old.reason,
+      manually_closed: old.manually_closed,
+      is_ignored: old.is_ignored,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error: insertErr } = await this.supabase
+      .from('conversations')
+      .upsert(newRow, { onConflict: 'conversation_id' });
+
+    if (insertErr) {
+      // Rollback email_messages migration
+      await this.supabase
+        .from('email_messages')
+        .update({ employee_id: old.employee_id })
+        .eq('company_id', companyId)
+        .eq('employee_id', targetEmployeeId)
+        .eq('provider_thread_id', old.provider_thread_id);
+      this.logger.error(`Failed to insert reassigned conversation ${newConversationId}`, insertErr.message);
+      throw insertErr;
+    }
+
+    // 3. Delete the old conversation record
+    const { error: delErr } = await this.supabase
+      .from('conversations')
+      .delete()
+      .eq('company_id', companyId)
+      .eq('conversation_id', conversationId);
+
+    if (delErr) {
+      this.logger.error(`Failed to delete old conversation ${conversationId} after reassign`, delErr.message);
+      // Non-fatal — the new record exists; old one is orphaned but has no email messages
+    }
+
+    this.logger.log(`Reassigned ${conversationId} → ${newConversationId} (employee: ${old.employee_id} → ${targetEmployeeId})`);
+    return { newConversationId };
+  }
+
   async autoArchiveResolved(): Promise<number> {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const { data, error } = await this.supabase
@@ -328,12 +430,16 @@ export class ConversationsService {
       }, conversationId);
     }
 
-    // AI enrichment: global + per-employee
+    // AI enrichment: global + CEO role/mailbox-type toggles + per-mailbox
     let enriched = false;
-    const aiEnabled = await this.isAiEnabled();
+    const settings = await this.settingsService.getAll();
+    const aiEnabled = settings.ai_enabled;
+    const portalLinked = await this.employeesService.hasPortalEmployeeLink(companyId, employeeId);
+    const roleAiOk = portalLinked ? settings.ai_for_employees_enabled : settings.ai_for_managers_enabled;
     const employeeAiEnabled = await this.employeesService.isAutoAiEnabledForEmployee(companyId, employeeId);
     if (
       aiEnabled &&
+      roleAiOk &&
       employeeAiEnabled &&
       this.aiEnrichmentService.shouldEnrich({
         follow_up_required: result.followUpRequired,
@@ -356,15 +462,6 @@ export class ConversationsService {
     return { action: existing ? 'updated' : 'created', enriched };
   }
 
-  private async isAiEnabled(): Promise<boolean> {
-    const { data } = await this.supabase
-      .from('system_settings')
-      .select('value')
-      .eq('key', 'ai_enabled')
-      .maybeSingle();
-    return data?.value !== 'false';
-  }
-
   private async getConversation(companyId: string, conversationId: string): Promise<ConversationRow | null> {
     const { data } = await this.supabase
       .from('conversations')
@@ -373,6 +470,17 @@ export class ConversationsService {
       .eq('conversation_id', conversationId)
       .maybeSingle();
     return data as ConversationRow | null;
+  }
+
+  /** Returns the department_id of an employee within a company, or null if not found. */
+  async getEmployeeDepartment(companyId: string, employeeId: string): Promise<string | null> {
+    const { data } = await this.supabase
+      .from('employees')
+      .select('department_id')
+      .eq('company_id', companyId)
+      .eq('id', employeeId)
+      .maybeSingle();
+    return (data as { department_id: string | null } | null)?.department_id ?? null;
   }
 
   async getConversationScopeRow(companyId: string, conversationId: string): Promise<{

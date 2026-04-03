@@ -5,7 +5,7 @@ import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { Employee, EmailMessage } from '../common/types';
 import { EmployeesService } from '../employees/employees.service';
 import { ConversationsService } from '../conversations/conversations.service';
-import { SettingsService } from '../settings/settings.service';
+import { SettingsService, type SystemSettings } from '../settings/settings.service';
 import { DashboardService } from '../dashboard/dashboard.service';
 import { GmailService } from './gmail.service';
 import { isRelevantEmail } from './email-filter.util';
@@ -47,8 +47,15 @@ export class EmailIngestionService {
 
   /**
    * Full multi-tenant cycle: every company with at least one active employee.
+   * @param options.force Internal API only — run even when CEO turned mailbox crawl off.
    */
-  async runIncrementalCycle(): Promise<IngestionResult[]> {
+  async runIncrementalCycle(options?: { force?: boolean }): Promise<IngestionResult[]> {
+    const pre = await this.settingsService.getAll();
+    if (!pre.email_crawl_enabled && !options?.force) {
+      this.logger.debug('Ingestion skipped — mailbox crawl disabled in settings');
+      return [];
+    }
+
     const acquired = await this.settingsService.tryAcquireIngestionLock();
     if (!acquired) {
       throw new ConflictException('Ingestion cycle is already running');
@@ -66,6 +73,7 @@ export class EmailIngestionService {
     }
 
     const results: IngestionResult[] = [];
+    const cycleSettings = await this.settingsService.getAll();
 
     try {
       for (const row of companies ?? []) {
@@ -79,7 +87,7 @@ export class EmailIngestionService {
           }
 
           try {
-            const result = await this.ingestForEmployee(companyId, employee);
+            const result = await this.ingestForEmployee(companyId, employee, cycleSettings);
             results.push(result);
           } catch (err) {
             this.logger.error(
@@ -99,11 +107,13 @@ export class EmailIngestionService {
           }
         }
 
-        this.dashboardService
-          .generateAiReport(companyId, { minCooldownMs: 3_600_000, scope: 'EXECUTIVE' })
-          .catch((err) => {
-            this.logger.warn(`Auto AI report failed for ${companyId}: ${(err as Error).message}`);
-          });
+        if (cycleSettings.ai_enabled) {
+          this.dashboardService
+            .generateAiReport(companyId, { minCooldownMs: 3_600_000, scope: 'EXECUTIVE' })
+            .catch((err) => {
+              this.logger.warn(`Auto AI report failed for ${companyId}: ${(err as Error).message}`);
+            });
+        }
       }
 
       await this.conversationsService.autoArchiveResolved();
@@ -126,9 +136,39 @@ export class EmailIngestionService {
     }
   }
 
-  private async ingestForEmployee(companyId: string, employee: Employee): Promise<IngestionResult> {
+  private async ingestForEmployee(
+    companyId: string,
+    employee: Employee,
+    cycleSettings: SystemSettings,
+  ): Promise<IngestionResult> {
     const tracking = await this.employeesService.getTrackingState(companyId, employee.id);
     if (tracking?.trackingPaused) {
+      return {
+        companyId,
+        employeeId: employee.id,
+        employeeName: employee.name,
+        newMessages: 0,
+        skippedFiltered: 0,
+        affectedThreads: 0,
+        conversationsUpdated: 0,
+      };
+    }
+
+    const portalLinked = await this.employeesService.hasPortalEmployeeLink(companyId, employee.id);
+    if (portalLinked && !cycleSettings.email_crawl_employee_mailboxes_enabled) {
+      this.logger.debug(`Ingest skipped (employee-portal mailbox crawl off): ${employee.name}`);
+      return {
+        companyId,
+        employeeId: employee.id,
+        employeeName: employee.name,
+        newMessages: 0,
+        skippedFiltered: 0,
+        affectedThreads: 0,
+        conversationsUpdated: 0,
+      };
+    }
+    if (!portalLinked && !cycleSettings.email_crawl_team_mailboxes_enabled) {
+      this.logger.debug(`Ingest skipped (team mailbox crawl off): ${employee.name}`);
       return {
         companyId,
         employeeId: employee.id,
@@ -194,6 +234,7 @@ export class EmailIngestionService {
           employee.email,
           excludePatterns,
           this.gmailService.isNoise(msg.labelIds),
+          cycleSettings.email_ai_relevance_enabled,
         );
         if (!relevant) {
           skippedFiltered++;
@@ -272,9 +313,10 @@ export class EmailIngestionService {
     employeeEmail: string,
     excludePatterns: string[],
     hasNoiseGmailLabel: boolean,
+    allowGeminiRelevance: boolean,
   ): Promise<boolean> {
     const heuristic = isRelevantEmail(message, employeeEmail, excludePatterns, hasNoiseGmailLabel);
-    if (!this.relevanceModel) return heuristic;
+    if (!allowGeminiRelevance || !this.relevanceModel) return heuristic;
 
     const prompt = [
       'Classify whether this email should be tracked for follow-up monitoring.',

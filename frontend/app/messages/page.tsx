@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 import { buildManagerReplyMailto } from '@/lib/managerReplyMailto';
 import { AppShell } from '@/components/AppShell';
+import { PageSkeleton } from '@/components/PageSkeleton';
 
 type Me = {
   role: string;
@@ -24,18 +25,15 @@ type TeamAlertItem = {
 export default function MessagesPage() {
   const router = useRouter();
   const pathname = usePathname();
+  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
   const [me, setMe] = useState<Me | null>(null);
   const [items, setItems] = useState<TeamAlertItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const supabase = createClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) return;
-    const res = await apiFetch('/team-alerts/mine', session.access_token);
+    if (!token) return;
+    const res = await apiFetch('/team-alerts/mine', token);
     if (!res.ok) {
       setError('Could not load messages.');
       setItems([]);
@@ -44,27 +42,24 @@ export default function MessagesPage() {
     const body = (await res.json()) as { items?: TeamAlertItem[] };
     setItems(body.items ?? []);
     setError(null);
-  }, []);
+  }, [token]);
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!authMe || !token) {
+      router.replace('/auth');
+      return;
+    }
+    if (authMe.role !== 'EMPLOYEE') {
+      router.replace('/dashboard');
+      return;
+    }
+    setMe(authMe as Me);
     (async () => {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) return router.replace('/auth');
-      const meRes = await apiFetch('/auth/me', session.access_token);
-      if (!meRes.ok) return router.replace('/auth');
-      const m = (await meRes.json()) as Me;
-      if (m.role !== 'EMPLOYEE') {
-        router.replace('/dashboard');
-        return;
-      }
-      setMe(m);
       await load();
       setLoading(false);
     })();
-  }, [router, load]);
+  }, [authLoading, authMe, token, router, load]);
 
   useEffect(() => {
     if (pathname !== '/messages') return;
@@ -76,19 +71,9 @@ export default function MessagesPage() {
     return () => window.clearTimeout(t);
   }, [pathname, items.length, loading]);
 
-  async function signOut() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.replace('/auth');
-  }
-
   async function dismiss(id: string) {
-    const supabase = createClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) return;
-    const res = await apiFetch(`/team-alerts/read/${encodeURIComponent(id)}`, session.access_token, {
+    if (!token) return;
+    const res = await apiFetch(`/team-alerts/read/${encodeURIComponent(id)}`, token, {
       method: 'PATCH',
     });
     if (!res.ok) {
@@ -99,8 +84,12 @@ export default function MessagesPage() {
     await load();
   }
 
-  if (!me) {
-    return <div className="p-8 text-sm text-gray-500">Loading...</div>;
+  if (!me || authLoading) {
+    return (
+      <AppShell role="EMPLOYEE" title="Messages" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
+        <PageSkeleton />
+      </AppShell>
+    );
   }
 
   const unread = items.filter((a) => !a.read_at);
@@ -112,7 +101,7 @@ export default function MessagesPage() {
       companyName={me.company_name ?? null}
       title="Messages"
       subtitle="Notes from your department manager. They also appear on your dashboard until dismissed."
-      onSignOut={() => void signOut()}
+      onSignOut={() => void ctxSignOut()}
     >
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
 

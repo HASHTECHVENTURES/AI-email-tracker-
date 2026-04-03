@@ -7,6 +7,18 @@ export type AiMode = 'AUTO' | 'MANUAL' | 'OFF';
 export interface SystemSettings {
   ai_enabled: boolean;
   ai_mode: AiMode;
+  /** Gemini-based relevance during Gmail ingest (vs heuristics only). Independent of ai_enabled. */
+  email_ai_relevance_enabled: boolean;
+  /** Scheduled + manual Gmail fetch / ingestion cycles. When false, no mailboxes are crawled. */
+  email_crawl_enabled: boolean;
+  /** AI for HEAD users (dept reports, dashboard snapshot) and team mailboxes (not portal-linked). */
+  ai_for_managers_enabled: boolean;
+  /** AI for employee-portal–linked mailboxes (users.role EMPLOYEE + linked_employee_id). */
+  ai_for_employees_enabled: boolean;
+  /** Gmail fetch for team mailboxes (no EMPLOYEE portal user linked to that employee row). */
+  email_crawl_team_mailboxes_enabled: boolean;
+  /** Gmail fetch for mailboxes linked to an Employee portal login. */
+  email_crawl_employee_mailboxes_enabled: boolean;
   /** Fallback SLA (hours) when an employee has no personal override */
   default_sla_hours: number;
 }
@@ -43,7 +55,17 @@ export class SettingsService {
 
     if (error) {
       this.logger.error('Failed to load settings', error.message);
-      return { ai_enabled: true, ai_mode: 'AUTO', default_sla_hours: 24 };
+      return {
+        ai_enabled: true,
+        ai_mode: 'AUTO',
+        email_ai_relevance_enabled: true,
+        email_crawl_enabled: true,
+        ai_for_managers_enabled: true,
+        ai_for_employees_enabled: true,
+        email_crawl_team_mailboxes_enabled: true,
+        email_crawl_employee_mailboxes_enabled: true,
+        default_sla_hours: 24,
+      };
     }
 
     const map = new Map((data ?? []).map((r: { key: string; value: string }) => [r.key, r.value]));
@@ -54,6 +76,12 @@ export class SettingsService {
     return {
       ai_enabled: mode !== 'OFF' && map.get('ai_enabled') !== 'false',
       ai_mode: validModes.includes(mode) ? mode : 'AUTO',
+      email_ai_relevance_enabled: map.get('email_ai_relevance_enabled') !== 'false',
+      email_crawl_enabled: map.get('email_crawl_enabled') !== 'false',
+      ai_for_managers_enabled: map.get('ai_for_managers_enabled') !== 'false',
+      ai_for_employees_enabled: map.get('ai_for_employees_enabled') !== 'false',
+      email_crawl_team_mailboxes_enabled: map.get('email_crawl_team_mailboxes_enabled') !== 'false',
+      email_crawl_employee_mailboxes_enabled: map.get('email_crawl_employee_mailboxes_enabled') !== 'false',
       default_sla_hours,
     };
   }
@@ -218,6 +246,7 @@ export class SettingsService {
     last_sync_at: string | null;
     employees_tracked: number;
     ai_status: boolean;
+    email_crawl_enabled: boolean;
     seconds_until_next_ingestion: number | null;
     last_report_at: string | null;
     seconds_until_next_report: number | null;
@@ -244,7 +273,9 @@ export class SettingsService {
       ? new Date(runtime.nextIngestionAt).getTime()
       : NaN;
     const secondsUntilNextIngestion =
-      runtime.nextIngestionAt != null && !Number.isNaN(nextIngestionMs)
+      settings.email_crawl_enabled &&
+      runtime.nextIngestionAt != null &&
+      !Number.isNaN(nextIngestionMs)
         ? Math.max(0, Math.ceil((nextIngestionMs - Date.now()) / 1000))
         : null;
     return {
@@ -252,9 +283,10 @@ export class SettingsService {
       last_sync_at: lastSyncAt,
       employees_tracked: tracked,
       ai_status: settings.ai_enabled,
+      email_crawl_enabled: settings.email_crawl_enabled,
       seconds_until_next_ingestion: secondsUntilNextIngestion,
-      last_report_at: runtime.lastReportAt,
-      seconds_until_next_report: runtime.secondsUntilNextReport,
+      last_report_at: settings.ai_enabled ? runtime.lastReportAt : null,
+      seconds_until_next_report: settings.ai_enabled ? runtime.secondsUntilNextReport : null,
       smtp_configured: smtpConfigured,
       ai_model_configured: aiModelConfigured,
     };

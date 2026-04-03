@@ -3,12 +3,22 @@ import { Request } from 'express';
 import { getRequestContext } from '../common/request-context';
 import { DashboardService } from './dashboard.service';
 import { EmployeesService } from '../employees/employees.service';
+import { SettingsService } from '../settings/settings.service';
+
+const emptyAiReport = {
+  generated_at: null as string | null,
+  key_issues: [] as string[],
+  employee_insights: [] as string[],
+  patterns: [] as string[],
+  recommendation: '',
+};
 
 @Controller('dashboard')
 export class DashboardController {
   constructor(
     private readonly dashboardService: DashboardService,
     private readonly employeesService: EmployeesService,
+    private readonly settingsService: SettingsService,
   ) {}
 
   @Get()
@@ -72,16 +82,22 @@ export class DashboardController {
   @Get('ai-report')
   async getLastAiReport(@Req() req: Request) {
     const ctx = getRequestContext(req);
+    const settings = await this.settingsService.getAll();
+    if (ctx.role === 'HEAD' && ctx.departmentId) {
+      if (!settings.ai_enabled || !settings.ai_for_managers_enabled) {
+        return emptyAiReport;
+      }
+      const report = await this.dashboardService.getLastAiReport(ctx.companyId, {
+        scope: 'DEPARTMENT_HEAD',
+        departmentId: ctx.departmentId,
+      });
+      return report ?? emptyAiReport;
+    }
     const report =
       ctx.role === 'CEO'
         ? await this.dashboardService.getLastAiReport(ctx.companyId, { scope: 'EXECUTIVE' })
-        : ctx.role === 'HEAD' && ctx.departmentId
-          ? await this.dashboardService.getLastAiReport(ctx.companyId, {
-              scope: 'DEPARTMENT_HEAD',
-              departmentId: ctx.departmentId,
-            })
-          : null;
-    return report ?? { generated_at: null, key_issues: [], employee_insights: [], patterns: [], recommendation: '' };
+        : null;
+    return report ?? emptyAiReport;
   }
 
   @Get('ai-report/generate')
@@ -90,6 +106,10 @@ export class DashboardController {
     if (ctx.role === 'HEAD') {
       if (!ctx.departmentId) {
         throw new ForbiddenException('Department manager must have a department assigned');
+      }
+      const settings = await this.settingsService.getAll();
+      if (!settings.ai_enabled || !settings.ai_for_managers_enabled) {
+        throw new ForbiddenException('AI for department managers is disabled by your organization (CEO Settings).');
       }
       return this.dashboardService.generateAiReport(ctx.companyId, {
         force: true,
@@ -113,7 +133,11 @@ export class DashboardController {
     const ctx = getRequestContext(req);
     const n = Number(limit ?? '50');
     const lim = Number.isFinite(n) ? n : 50;
+    const settings = await this.settingsService.getAll();
     if (ctx.role === 'HEAD' && ctx.departmentId) {
+      if (!settings.ai_enabled || !settings.ai_for_managers_enabled) {
+        return { total: 0, items: [] };
+      }
       const items = await this.dashboardService.getAiReportArchive(ctx.companyId, lim, {
         scope: 'DEPARTMENT_HEAD',
         departmentId: ctx.departmentId,

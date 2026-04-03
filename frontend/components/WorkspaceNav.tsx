@@ -116,9 +116,6 @@ export function WorkspaceNav({
             AI Reports
           </Link>
         )}
-        <Link href="/email-archive" style={linkStyle(pathname === '/email-archive')}>
-          Email archive
-        </Link>
       </nav>
       <button
         type="button"

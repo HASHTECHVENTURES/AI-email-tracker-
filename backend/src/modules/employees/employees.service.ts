@@ -875,6 +875,23 @@ export class EmployeesService {
     return row?.ai_enabled !== false;
   }
 
+  /** True when an Employee-portal user (role EMPLOYEE) is linked to this tracked mailbox. */
+  async hasPortalEmployeeLink(companyId: string, employeeId: string): Promise<boolean> {
+    const { data, error } = await this.supabase
+      .from('users')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('linked_employee_id', employeeId)
+      .eq('role', 'EMPLOYEE')
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      this.logger.warn(`hasPortalEmployeeLink: ${error.message}`);
+      return false;
+    }
+    return data != null;
+  }
+
   getSlaHours(employee: Employee, globalDefault = 24): number {
     return employee.slaHoursDefault ?? globalDefault;
   }

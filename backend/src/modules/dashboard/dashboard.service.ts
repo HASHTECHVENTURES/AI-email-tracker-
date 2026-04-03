@@ -4,6 +4,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { TelegramService } from '../alerts/telegram.service';
 import { EmailService } from '../email/email.service';
+import { SettingsService } from '../settings/settings.service';
 import type { EmployeeRole } from '../common/types';
 
 export interface GlobalMetrics {
@@ -135,6 +136,7 @@ export class DashboardService {
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
     private readonly telegramService: TelegramService,
     private readonly emailService: EmailService,
+    private readonly settingsService: SettingsService,
   ) {
     const apiKey = process.env.GEMINI_API_KEY;
     const genAI = new GoogleGenerativeAI(apiKey ?? '');
@@ -296,6 +298,27 @@ export class DashboardService {
       patterns: [],
       recommendation: '',
     };
+
+    const sys = await this.settingsService.getAll();
+    if (!sys.ai_enabled) {
+      return {
+        generated_at: new Date().toISOString(),
+        key_issues: ['AI operations are off in Settings (CEO). Turn them on to generate reports.'],
+        employee_insights: [],
+        patterns: [],
+        recommendation: '',
+      };
+    }
+
+    if (scope === 'DEPARTMENT_HEAD' && !sys.ai_for_managers_enabled) {
+      return {
+        generated_at: new Date().toISOString(),
+        key_issues: ['AI for department managers is off in Settings (CEO).'],
+        employee_insights: [],
+        patterns: [],
+        recommendation: '',
+      };
+    }
 
     if (!process.env.GEMINI_API_KEY) return fallback;
 
@@ -763,10 +786,14 @@ ${dataBlock}`;
     const filterEmployee =
       scope.role === 'EMPLOYEE' ? scopedEmployeeId : filters?.employeeId ?? scopedEmployeeId;
 
+    const settings = await this.settingsService.getAll();
     const reportPromise =
       scope.role === 'CEO'
         ? this.getLastAiReport(companyId, { scope: 'EXECUTIVE' })
-        : scope.role === 'HEAD' && scope.departmentId
+        : scope.role === 'HEAD' &&
+            scope.departmentId &&
+            settings.ai_enabled &&
+            settings.ai_for_managers_enabled
           ? this.getLastAiReport(companyId, { scope: 'DEPARTMENT_HEAD', departmentId: scope.departmentId })
           : Promise.resolve(null);
 
@@ -789,13 +816,14 @@ ${dataBlock}`;
       rollupsPromise,
     ]);
 
+    const attentionCap = scope.role === 'HEAD' ? 50 : scope.role === 'CEO' ? 12 : 5;
     const needs_attention = all
       .filter(
         (c) =>
           c.follow_up_status === 'MISSED' ||
           (c.priority === 'HIGH' && c.follow_up_status !== 'DONE'),
       )
-      .slice(0, 5);
+      .slice(0, attentionCap);
 
     const insightLines =
       scope.role === 'EMPLOYEE'

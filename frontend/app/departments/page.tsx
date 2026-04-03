@@ -4,7 +4,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
+import { PageSkeleton } from '@/components/PageSkeleton';
 
 type Me = {
   id: string;
@@ -38,7 +40,7 @@ type TeamMember = {
 export default function DepartmentsPage() {
   const router = useRouter();
   const pathname = usePathname();
-  const [me, setMe] = useState<Me | null>(null);
+  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
   const [rows, setRows] = useState<Department[]>([]);
   const [name, setName] = useState('');
   const [managerEmail, setManagerEmail] = useState('');
@@ -60,6 +62,7 @@ export default function DepartmentsPage() {
   const [alertMessage, setAlertMessage] = useState('');
   const [alertSaving, setAlertSaving] = useState(false);
   const [alertError, setAlertError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const load = useCallback(async (token: string) => {
     const res = await apiFetch('/departments', token);
@@ -82,21 +85,22 @@ export default function DepartmentsPage() {
   }, []);
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!authMe || !token) {
+      router.replace('/auth');
+      return;
+    }
+    if (authMe.role === 'EMPLOYEE') {
+      router.replace('/dashboard');
+      return;
+    }
     (async () => {
-      const supabase = createClient();
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return router.replace('/auth');
-      const meRes = await apiFetch('/auth/me', session.access_token);
-      if (!meRes.ok) return router.replace('/auth');
-      const m = (await meRes.json()) as Me;
-      setMe(m);
-      if (m.role === 'EMPLOYEE') return router.replace('/dashboard');
-      await load(session.access_token);
-      if (m.role === 'HEAD' || m.role === 'MANAGER') {
-        await loadTeam(session.access_token);
+      await load(token);
+      if (authMe.role === 'HEAD' || authMe.role === 'MANAGER') {
+        await loadTeam(token);
       }
     })();
-  }, [router, load, loadTeam]);
+  }, [authLoading, authMe, token, router, load, loadTeam]);
 
   useEffect(() => {
     if (pathname !== '/departments') return;
@@ -108,18 +112,8 @@ export default function DepartmentsPage() {
     return () => window.clearTimeout(t);
   }, [pathname]);
 
-  async function signOut() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.replace('/auth');
-  }
-
   async function reloadTeam() {
-    const supabase = createClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (session) await loadTeam(session.access_token);
+    if (token) await loadTeam(token);
   }
 
   function openPortalPasswordModal(member: TeamMember) {
@@ -159,12 +153,8 @@ export default function DepartmentsPage() {
     }
     setAlertSaving(true);
     try {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) return;
-      const res = await apiFetch('/team-alerts/send', session.access_token, {
+      if (!token) return;
+      const res = await apiFetch('/team-alerts/send', token, {
         method: 'POST',
         body: JSON.stringify({ employeeId: alertTarget.id, message: text }),
       });
@@ -195,14 +185,10 @@ export default function DepartmentsPage() {
     }
     setPortalPasswordSaving(true);
     try {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) return;
+      if (!token) return;
       const res = await apiFetch(
         `/employees/portal-password/${encodeURIComponent(passwordTarget.id)}`,
-        session.access_token,
+        token,
         { method: 'PATCH', body: JSON.stringify({ password: portalPassword }) },
       );
       const body = await res.json().catch(() => ({}));
@@ -228,30 +214,27 @@ export default function DepartmentsPage() {
   async function addDepartment(e: React.FormEvent) {
     e.preventDefault();
     setNotice(null);
-    const supabase = createClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return;
-    const res = await apiFetch('/departments', session.access_token, { method: 'POST', body: JSON.stringify({ name: name.trim() }) });
+    if (!token) return;
+    const res = await apiFetch('/departments', token, { method: 'POST', body: JSON.stringify({ name: name.trim() }) });
     if (!res.ok) return setError('Could not create department');
     setName('');
+    setCreateOpen(false);
     setNotice('Department created.');
-    await load(session.access_token);
+    await load(token);
   }
 
   async function assignManager(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setNotice(null);
-    const supabase = createClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return;
+    if (!token) return;
     if (!managerDepartmentId || !managerEmail.trim()) {
       setError('Department and manager email are required');
       return;
     }
     const res = await apiFetch(
       `/departments/${encodeURIComponent(managerDepartmentId)}/assign-manager`,
-      session.access_token,
+      token,
       {
         method: 'POST',
         body: JSON.stringify({
@@ -271,23 +254,21 @@ export default function DepartmentsPage() {
     setManagerPasswordInput('');
     setManagerDepartmentId('');
     setNotice('Manager assigned successfully.');
-    await load(session.access_token);
+    await load(token);
   }
 
   async function handleManagerPasswordReset(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setNotice(null);
-    const supabase = createClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return;
+    if (!token) return;
     if (!passwordDepartmentId || !newManagerPassword.trim()) {
       setError('Department and new password are required');
       return;
     }
     const res = await apiFetch(
       `/departments/${encodeURIComponent(passwordDepartmentId)}/manager-password`,
-      session.access_token,
+      token,
       {
         method: 'POST',
         body: JSON.stringify({ password: newManagerPassword.trim() }),
@@ -303,7 +284,14 @@ export default function DepartmentsPage() {
     setNotice('Manager password updated.');
   }
 
-  if (!me) return <div className="p-8 text-sm text-gray-500">Loading...</div>;
+  const me = authMe as Me | null;
+  if (!me || authLoading) {
+    return (
+      <AppShell role="CEO" title="Departments" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
+        <PageSkeleton />
+      </AppShell>
+    );
+  }
   const isCeo = me.role === 'CEO';
   const isHead = me.role === 'HEAD' || me.role === 'MANAGER';
 
@@ -311,30 +299,58 @@ export default function DepartmentsPage() {
     <AppShell
       role={me.role}
       companyName={me.company_name ?? null}
-      title={isCeo ? 'Departments' : 'My department'}
+      title={isCeo ? 'Departments' : 'Alerts'}
       subtitle={
-        isCeo
-          ? 'Create departments, assign managers, and reset manager passwords.'
-          : 'Read-only overview of the department you manage. Org changes are CEO-only.'
+        isCeo ? 'Org structure and manager access.' : 'Message your team and manage portal access.'
       }
-      onSignOut={() => void signOut()}
+      onSignOut={() => void ctxSignOut()}
     >
       {isCeo ? (
-        <section className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-gray-900">Add Department</h2>
-          <form onSubmit={(e) => void addDepartment(e)} className="mt-4 flex flex-wrap gap-3">
-            <input value={name} onChange={(e) => setName(e.target.value)} className="min-w-[260px] flex-1 rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500" placeholder="Department name" required />
-            <button className="rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white transition-all duration-200 hover:bg-blue-700 hover:shadow-md">Add Department</button>
-          </form>
-        </section>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-slate-500">Company org</p>
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              setCreateOpen(true);
+            }}
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700"
+          >
+            Create department
+          </button>
+        </div>
       ) : null}
 
+      <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
+        <h2 className="text-base font-semibold text-slate-900">Directory</h2>
+        {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
+        {notice ? <p className="mt-3 text-sm text-emerald-700">{notice}</p> : null}
+        {rows.length === 0 ? (
+          <p className="mt-4 text-sm text-slate-500">No departments yet.</p>
+        ) : (
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {rows.map((d) => (
+              <article
+                key={d.id}
+                className="rounded-xl border border-slate-100 bg-slate-50/50 p-5 transition-colors hover:border-slate-200 hover:bg-white"
+              >
+                <h3 className="font-semibold text-slate-900">{d.name}</h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  {d.manager
+                    ? `${d.manager.full_name?.trim() || 'Manager'} · ${d.manager.email}`
+                    : 'No manager assigned'}
+                </p>
+                <p className="mt-4 text-xs font-medium text-slate-400">{d.employee_count ?? 0} employees</p>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
       {isCeo ? (
-        <section className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-gray-900">Change Manager Password</h2>
-          <p className="mt-1 text-sm text-gray-500">
-            For security, existing passwords can never be viewed. You can set a new password anytime.
-          </p>
+        <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
+          <h2 className="text-base font-semibold text-slate-900">Manager password</h2>
+          <p className="mt-1 text-sm text-slate-500">Set a new password when needed. Existing passwords are never shown.</p>
           <form onSubmit={(e) => void handleManagerPasswordReset(e)} className="mt-4 flex flex-wrap gap-3">
             <select
               value={passwordDepartmentId}
@@ -361,11 +377,9 @@ export default function DepartmentsPage() {
       ) : null}
 
       {isCeo ? (
-        <section className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-gray-900">Assign Manager</h2>
-          <p className="mt-1 text-sm text-gray-500">
-            Assign an existing company user, or create a new manager account by adding password.
-          </p>
+        <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
+          <h2 className="text-base font-semibold text-slate-900">Assign manager</h2>
+          <p className="mt-1 text-sm text-slate-500">Invite by email or create an account with password.</p>
           <form onSubmit={(e) => void assignManager(e)} className="mt-4 flex flex-wrap gap-3">
             <select
               value={managerDepartmentId}
@@ -404,48 +418,21 @@ export default function DepartmentsPage() {
         </section>
       ) : null}
 
-      <section className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold text-gray-900">Department List</h2>
-        {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
-        {notice ? <p className="mt-3 text-sm text-emerald-700">{notice}</p> : null}
-        {rows.length === 0 ? (
-          <p className="mt-3 text-sm text-gray-500">No departments yet.</p>
-        ) : (
-          <ul className="mt-4 space-y-3">
-            {rows.map((d) => (
-              <li key={d.id} className="flex items-center justify-between rounded-lg border border-gray-200 p-4 transition-all duration-200 hover:bg-gray-50">
-                <div>
-                  <p className="font-medium text-gray-900">{d.name}</p>
-                  <p className="mt-1 text-sm text-gray-500">
-                    Manager:{' '}
-                    {d.manager
-                      ? `${d.manager.full_name?.trim() || 'Unnamed'} (${d.manager.email})`
-                      : 'Not assigned'}
-                  </p>
-                </div>
-                <p className="text-sm text-gray-500">{d.employee_count ?? 0} employees</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
       {isHead ? (
         <section
           id="team-members"
-          className="rounded-xl border border-amber-200/80 bg-white p-6 shadow-sm ring-1 ring-amber-900/[0.04] scroll-mt-24"
+          className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02] scroll-mt-24"
         >
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold text-gray-900">Team members</h2>
-            <p className="text-sm text-gray-500">
-              Set up or change Employee portal passwords below. Existing passwords are never shown.
-            </p>
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">Team</h2>
+              <p className="mt-1 text-sm text-slate-500">Portal access and quick alerts.</p>
+            </div>
           </div>
           {teamLoadError ? <p className="text-sm text-red-600">{teamLoadError}</p> : null}
           {!teamLoadError && teamMembers.length === 0 ? (
-            <p className="text-sm text-gray-500">
-              No team members yet. Use <span className="font-medium text-gray-700">Add team member</span> in the sidebar
-              to add tracked mailboxes.
+            <p className="text-sm text-slate-500">
+              No team members yet. Add mailboxes from <span className="font-medium text-slate-800">Employees</span>.
             </p>
           ) : null}
           {teamMembers.length > 0 ? (
@@ -507,6 +494,53 @@ export default function DepartmentsPage() {
         </section>
       ) : null}
 
+      {isCeo && createOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-dept-title"
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget) setCreateOpen(false);
+          }}
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+            <h3 id="create-dept-title" className="text-lg font-semibold text-slate-900">
+              New department
+            </h3>
+            <form onSubmit={(e) => void addDepartment(e)} className="mt-4 space-y-4">
+              {error ? <p className="text-sm text-red-600">{error}</p> : null}
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                placeholder="Department name"
+                required
+                autoFocus
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="submit"
+                  className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700"
+                >
+                  Create
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreateOpen(false);
+                    setError(null);
+                  }}
+                  className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
       {alertTarget ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -518,14 +552,11 @@ export default function DepartmentsPage() {
           }}
         >
           <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-xl">
-            <h3 id="team-alert-title" className="text-lg font-semibold text-gray-900">
-              Message to {alertTarget.name}
+            <h3 id="team-alert-title" className="text-lg font-bold text-slate-900">
+              Alert · {alertTarget.name}
             </h3>
-            <p className="mt-1 text-sm text-gray-600">
-              They will see this at the top of their Employee dashboard. Use for reminders or priorities — not a substitute
-              for email.
-            </p>
-            <form onSubmit={(e) => void submitTeamAlert(e)} className="mt-4 space-y-3">
+            <p className="mt-1 text-sm text-slate-500">Shows on their dashboard when they sign in.</p>
+            <form onSubmit={(e) => void submitTeamAlert(e)} className="mt-5 space-y-4">
               {alertError ? <p className="text-sm text-red-600">{alertError}</p> : null}
               <textarea
                 value={alertMessage}
@@ -533,22 +564,21 @@ export default function DepartmentsPage() {
                 placeholder="Your message…"
                 rows={4}
                 maxLength={4000}
-                className="w-full resize-y rounded-lg border border-gray-300 px-4 py-3 text-sm focus:ring-2 focus:ring-amber-500"
+                className="w-full resize-y rounded-xl border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-brand-500"
                 required
               />
-              <p className="text-xs text-gray-500">{alertMessage.length} / 4000 characters</p>
-              <div className="flex flex-wrap gap-2 pt-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="submit"
                   disabled={alertSaving}
-                  className="rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-black disabled:opacity-60"
+                  className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-60"
                 >
-                  {alertSaving ? 'Sending…' : 'Send alert'}
+                  {alertSaving ? 'Sending…' : 'Send'}
                 </button>
                 <button
                   type="button"
                   onClick={() => closeAlertModal()}
-                  className="rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
                 >
                   Cancel
                 </button>

@@ -6,59 +6,127 @@ import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
 
 const PENDING_KEY = 'pendingSignup';
-const ROLE_KEY = 'selectedPortalRole';
-type PortalRole = 'ceo' | 'manager' | 'employee';
+
+type TabMode = 'login' | 'create';
+type SignupRole = 'ceo' | 'manager' | 'employee';
+type Phase = 'boot' | 'auth' | 'onboarding';
+
 type PendingSignup = {
   full_name: string;
   company_name: string;
   email?: string;
 };
 
+const shellClass = 'min-h-screen bg-gradient-to-br from-indigo-50 via-white to-blue-50';
+const inputClass =
+  'w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500';
+const btnPrimaryClass =
+  'w-full rounded-lg bg-indigo-600 py-3 font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-70';
+const cardClass =
+  'w-full max-w-md rounded-2xl bg-white p-8 shadow-[0_10px_40px_rgba(0,0,0,0.08)]';
+
+function BrandingPanel() {
+  return (
+    <aside className="hidden flex-col justify-center px-8 py-12 lg:flex lg:px-16">
+      <h1 className="text-4xl font-semibold tracking-tight text-gray-900">Stay on top of every follow-up</h1>
+      <p className="mt-4 max-w-md text-base leading-relaxed text-gray-500">
+        Track conversations, never miss replies, and manage your team effortlessly.
+      </p>
+      <ul className="mt-8 space-y-2.5 text-sm text-gray-500">
+        <li className="flex gap-2">
+          <span className="text-indigo-400">•</span>
+          <span>Know what needs attention</span>
+        </li>
+        <li className="flex gap-2">
+          <span className="text-indigo-400">•</span>
+          <span>Track performance</span>
+        </li>
+        <li className="flex gap-2">
+          <span className="text-indigo-400">•</span>
+          <span>AI-powered insights</span>
+        </li>
+      </ul>
+    </aside>
+  );
+}
+
+function RoleSegment({
+  value,
+  onChange,
+}: {
+  value: SignupRole;
+  onChange: (r: SignupRole) => void;
+}) {
+  const roles: { id: SignupRole; label: string }[] = [
+    { id: 'ceo', label: 'CEO' },
+    { id: 'manager', label: 'Manager' },
+    { id: 'employee', label: 'Employee' },
+  ];
+  return (
+    <div className="mb-6">
+      <p className="mb-2 text-sm font-medium text-gray-600">Continue as</p>
+      <div className="flex rounded-full bg-gray-100 p-1">
+        {roles.map((r) => (
+          <button
+            key={r.id}
+            type="button"
+            onClick={() => onChange(r.id)}
+            className={`flex-1 rounded-full py-2 text-sm font-medium transition ${
+              value === r.id
+                ? 'bg-white text-indigo-600 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AuthPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const finishMode = searchParams.get('finish') === '1';
+  const completeFromEmail = searchParams.get('complete') === '1';
   const err = searchParams.get('error');
   const errCode = searchParams.get('error_code');
   const errDescription = searchParams.get('error_description');
-  const roleParam = (searchParams.get('portal') ?? '').toLowerCase();
-  const selectedRole: PortalRole =
-    roleParam === 'manager' || roleParam === 'employee' ? roleParam : 'ceo';
+  const nextPathRaw = searchParams.get('next');
+  const safeNext =
+    nextPathRaw && nextPathRaw.startsWith('/') && !nextPathRaw.startsWith('//')
+      ? nextPathRaw
+      : '/dashboard';
 
   const friendlyAuthError = (() => {
     const code = (errCode ?? '').toLowerCase();
-    const raw = decodeURIComponent((errDescription ?? '').replace(/\+/g, ' '));
+    let raw = '';
+    try {
+      raw = decodeURIComponent((errDescription ?? '').replace(/\+/g, ' '));
+    } catch {
+      raw = errDescription ?? '';
+    }
     if (code === 'otp_expired' || raw.toLowerCase().includes('expired')) {
-      return 'Your sign-in link has expired. Please request a new one and try again.';
+      return 'That link expired. Sign in again.';
     }
     if ((err ?? '').toLowerCase() === 'missing_code') {
-      return 'This sign-in link is invalid or incomplete. Please request a new one.';
+      return 'That link is invalid. Try signing in again.';
     }
-    if (raw) return `Auth error: ${raw}`;
-    if (err) return `Auth error: ${err}`;
+    if (raw) return raw;
+    if (err) return err;
     return null;
   })();
 
-  const [mode, setMode] = useState<'signup' | 'login'>(finishMode ? 'signup' : 'login');
+  const [phase, setPhase] = useState<Phase>('boot');
+  const [tab, setTab] = useState<TabMode>('login');
+  const [signupRole, setSignupRole] = useState<SignupRole>('ceo');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [loading, setLoading] = useState(false);
   const [info, setInfo] = useState<string | null>(friendlyAuthError);
-  const [pendingSignupEmail, setPendingSignupEmail] = useState<string | null>(null);
-
-  const matchesSelectedPortal = (portal: PortalRole, actualRole: string | null | undefined): boolean => {
-    if (!actualRole) return false;
-    const normalized = actualRole.toUpperCase();
-    if (portal === 'ceo') return normalized === 'CEO';
-    if (portal === 'manager') return normalized === 'HEAD' || normalized === 'MANAGER';
-    return normalized === 'EMPLOYEE';
-  };
-
-  const expectedPortalLabel = (portal: PortalRole): string =>
-    portal === 'ceo' ? 'CEO' : portal === 'manager' ? 'Manager' : 'Employee';
+  const [pendingEmailHint, setPendingEmailHint] = useState<string | null>(null);
 
   const readPendingSignup = (): PendingSignup | null => {
     if (typeof window === 'undefined') return null;
@@ -74,145 +142,94 @@ function AuthPageInner() {
     }
   };
 
-  useEffect(() => {
-    sessionStorage.setItem(ROLE_KEY, selectedRole);
-  }, [selectedRole]);
+  const persistPending = (p: PendingSignup) => {
+    const s = JSON.stringify(p);
+    sessionStorage.setItem(PENDING_KEY, s);
+    localStorage.setItem(PENDING_KEY, s);
+  };
+
+  const clearPending = () => {
+    localStorage.removeItem(PENDING_KEY);
+    sessionStorage.removeItem(PENDING_KEY);
+  };
 
   useEffect(() => {
-    const pending = readPendingSignup();
-    if (!pending) return;
-    if (!fullName) setFullName(pending.full_name);
-    if (!companyName) setCompanyName(pending.company_name);
-    if (pending.email) setPendingSignupEmail(pending.email);
-  }, [fullName, companyName]);
-
-  useEffect(() => {
-    if (!finishMode) return;
     let cancelled = false;
-    (async () => {
+
+    async function run() {
       const supabase = createClient();
       const {
         data: { session },
       } = await supabase.auth.getSession();
       if (cancelled) return;
+
       if (!session) {
-        router.replace('/auth');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [finishMode, router]);
-
-  useEffect(() => {
-    if (finishMode) return;
-    let cancelled = false;
-    (async () => {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (cancelled || !session) return;
-      const statusRes = await apiFetch('/auth/status', session.access_token);
-      const status = await statusRes.json();
-      if (cancelled) return;
-      const actualRole = status?.user?.role as string | undefined;
-      if (!matchesSelectedPortal(selectedRole, actualRole)) {
-        await supabase.auth.signOut();
-        setInfo(
-          `This account is ${actualRole ?? 'unknown role'}. Please log in from the ${expectedPortalLabel(selectedRole)} portal with the correct account.`,
-        );
+        setPhase('auth');
         return;
       }
-      if (status.needs_onboarding) {
+
+      const token = session.access_token;
+      const statusRes = await apiFetch('/auth/status', token);
+      if (!statusRes.ok) {
+        if (statusRes.status === 401) {
+          await supabase.auth.signOut();
+        }
+        setPhase('auth');
+        return;
+      }
+      const status = await statusRes.json();
+      if (cancelled) return;
+
+      if (!status.needs_onboarding && status.user) {
+        router.replace(safeNext);
+        return;
+      }
+
+      if (completeFromEmail) {
         const pending = readPendingSignup();
         if (pending?.full_name && pending?.company_name) {
-          const onboardRes = await apiFetch('/auth/onboarding', session.access_token, {
+          const onboardRes = await apiFetch('/auth/onboarding', token, {
             method: 'POST',
             body: JSON.stringify({
               full_name: pending.full_name,
               company_name: pending.company_name,
             }),
           });
+          if (cancelled) return;
           if (onboardRes.ok) {
-            localStorage.removeItem(PENDING_KEY);
-            sessionStorage.removeItem(PENDING_KEY);
-            router.replace('/dashboard');
+            clearPending();
+            router.replace(safeNext);
             return;
           }
         }
-        router.replace('/auth?finish=1');
-        return;
       }
-      router.replace('/dashboard');
-    })();
+
+      const pending = readPendingSignup();
+      if (pending) {
+        setFullName((prev) => prev || pending.full_name);
+        setCompanyName((prev) => prev || pending.company_name);
+        if (pending.email) {
+          setPendingEmailHint((prev) => prev ?? pending.email ?? null);
+        }
+      }
+      setPhase('onboarding');
+    }
+
+    void run();
     return () => {
       cancelled = true;
     };
-  }, [finishMode, router, selectedRole]);
+  }, [router, safeNext, completeFromEmail]);
 
-  const handleAuthSubmit = async (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setInfo(null);
     setLoading(true);
     try {
       const supabase = createClient();
       const trimmedEmail = email.trim();
-
-      if (mode === 'signup') {
-        if (!fullName.trim() || !trimmedEmail || !companyName.trim() || !password) {
-          setInfo('Please fill in all fields.');
-          setLoading(false);
-          return;
-        }
-        if (password.length < 8) {
-          setInfo('Password must be at least 8 characters.');
-          setLoading(false);
-          return;
-        }
-        if (password !== confirmPassword) {
-          setInfo('Passwords do not match.');
-          setLoading(false);
-          return;
-        }
-        sessionStorage.setItem(
-          PENDING_KEY,
-          JSON.stringify({
-            full_name: fullName.trim(),
-            company_name: companyName.trim(),
-            email: trimmedEmail,
-          }),
-        );
-        localStorage.setItem(
-          PENDING_KEY,
-          JSON.stringify({
-            full_name: fullName.trim(),
-            company_name: companyName.trim(),
-            email: trimmedEmail,
-          }),
-        );
-        const { data, error } = await supabase.auth.signUp({
-          email: trimmedEmail,
-          password,
-          options: {
-            data: { full_name: fullName.trim(), company_name: companyName.trim() },
-          },
-        });
-        if (error) {
-          setInfo(error.message);
-          return;
-        }
-        if (data.session) {
-          router.replace('/auth?finish=1');
-          return;
-        }
-        setInfo('Account created. Verify your email, then log in with your password.');
-        return;
-      }
-
       if (!trimmedEmail || !password) {
         setInfo('Email and password are required.');
-        setLoading(false);
         return;
       }
       const { error } = await supabase.auth.signInWithPassword({
@@ -227,26 +244,101 @@ function AuthPageInner() {
         data: { session },
       } = await supabase.auth.getSession();
       if (!session) {
-        setInfo('Session not found after login. Please try again.');
+        setInfo('Could not start session. Try again.');
         return;
       }
       const statusRes = await apiFetch('/auth/status', session.access_token);
       const status = await statusRes.json().catch(() => ({}));
-      const actualRole = (status as { user?: { role?: string } })?.user?.role;
-      if (!matchesSelectedPortal(selectedRole, actualRole)) {
-        await supabase.auth.signOut();
-        setInfo(
-          `This account is ${actualRole ?? 'unknown role'}. Please use the ${expectedPortalLabel(selectedRole)} portal.`,
-        );
+      if ((status as { needs_onboarding?: boolean }).needs_onboarding) {
+        const pending = readPendingSignup();
+        if (pending?.full_name && pending?.company_name) {
+          const onboardRes = await apiFetch('/auth/onboarding', session.access_token, {
+            method: 'POST',
+            body: JSON.stringify({
+              full_name: pending.full_name,
+              company_name: pending.company_name,
+            }),
+          });
+          if (onboardRes.ok) {
+            clearPending();
+            router.replace(safeNext);
+            return;
+          }
+        }
+        setPhase('onboarding');
         return;
       }
-      router.replace('/dashboard');
+      router.replace(safeNext);
     } finally {
       setLoading(false);
     }
   };
 
-  const finishOnboarding = async (e: React.FormEvent) => {
+  const handleCreateCeo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setInfo(null);
+    setLoading(true);
+    try {
+      const supabase = createClient();
+      const trimmedEmail = email.trim();
+      const trimmedName = fullName.trim();
+      const trimmedCo = companyName.trim();
+      if (!trimmedName || !trimmedEmail || !trimmedCo || !password) {
+        setInfo('Please fill in all fields.');
+        return;
+      }
+      if (password.length < 8) {
+        setInfo('Password must be at least 8 characters.');
+        return;
+      }
+      persistPending({
+        full_name: trimmedName,
+        company_name: trimmedCo,
+        email: trimmedEmail,
+      });
+
+      const { error } = await supabase.auth.signUp({
+        email: trimmedEmail,
+        password,
+        options: {
+          data: { full_name: trimmedName, company_name: trimmedCo },
+        },
+      });
+      if (error) {
+        setInfo(error.message);
+        return;
+      }
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        const onboardRes = await apiFetch('/auth/onboarding', session.access_token, {
+          method: 'POST',
+          body: JSON.stringify({
+            full_name: trimmedName,
+            company_name: trimmedCo,
+          }),
+        });
+        if (onboardRes.ok) {
+          clearPending();
+          router.replace(safeNext);
+          return;
+        }
+        const errBody = await onboardRes.json().catch(() => ({}));
+        setInfo(
+          typeof (errBody as { message?: string }).message === 'string'
+            ? (errBody as { message: string }).message
+            : 'Could not create workspace.',
+        );
+        return;
+      }
+      setInfo('Check your email to verify your account, then sign in.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOnboarding = async (e: React.FormEvent) => {
     e.preventDefault();
     setInfo(null);
     setLoading(true);
@@ -256,230 +348,238 @@ function AuthPageInner() {
         data: { session },
       } = await supabase.auth.getSession();
       if (!session) {
-        setInfo('Session expired. Please log in again.');
+        setInfo('Session expired. Sign in again.');
+        setPhase('auth');
         return;
       }
-      if (!fullName.trim() || !companyName.trim()) {
+      const trimmedName = fullName.trim();
+      const trimmedCo = companyName.trim();
+      if (!trimmedName || !trimmedCo) {
         setInfo('Name and company are required.');
         return;
       }
-      sessionStorage.setItem(
-        PENDING_KEY,
-        JSON.stringify({
-          full_name: fullName.trim(),
-          company_name: companyName.trim(),
-          email: email.trim() || pendingSignupEmail || undefined,
-        }),
-      );
-      localStorage.setItem(
-        PENDING_KEY,
-        JSON.stringify({
-          full_name: fullName.trim(),
-          company_name: companyName.trim(),
-          email: email.trim() || pendingSignupEmail || undefined,
-        }),
-      );
+      persistPending({
+        full_name: trimmedName,
+        company_name: trimmedCo,
+        email: email.trim() || pendingEmailHint || undefined,
+      });
       const res = await apiFetch('/auth/onboarding', session.access_token, {
         method: 'POST',
         body: JSON.stringify({
-          full_name: fullName.trim(),
-          company_name: companyName.trim(),
+          full_name: trimmedName,
+          company_name: trimmedCo,
         }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setInfo(typeof body.message === 'string' ? body.message : 'Onboarding failed.');
+        setInfo(typeof body.message === 'string' ? body.message : 'Something went wrong.');
         return;
       }
-      localStorage.removeItem(PENDING_KEY);
-      sessionStorage.removeItem(PENDING_KEY);
-      router.replace('/dashboard');
+      clearPending();
+      router.replace(safeNext);
     } finally {
       setLoading(false);
     }
   };
 
-  return (
-    <div className="grid min-h-screen grid-cols-1 lg:grid-cols-2">
-      <aside className="hidden bg-gradient-to-br from-[#0f172a] to-[#020617] p-12 text-white lg:flex lg:flex-col lg:justify-center">
-        <div className="max-w-md">
-          <p className="mb-4 text-sm tracking-[0.12em] text-gray-400">MULTI-TENANT WORKSPACE</p>
-          <h1 className="mb-4 text-4xl font-bold leading-tight">One login for every role.</h1>
-          <p className="text-gray-400">
-            Sign up once with your company, become CEO automatically, and invite your team later.
-            Secure role-based access with email and password.
-          </p>
-        </div>
-      </aside>
+  if (phase === 'boot') {
+    return (
+      <div className={`flex items-center justify-center px-6 ${shellClass}`}>
+        <p className="text-sm text-gray-500">Loading…</p>
+      </div>
+    );
+  }
 
-      <main className="flex items-center justify-center bg-white px-4 py-10 sm:px-6">
-        <div className="w-full max-w-md px-0 sm:px-2">
-          <div className="rounded-2xl border border-gray-200 bg-white p-8 shadow-sm transition-all duration-200 hover:shadow-md">
-          {finishMode ? (
-            <>
-              <h2 className="mb-2 text-2xl font-semibold text-gray-900">Finish setup</h2>
-              <p className="mb-6 text-sm text-gray-500">
-                Create your company profile. You will be assigned the CEO role.
+  if (phase === 'onboarding') {
+    return (
+      <div className={`grid grid-cols-1 lg:grid-cols-2 ${shellClass}`}>
+        <BrandingPanel />
+        <main className="flex items-center justify-center px-6 py-12 lg:px-12">
+          <div className={cardClass}>
+            <h2 className="text-xl font-semibold text-gray-900">Finish setup</h2>
+            <p className="mt-1 text-sm text-gray-500">Add your details to continue.</p>
+            <form onSubmit={handleOnboarding} className="mt-6 space-y-4">
+              <label className="block text-sm font-medium text-gray-700">
+                Full name
+                <input
+                  required
+                  value={fullName}
+                  onChange={(ev) => setFullName(ev.target.value)}
+                  className={`mt-1.5 ${inputClass}`}
+                  autoComplete="name"
+                />
+              </label>
+              <label className="block text-sm font-medium text-gray-700">
+                Company name
+                <input
+                  required
+                  value={companyName}
+                  onChange={(ev) => setCompanyName(ev.target.value)}
+                  className={`mt-1.5 ${inputClass}`}
+                  autoComplete="organization"
+                />
+              </label>
+              <button type="submit" disabled={loading} className={btnPrimaryClass}>
+                {loading ? 'Saving…' : 'Continue'}
+              </button>
+            </form>
+            {info ? (
+              <p className="mt-4 text-sm text-gray-500" role="status">
+                {info}
               </p>
-              <form onSubmit={finishOnboarding} className="space-y-4">
-                <label className="block text-sm text-gray-700">
-                  Full name
-                  <input
-                    required
-                    value={fullName}
-                    onChange={(ev) => setFullName(ev.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-900 outline-none transition focus:ring-2 focus:ring-blue-500"
-                    autoComplete="name"
-                  />
-                </label>
-                <label className="block text-sm text-gray-700">
-                  Company name
-                  <input
-                    required
-                    value={companyName}
-                    onChange={(ev) => setCompanyName(ev.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-900 outline-none transition focus:ring-2 focus:ring-blue-500"
-                    autoComplete="organization"
-                  />
-                </label>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full rounded-lg bg-blue-600 py-3 font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {loading ? 'Saving…' : 'Create workspace'}
-                </button>
-              </form>
-            </>
-          ) : (
+            ) : null}
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`grid grid-cols-1 lg:grid-cols-2 ${shellClass}`}>
+      <BrandingPanel />
+      <main className="flex items-center justify-center px-6 py-12 lg:px-12">
+        <div className={cardClass}>
+          <div className="mb-8 flex rounded-lg bg-gray-100 p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setTab('login');
+                setInfo(null);
+              }}
+              className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
+                tab === 'login' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Log in
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTab('create');
+                setInfo(null);
+              }}
+              className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
+                tab === 'create' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Create account
+            </button>
+          </div>
+
+          {tab === 'login' ? (
             <>
-              <div className="mb-6 flex gap-2 rounded-lg bg-gray-100 p-1">
-                <button
-                  type="button"
-                  onClick={() => setMode('login')}
-                  className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
-                    mode === 'login' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'
-                  }`}
-                >
-                  Log in
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode('signup')}
-                  className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
-                    mode === 'signup' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'
-                  }`}
-                >
-                  Sign up
-                </button>
+              <div className="mb-6">
+                <h2 className="text-2xl font-semibold tracking-tight text-gray-900">Welcome back</h2>
+                <p className="mt-1 text-sm text-gray-500">Sign in to your account</p>
               </div>
-
-              <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
-                Portal role: <span className="font-semibold uppercase">{selectedRole}</span>
-              </div>
-              {mode === 'login' && pendingSignupEmail && (
-                <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  Email verification pending for{' '}
-                  <span className="font-semibold">{pendingSignupEmail}</span>. Verify your email
-                  first, then log in.
-                </div>
-              )}
-              {mode === 'login' && /not confirmed|email.*confirm/i.test(info ?? '') && (
-                <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  Your email is not verified yet. Open your inbox/spam and click the verification
-                  link, then return to log in.
-                </div>
-              )}
-
-              <form onSubmit={handleAuthSubmit} className="space-y-4">
-                {mode === 'signup' && (
-                  <>
-                    <label className="block text-sm text-gray-700">
-                      Full name
-                      <input
-                        required
-                        value={fullName}
-                        onChange={(ev) => setFullName(ev.target.value)}
-                        className="mt-1 w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-900 outline-none transition focus:ring-2 focus:ring-blue-500"
-                        autoComplete="name"
-                      />
-                    </label>
-                    <label className="block text-sm text-gray-700">
-                      Company name
-                      <input
-                        required
-                        value={companyName}
-                        onChange={(ev) => setCompanyName(ev.target.value)}
-                        className="mt-1 w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-900 outline-none transition focus:ring-2 focus:ring-blue-500"
-                        autoComplete="organization"
-                      />
-                    </label>
-                  </>
-                )}
-                <label className="block text-sm text-gray-700">
+              <form onSubmit={handleLogin} className="space-y-4">
+                <label className="block text-sm font-medium text-gray-700">
                   Email
                   <input
                     required
                     type="email"
                     value={email}
                     onChange={(ev) => setEmail(ev.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-900 outline-none transition focus:ring-2 focus:ring-blue-500"
+                    className={`mt-1.5 ${inputClass}`}
                     autoComplete="email"
                   />
                 </label>
-                <label className="block text-sm text-gray-700">
+                <label className="block text-sm font-medium text-gray-700">
                   Password
                   <input
                     required
                     type="password"
                     value={password}
                     onChange={(ev) => setPassword(ev.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-900 outline-none transition focus:ring-2 focus:ring-blue-500"
-                    autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                    className={`mt-1.5 ${inputClass}`}
+                    autoComplete="current-password"
                   />
                 </label>
-                {mode === 'signup' && (
-                  <label className="block text-sm text-gray-700">
-                    Confirm password
-                    <input
-                      required
-                      type="password"
-                      value={confirmPassword}
-                      onChange={(ev) => setConfirmPassword(ev.target.value)}
-                      className="mt-1 w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-900 outline-none transition focus:ring-2 focus:ring-blue-500"
-                      autoComplete="new-password"
-                    />
-                  </label>
-                )}
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full rounded-lg bg-blue-600 py-3 font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {loading
-                    ? mode === 'signup'
-                      ? 'Creating account…'
-                      : 'Logging in…'
-                    : mode === 'signup'
-                      ? 'Create account'
-                      : 'Log in'}
+                <button type="submit" disabled={loading} className={btnPrimaryClass}>
+                  {loading ? 'Signing in…' : 'Log in'}
                 </button>
               </form>
-              <p className="mt-4 text-center text-xs text-gray-500">
-                Need a different role?{' '}
-                <a href="/portal" className="font-medium text-blue-600 hover:text-blue-700">
-                  Go to portal
-                </a>
-              </p>
+            </>
+          ) : (
+            <>
+              <RoleSegment value={signupRole} onChange={setSignupRole} />
+              {signupRole === 'ceo' ? (
+                <>
+                  <div className="mb-6">
+                    <h2 className="text-2xl font-semibold tracking-tight text-gray-900">Create your workspace</h2>
+                    <p className="mt-1 text-sm text-gray-500">Get started in seconds</p>
+                  </div>
+                  <form onSubmit={handleCreateCeo} className="space-y-4">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Company name
+                      <input
+                        required
+                        value={companyName}
+                        onChange={(ev) => setCompanyName(ev.target.value)}
+                        className={`mt-1.5 ${inputClass}`}
+                        autoComplete="organization"
+                      />
+                    </label>
+                    <label className="block text-sm font-medium text-gray-700">
+                      Full name
+                      <input
+                        required
+                        value={fullName}
+                        onChange={(ev) => setFullName(ev.target.value)}
+                        className={`mt-1.5 ${inputClass}`}
+                        autoComplete="name"
+                      />
+                    </label>
+                    <label className="block text-sm font-medium text-gray-700">
+                      Email
+                      <input
+                        required
+                        type="email"
+                        value={email}
+                        onChange={(ev) => setEmail(ev.target.value)}
+                        className={`mt-1.5 ${inputClass}`}
+                        autoComplete="email"
+                      />
+                    </label>
+                    <label className="block text-sm font-medium text-gray-700">
+                      Password
+                      <input
+                        required
+                        type="password"
+                        value={password}
+                        onChange={(ev) => setPassword(ev.target.value)}
+                        className={`mt-1.5 ${inputClass}`}
+                        autoComplete="new-password"
+                      />
+                    </label>
+                    <button type="submit" disabled={loading} className={btnPrimaryClass}>
+                      {loading ? 'Creating…' : 'Create account'}
+                    </button>
+                  </form>
+                </>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-500">Ask your admin for an account, then sign in.</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTab('login');
+                      setInfo(null);
+                    }}
+                    className={btnPrimaryClass}
+                  >
+                    Go to log in
+                  </button>
+                </div>
+              )}
             </>
           )}
 
-          {info && (
+          {info ? (
             <p className="mt-4 text-sm text-gray-500" role="status">
               {info}
             </p>
-          )}
-          </div>
+          ) : null}
         </div>
       </main>
     </div>
@@ -490,8 +590,8 @@ export default function AuthPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-gray-50">
-          <p className="text-sm text-gray-500">Loading...</p>
+        <div className={`flex min-h-screen items-center justify-center px-6 ${shellClass}`}>
+          <p className="text-sm text-gray-500">Loading…</p>
         </div>
       }
     >

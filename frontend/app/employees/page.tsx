@@ -1,10 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useMemo, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
+import { PageSkeleton } from '@/components/PageSkeleton';
 
 type Me = {
   id: string;
@@ -41,16 +43,27 @@ type EmployeeMessage = {
   sent_at: string;
 };
 
-export default function EmployeesPage() {
+type DashboardConv = {
+  employee_id: string;
+  follow_up_status: string;
+};
+
+function EmployeesPageInner() {
   const PAGE_SIZE = 8;
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
   const [me, setMe] = useState<Me | null>(null);
+  const [dashStats, setDashStats] = useState<Record<string, { pending: number; missed: number }>>({});
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [departmentId, setDepartmentId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [lastSyncLabel, setLastSyncLabel] = useState<string | null>(null);
   const [isActive, setIsActive] = useState(true);
+  const [aiBriefingsOn, setAiBriefingsOn] = useState(true);
+  const [mailboxCrawlOn, setMailboxCrawlOn] = useState(true);
   const [slaInputs, setSlaInputs] = useState<Record<string, string>>({});
   const [messagesByEmployee, setMessagesByEmployee] = useState<Record<string, EmployeeMessage[]>>({});
   const [messagesLoadingFor, setMessagesLoadingFor] = useState<string | null>(null);
@@ -59,6 +72,15 @@ export default function EmployeesPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [sortBy, setSortBy] = useState<'name' | 'department' | 'gmail' | 'last_sync'>('last_sync');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [addOpen, setAddOpen] = useState(false);
+  const [addName, setAddName] = useState('');
+  const [addEmail, setAddEmail] = useState('');
+  const [addPassword, setAddPassword] = useState('');
+  const [addConfirm, setAddConfirm] = useState('');
+  const [addDeptId, setAddDeptId] = useState('');
+  const [addError, setAddError] = useState<string | null>(null);
+  const [addSuccess, setAddSuccess] = useState<string | null>(null);
+  const [addSaving, setAddSaving] = useState(false);
   const isManager = me?.role === 'HEAD' || me?.role === 'MANAGER';
   const managerDepartmentName =
     isManager && me?.department_id
@@ -71,62 +93,66 @@ export default function EmployeesPage() {
       apiFetch('/departments', token),
       apiFetch('/system/status', token),
     ]);
-    if (!empRes.ok || !deptRes.ok) {
+    if (!empRes.ok) {
       setError('Could not load employees.');
       return;
     }
     setEmployees((await empRes.json()) as EmployeeRow[]);
-    setDepartments((await deptRes.json()) as Department[]);
+    if (deptRes.ok) {
+      setDepartments((await deptRes.json()) as Department[]);
+    }
     if (sysRes.ok) {
       const s = await sysRes.json();
       setLastSyncLabel(s.last_sync_at ? new Date(s.last_sync_at).toLocaleString() : null);
       setIsActive(Boolean(s.is_active));
+      setAiBriefingsOn(s.ai_status !== false);
+      setMailboxCrawlOn(s.email_crawl_enabled !== false);
     }
   }
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!authMe || !token) {
+      router.replace('/auth');
+      return;
+    }
+    const user = authMe as Me;
+    setMe(user);
+    if (user.role === 'EMPLOYEE') {
+      router.replace('/dashboard');
+      return;
+    }
+    if ((user.role === 'HEAD' || user.role === 'MANAGER') && user.department_id) {
+      setDepartmentId(user.department_id);
+    }
+    void loadLists(token);
+  }, [authLoading, authMe, token, router]);
+
+  useEffect(() => {
+    if (!me || (me.role !== 'HEAD' && me.role !== 'MANAGER')) {
+      setDashStats({});
+      return;
+    }
     let cancelled = false;
     (async () => {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) {
-        router.replace('/auth');
-        return;
+      if (!token) return;
+      const res = await apiFetch('/dashboard', token);
+      if (!res.ok || cancelled) return;
+      const body = (await res.json()) as { conversations?: DashboardConv[] };
+      const conv = body.conversations ?? [];
+      const map: Record<string, { pending: number; missed: number }> = {};
+      for (const c of conv) {
+        const id = c.employee_id;
+        if (!map[id]) map[id] = { pending: 0, missed: 0 };
+        if (c.follow_up_status === 'PENDING') map[id].pending++;
+        if (c.follow_up_status === 'MISSED') map[id].missed++;
       }
-      const meRes = await apiFetch('/auth/me', session.access_token);
-      if (!meRes.ok) {
-        if (meRes.status === 401) {
-          await supabase.auth.signOut();
-          router.replace('/auth');
-          return;
-        }
-        setError('Could not load profile.');
-        return;
-      }
-      const user = (await meRes.json()) as Me;
-      if (cancelled) return;
-      setMe(user);
-      if (user.role === 'EMPLOYEE') {
-        router.replace('/dashboard');
-        return;
-      }
-      if ((user.role === 'HEAD' || user.role === 'MANAGER') && user.department_id) {
-        setDepartmentId(user.department_id);
-      }
-      await loadLists(session.access_token);
+      if (!cancelled) setDashStats(map);
     })();
     return () => {
       cancelled = true;
     };
-  }, [router]);
-
-  async function signOut() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.replace('/auth');
-  }
+  }, [me, employees.length, token]);
 
   async function connectGmail(employeeId: string) {
     const supabase = createClient();
@@ -279,9 +305,82 @@ export default function EmployeesPage() {
     return sortedEmployees.slice(start, start + PAGE_SIZE);
   }, [sortedEmployees, currentPage]);
 
+  const focusEmployeeId = searchParams.get('focus');
+  useEffect(() => {
+    if (!focusEmployeeId || typeof window === 'undefined') return;
+    const id = window.setTimeout(() => {
+      document.getElementById(`emp-card-${focusEmployeeId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 120);
+    return () => window.clearTimeout(id);
+  }, [focusEmployeeId, sortedEmployees.length, currentPage]);
+
   useEffect(() => {
     setCurrentPage(1);
   }, [searchQuery, sortBy, sortOrder]);
+
+  useEffect(() => {
+    if (pathname !== '/employees' || typeof window === 'undefined') return;
+    if (new URLSearchParams(window.location.search).get('add') === '1') setAddOpen(true);
+  }, [pathname]);
+
+  function closeAddModal() {
+    setAddOpen(false);
+    setAddError(null);
+    setAddSuccess(null);
+    if (typeof window !== 'undefined' && window.location.search.includes('add=')) {
+      router.replace('/employees', { scroll: false });
+    }
+  }
+
+  async function submitAddEmployee(e: React.FormEvent) {
+    e.preventDefault();
+    setAddError(null);
+    setAddSuccess(null);
+    if (addPassword.length < 8) {
+      setAddError('Password must be at least 8 characters.');
+      return;
+    }
+    if (addPassword !== addConfirm) {
+      setAddError('Passwords do not match.');
+      return;
+    }
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session || !me) return;
+    const dep =
+      (me.role === 'HEAD' || me.role === 'MANAGER') && me.department_id ? me.department_id : addDeptId.trim();
+    if (!dep) {
+      setAddError(isManager ? 'Your account has no department assigned.' : 'Select a department.');
+      return;
+    }
+    setAddSaving(true);
+    try {
+      const res = await apiFetch('/employees', session.access_token, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: addName.trim(),
+          email: addEmail.trim(),
+          departmentId: dep,
+          password: addPassword,
+        }),
+      });
+      const b = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAddError((b.message as string) || 'Could not create employee');
+        return;
+      }
+      setAddName('');
+      setAddEmail('');
+      setAddPassword('');
+      setAddConfirm('');
+      setAddSuccess('Team member added. Share credentials securely.');
+      await loadLists(session.access_token);
+    } finally {
+      setAddSaving(false);
+    }
+  }
 
   function toggleSort(field: 'name' | 'department' | 'gmail' | 'last_sync') {
     if (sortBy === field) {
@@ -292,20 +391,28 @@ export default function EmployeesPage() {
     setSortOrder(field === 'name' || field === 'department' ? 'asc' : 'desc');
   }
 
-  if (!me) return <div className="p-8 text-sm text-gray-500">{error ?? 'Loading...'}</div>;
+  if (!me || authLoading) {
+    return (
+      <AppShell role="CEO" title="Employees" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
+        <PageSkeleton />
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell
       role={me.role}
       companyName={me.company_name ?? null}
-      title={isManager ? 'Team mailboxes' : 'Employee list'}
+      title={isManager ? 'Team' : 'Employees'}
       subtitle={
         isManager
-          ? `Tracked mailboxes in ${managerDepartmentName ?? 'your department'} only.`
-          : 'All company mailboxes, departments, and Gmail connection status.'
+          ? `${managerDepartmentName ?? 'Your department'} — mailboxes and workload.`
+          : 'Mailboxes, departments, and connection status.'
       }
       lastSyncLabel={lastSyncLabel}
       isActive={isActive}
+      aiBriefingsEnabled={aiBriefingsOn}
+      mailboxCrawlEnabled={mailboxCrawlOn}
       onRefresh={() => {
         void (async () => {
           const supabase = createClient();
@@ -313,13 +420,27 @@ export default function EmployeesPage() {
           if (session) await loadLists(session.access_token);
         })();
       }}
-      onSignOut={() => void signOut()}
+      onSignOut={() => void ctxSignOut()}
     >
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <p className="text-sm text-slate-500">{isManager ? 'People you manage' : 'Organization'}</p>
+        <button
+          type="button"
+          onClick={() => {
+            setAddError(null);
+            setAddSuccess(null);
+            setAddOpen(true);
+          }}
+          className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95"
+        >
+          {isManager ? 'Add team member' : 'Add employee'}
+        </button>
+      </div>
       <div>
-        <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <h2 className="text-lg font-semibold text-gray-900">Employee List</h2>
+        <section className="rounded-2xl border border-slate-200/60 bg-surface-card p-6 shadow-card">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <h2 className="text-lg font-bold text-slate-900">{isManager ? 'Team members' : 'Directory'}</h2>
             <div className="min-w-[260px] flex-1 sm:max-w-xs">
               <label htmlFor="employee-search" className="mb-1 block text-xs font-medium text-gray-500">
                 Search employee
@@ -329,37 +450,164 @@ export default function EmployeesPage() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Name, email, or department"
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500"
               />
             </div>
           </div>
           {employees.length === 0 ? (
-            <p className="mt-3 text-sm text-gray-500">Add employees to get started</p>
+            <p className="mt-3 text-sm text-slate-500">Add people to get started.</p>
           ) : sortedEmployees.length === 0 ? (
-            <p className="mt-3 text-sm text-gray-500">No employees match your search.</p>
+            <p className="mt-3 text-sm text-slate-500">No matches.</p>
+          ) : isManager ? (
+            <>
+              <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                {pagedEmployees.map((emp) => {
+                  const st = dashStats[emp.id] ?? { pending: 0, missed: 0 };
+                  const isFocus = focusEmployeeId === emp.id;
+                  return (
+                    <article
+                      key={emp.id}
+                      id={`emp-card-${emp.id}`}
+                      className={`rounded-2xl border border-slate-200/70 bg-white p-6 shadow-sm transition-shadow hover:shadow-card-hover ${
+                        isFocus ? 'ring-2 ring-brand-500 ring-offset-2' : ''
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-900">{emp.name}</p>
+                          <p className="mt-1 truncate text-sm text-slate-500">{emp.email}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5 text-xs font-semibold">
+                          <span className={`h-2 w-2 rounded-full ${emp.gmail_connected ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                          <span className={emp.gmail_connected ? 'text-emerald-700' : 'text-amber-800'}>
+                            {emp.gmail_connected ? 'Active' : 'Setup'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="mt-4 grid grid-cols-2 gap-3 rounded-xl bg-surface-muted/90 p-4">
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Pending</p>
+                          <p className="mt-0.5 text-2xl font-bold tabular-nums text-amber-700">{st.pending}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Missed SLA</p>
+                          <p className="mt-0.5 text-2xl font-bold tabular-nums text-red-600">{st.missed}</p>
+                        </div>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
+                        <button
+                          type="button"
+                          onClick={() => void connectGmail(emp.id)}
+                          className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-2 text-xs font-semibold text-white hover:opacity-95"
+                        >
+                          {emp.gmail_connected ? 'Reconnect' : 'Connect Gmail'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void viewMessages(emp.id)}
+                          className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          Inbox sample
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteEmployee(emp.id, emp.name)}
+                          className="rounded-xl border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                        <span className="text-slate-500">SLA (h)</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={168}
+                          value={slaInputs[emp.id] ?? String(emp.sla_hours_default ?? 24)}
+                          onChange={(e) =>
+                            setSlaInputs((prev) => ({
+                              ...prev,
+                              [emp.id]: e.target.value,
+                            }))
+                          }
+                          className="w-16 rounded-lg border border-slate-200 px-2 py-1 text-xs focus:ring-2 focus:ring-brand-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void saveSla(emp.id)}
+                          className="rounded-lg border border-slate-200 px-2 py-1 font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          Save
+                        </button>
+                      </div>
+                      {messagesLoadingFor === emp.id ? (
+                        <p className="mt-2 text-xs text-slate-500">Loading…</p>
+                      ) : null}
+                      {messagesByEmployee[emp.id]?.length ? (
+                        <ul className="mt-2 space-y-1 rounded-xl border border-slate-100 bg-surface-muted/50 p-2">
+                          {messagesByEmployee[emp.id].map((m) => (
+                            <li key={m.provider_message_id} className="text-xs text-slate-600">
+                              <span className="font-medium text-slate-800">{m.subject || '(no subject)'}</span> ·{' '}
+                              {new Date(m.sent_at).toLocaleDateString()}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </article>
+                  );
+                })}
+              </div>
+              <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs text-slate-600">
+                <span>
+                  {(currentPage - 1) * PAGE_SIZE + 1}-{Math.min(currentPage * PAGE_SIZE, sortedEmployees.length)} of{' '}
+                  {sortedEmployees.length}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={currentPage <= 1}
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    className="rounded-lg border border-slate-200 px-2 py-1 disabled:opacity-40"
+                  >
+                    Prev
+                  </button>
+                  <span>
+                    {currentPage} / {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={currentPage >= totalPages}
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    className="rounded-lg border border-slate-200 px-2 py-1 disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </>
           ) : (
-            <div className="mt-4 overflow-x-auto rounded-xl border border-gray-200">
+            <div className="mt-4 overflow-x-auto rounded-lg border border-slate-100">
               <table className="min-w-[1100px] w-full text-sm">
-                <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+                <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-3 py-3">
-                      <button type="button" onClick={() => toggleSort('name')} className="font-semibold hover:text-gray-700">
+                      <button type="button" onClick={() => toggleSort('name')} className="font-semibold hover:text-slate-800">
                         Employee {sortBy === 'name' ? (sortOrder === 'asc' ? '↑' : '↓') : ''}
                       </button>
                     </th>
                     <th className="px-3 py-3">
-                      <button type="button" onClick={() => toggleSort('department')} className="font-semibold hover:text-gray-700">
+                      <button type="button" onClick={() => toggleSort('department')} className="font-semibold hover:text-slate-800">
                         Department {sortBy === 'department' ? (sortOrder === 'asc' ? '↑' : '↓') : ''}
                       </button>
                     </th>
                     <th className="px-3 py-3">
-                      <button type="button" onClick={() => toggleSort('gmail')} className="font-semibold hover:text-gray-700">
-                        Gmail {sortBy === 'gmail' ? (sortOrder === 'asc' ? '↑' : '↓') : ''}
+                      <button type="button" onClick={() => toggleSort('gmail')} className="font-semibold hover:text-slate-800">
+                        Status {sortBy === 'gmail' ? (sortOrder === 'asc' ? '↑' : '↓') : ''}
                       </button>
                     </th>
                     <th className="px-3 py-3">
-                      <button type="button" onClick={() => toggleSort('last_sync')} className="font-semibold hover:text-gray-700">
-                        Last Sync {sortBy === 'last_sync' ? (sortOrder === 'asc' ? '↑' : '↓') : ''}
+                      <button type="button" onClick={() => toggleSort('last_sync')} className="font-semibold hover:text-slate-800">
+                        Last sync {sortBy === 'last_sync' ? (sortOrder === 'asc' ? '↑' : '↓') : ''}
                       </button>
                     </th>
                     <th className="px-3 py-3">SLA (h)</th>
@@ -367,23 +615,23 @@ export default function EmployeesPage() {
                     <th className="px-3 py-3">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100 bg-white align-top">
+                <tbody className="divide-y divide-slate-100 bg-white align-top">
                   {pagedEmployees.map((emp) => (
-                    <tr key={emp.id} className="hover:bg-gray-50/50">
+                    <tr key={emp.id} className="hover:bg-slate-50/80">
                       <td className="px-3 py-3">
-                        <p className="font-medium text-gray-900">{emp.name}</p>
-                        <p className="text-xs text-gray-500">{emp.email}</p>
+                        <p className="font-medium text-slate-900">{emp.name}</p>
+                        <p className="text-xs text-slate-500">{emp.email}</p>
                       </td>
-                      <td className="px-3 py-3 text-xs text-gray-700">{emp.department_name}</td>
+                      <td className="px-3 py-3 text-xs text-slate-700">{emp.department_name}</td>
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2 text-xs">
-                          <span className={`h-2 w-2 rounded-full ${emp.gmail_connected ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                          <span className={emp.gmail_connected ? 'text-emerald-700' : 'text-red-700'}>
-                            {emp.gmail_connected ? 'Connected' : 'Disconnected'}
+                          <span className={`h-2 w-2 rounded-full ${emp.gmail_connected ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                          <span className={emp.gmail_connected ? 'font-medium text-emerald-700' : 'font-medium text-amber-800'}>
+                            {emp.gmail_connected ? 'Active' : 'Setup'}
                           </span>
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-xs text-gray-600">
+                      <td className="px-3 py-3 text-xs text-slate-600">
                         {emp.last_synced_at ? new Date(emp.last_synced_at).toLocaleString() : '—'}
                       </td>
                       <td className="px-3 py-3">
@@ -508,6 +756,116 @@ export default function EmployeesPage() {
           )}
         </section>
       </div>
+
+      {addOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="add-emp-title"
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget) closeAddModal();
+          }}
+        >
+          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+            <h3 id="add-emp-title" className="text-lg font-semibold text-slate-900">
+              {isManager ? 'Add team member' : 'Add employee'}
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">
+              Work email and password for the employee portal.
+            </p>
+            <form onSubmit={(e) => void submitAddEmployee(e)} className="mt-4 space-y-3">
+              {addError ? <p className="text-sm text-red-600">{addError}</p> : null}
+              {addSuccess ? <p className="text-sm text-emerald-700">{addSuccess}</p> : null}
+              <input
+                value={addName}
+                onChange={(e) => setAddName(e.target.value)}
+                placeholder="Full name"
+                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                required
+                autoFocus
+              />
+              <input
+                type="email"
+                value={addEmail}
+                onChange={(e) => setAddEmail(e.target.value)}
+                placeholder="Work email"
+                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                required
+                autoComplete="off"
+              />
+              <input
+                type="password"
+                value={addPassword}
+                onChange={(e) => setAddPassword(e.target.value)}
+                placeholder="Password (min 8 characters)"
+                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                required
+                minLength={8}
+                autoComplete="new-password"
+              />
+              <input
+                type="password"
+                value={addConfirm}
+                onChange={(e) => setAddConfirm(e.target.value)}
+                placeholder="Confirm password"
+                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                required
+                minLength={8}
+                autoComplete="new-password"
+              />
+              {isManager ? (
+                <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  Department:{' '}
+                  <span className="font-medium text-slate-900">{managerDepartmentName ?? '—'}</span>
+                </div>
+              ) : (
+                <select
+                  value={addDeptId}
+                  onChange={(e) => setAddDeptId(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                  required
+                >
+                  <option value="">Department</option>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <div className="flex flex-wrap gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={addSaving}
+                  className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {addSaving ? 'Saving…' : 'Add'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => closeAddModal()}
+                  className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Close
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </AppShell>
+  );
+}
+
+export default function EmployeesPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-[50vh] items-center justify-center bg-surface text-sm text-slate-500">Loading…</div>
+      }
+    >
+      <EmployeesPageInner />
+    </Suspense>
   );
 }
