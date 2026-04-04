@@ -4,6 +4,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { retryWithBackoff } from '../common/retry.util';
 import { EncryptionService } from './encryption.service';
+import { getGoogleOAuthCredentials } from '../common/google-oauth-credentials';
 
 interface OAuthTokenRow {
   employee_id: string;
@@ -23,11 +24,8 @@ export class OauthTokenService {
   ) {}
 
   private createOAuth2Client() {
-    return new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI,
-    );
+    const { clientId, clientSecret, redirectUri } = getGoogleOAuthCredentials();
+    return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   }
 
   async hasToken(employeeId: string): Promise<boolean> {
@@ -76,6 +74,23 @@ export class OauthTokenService {
     return this.encryptionService.decrypt(
       (data as Pick<OAuthTokenRow, 'refresh_token_enc'>).refresh_token_enc,
     );
+  }
+
+  /** When Google omits refresh_token on re-consent, reuse the stored one. */
+  async getExistingRefreshTokenPlaintext(employeeId: string): Promise<string | null> {
+    const { data, error } = await this.supabase
+      .from('employee_oauth_tokens')
+      .select('refresh_token_enc')
+      .eq('employee_id', employeeId)
+      .maybeSingle();
+    if (error || !data) return null;
+    try {
+      return this.encryptionService.decrypt(
+        (data as Pick<OAuthTokenRow, 'refresh_token_enc'>).refresh_token_enc,
+      );
+    } catch {
+      return null;
+    }
   }
 
   async upsertTokens(

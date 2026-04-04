@@ -128,6 +128,35 @@ function EmployeesPageInner() {
     void loadLists(token);
   }, [authLoading, authMe, token, router]);
 
+  /** After Google redirects back from /auth/google/callback (success or error). */
+  useEffect(() => {
+    if (authLoading || !token) return;
+    const oauthErr = searchParams.get('oauth_error');
+    const connected = searchParams.get('connected');
+    if (!oauthErr && connected !== '1') return;
+
+    if (oauthErr) {
+      const help: Record<string, string> = {
+        exchange_failed:
+          'Gmail connection could not be completed. Confirm Railway GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI match your Google Cloud web client, then try Connect Gmail again.',
+        access_denied: 'Google sign-in was cancelled or denied.',
+        not_configured: 'Server is missing Google OAuth configuration.',
+        missing_code_or_state: 'Invalid return from Google. Click Connect Gmail again.',
+      };
+      setError(help[oauthErr] ?? `Gmail connection failed (${oauthErr}).`);
+    }
+    if (connected === '1') {
+      setAddSuccess('Gmail connected successfully.');
+      void loadLists(token);
+    }
+
+    const params = new URLSearchParams(searchParams.toString());
+    for (const k of ['oauth_error', 'connected', 'employee_id']) params.delete(k);
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadLists is stable enough for this callback
+  }, [authLoading, token, searchParams, pathname, router]);
+
   useEffect(() => {
     if (!me || (me.role !== 'HEAD' && me.role !== 'MANAGER')) {
       setDashStats({});
