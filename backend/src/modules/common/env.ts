@@ -1,7 +1,6 @@
 const REQUIRED_ENV_VARS = [
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
-  'GOOGLE_REDIRECT_URI',
   'SUPABASE_URL',
   'INTERNAL_API_KEY',
   'ENCRYPTION_KEY',
@@ -11,10 +10,21 @@ const REQUIRE_ONE_OF: Array<readonly string[]> = [
   ['SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ANON_KEY'],
 ];
 
+function hasGoogleOAuthRedirect(): boolean {
+  const explicit = process.env.GOOGLE_REDIRECT_URI?.trim();
+  if (explicit && explicit !== 'local-dev-placeholder') return true;
+  return Boolean(process.env.RAILWAY_PUBLIC_DOMAIN?.trim());
+}
+
 export function assertRequiredEnv(): void {
   const missing = REQUIRED_ENV_VARS.filter((key) => !process.env[key]?.trim());
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+  }
+  if (!hasGoogleOAuthRedirect()) {
+    throw new Error(
+      'Missing Google OAuth redirect: set GOOGLE_REDIRECT_URI or RAILWAY_PUBLIC_DOMAIN (Railway)',
+    );
   }
 
   for (const set of REQUIRE_ONE_OF) {

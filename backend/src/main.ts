@@ -1,19 +1,30 @@
 import 'dotenv/config';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { assertRequiredEnv } from './modules/common/env';
 import rateLimit from 'express-rate-limit';
+import type { Request } from 'express';
+
+function isGoogleOAuthCallback(req: Request): boolean {
+  if (req.method !== 'GET') return false;
+  const path = req.path || '';
+  return path === '/auth/google/callback' || path.endsWith('/auth/google/callback');
+}
 
 async function bootstrap() {
   assertRequiredEnv();
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Railway / reverse proxies: correct client IP for rate limits and forwarded proto.
+  app.set('trust proxy', 1);
   const limiter = rateLimit({
     windowMs: 60 * 1000,
     max: 100,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests', code: 'RATE_LIMITED' },
+    skip: (req) => isGoogleOAuthCallback(req),
   });
   app.use(['/auth', '/email-ingestion/run', '/conversations'], limiter);
   app.enableCors({

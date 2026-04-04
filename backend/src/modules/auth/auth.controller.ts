@@ -18,7 +18,10 @@ import { PublicRoute } from '../common/public-route.decorator';
 import { AllowPendingOnboarding } from '../common/allow-pending-onboarding.decorator';
 import { OauthStateService } from './oauth-state.service';
 import { AuditLogService } from '../common/audit-log.service';
-import { getGoogleOAuthCredentials } from '../common/google-oauth-credentials';
+import {
+  getGoogleOAuthCredentials,
+  getGoogleRedirectUri,
+} from '../common/google-oauth-credentials';
 
 @Controller('auth')
 export class AuthController {
@@ -160,32 +163,41 @@ export class AuthController {
   ) {
     const frontendBase = (process.env.FRONTEND_URL || 'http://localhost:3001').replace(/\/$/, '');
 
-    if (googleOAuthError) {
-      const hint = googleErrorDescription
-        ? `${googleOAuthError}:${googleErrorDescription}`
-        : googleOAuthError;
-      // eslint-disable-next-line no-console
-      console.error('OAuth callback returned error from Google', hint);
-      res.redirect(
-        `${frontendBase}/employees?oauth_error=${encodeURIComponent(googleOAuthError)}`,
-      );
-      return;
-    }
-
-    if (!code || !state) {
-      res.redirect(`${frontendBase}/employees?oauth_error=missing_code_or_state`);
-      return;
-    }
-    if (!this.hasValidGoogleOAuthConfig()) {
-      res.redirect(`${frontendBase}/employees?oauth_error=not_configured`);
-      return;
-    }
-
-    const { clientId, clientSecret, redirectUri } = getGoogleOAuthCredentials();
-    const oauth2 = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
-
     try {
-      const payload = await this.oauthStateService.verifyAndConsumeState(state);
+      if (googleOAuthError) {
+        const hint = googleErrorDescription
+          ? `${googleOAuthError}:${googleErrorDescription}`
+          : googleOAuthError;
+        // eslint-disable-next-line no-console
+        console.error('OAuth callback returned error from Google', hint);
+        res.redirect(
+          `${frontendBase}/employees?oauth_error=${encodeURIComponent(googleOAuthError)}`,
+        );
+        return;
+      }
+
+      if (!code || !state) {
+        res.redirect(`${frontendBase}/employees?oauth_error=missing_code_or_state`);
+        return;
+      }
+      if (!this.hasValidGoogleOAuthConfig()) {
+        res.redirect(`${frontendBase}/employees?oauth_error=not_configured`);
+        return;
+      }
+
+      const { clientId, clientSecret, redirectUri } = getGoogleOAuthCredentials();
+      const oauth2 = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+
+      let stateToken = state.trim();
+      if (stateToken.includes('%')) {
+        try {
+          stateToken = decodeURIComponent(stateToken);
+        } catch {
+          /* use trimmed original */
+        }
+      }
+
+      const payload = await this.oauthStateService.verifyAndConsumeState(stateToken);
       const actor = await this.saasAuthService.findProfileByAuthId(payload.user_id);
       if (!actor || actor.companyId !== payload.company_id) {
         throw new UnauthorizedException('invalid_actor_context');
@@ -197,7 +209,10 @@ export class AuthController {
         throw new BadRequestException('invalid_employee');
       }
 
-      const { tokens } = await oauth2.getToken(code);
+      const { tokens } = await oauth2.getToken({
+        code: code.trim(),
+        redirect_uri: redirectUri,
+      });
       if (!tokens.access_token) {
         throw new BadRequestException('missing_access_token');
       }
@@ -236,12 +251,12 @@ export class AuthController {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('OAuth callback failed', err);
-      const code =
+      const detail =
         err && typeof err === 'object' && 'response' in err
           ? String((err as { response?: { data?: unknown } }).response?.data ?? '')
           : (err as Error).message;
       // eslint-disable-next-line no-console
-      console.error('OAuth callback failure detail', code);
+      console.error('OAuth callback failure detail', detail);
       res.redirect(`${frontendBase}/employees?oauth_error=exchange_failed`);
     }
   }
@@ -249,12 +264,12 @@ export class AuthController {
   private hasValidGoogleOAuthConfig(): boolean {
     const clientId = process.env.GOOGLE_CLIENT_ID?.trim() ?? '';
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() ?? '';
-    const redirectUri = process.env.GOOGLE_REDIRECT_URI?.trim() ?? '';
+    const redirectUri = getGoogleRedirectUri();
     const invalidValues = new Set(['', 'local-dev-placeholder']);
     return (
       !invalidValues.has(clientId) &&
       !invalidValues.has(clientSecret) &&
-      !invalidValues.has(redirectUri)
+      redirectUri.length > 0
     );
   }
 }
