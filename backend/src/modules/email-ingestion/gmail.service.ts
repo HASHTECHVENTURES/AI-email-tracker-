@@ -12,7 +12,7 @@ import { getGoogleOAuthCredentials } from '../common/google-oauth-credentials';
 const NOISE_LABEL_IDS = new Set([
   'CATEGORY_PROMOTIONS',
   'CATEGORY_SOCIAL',
-  'CATEGORY_UPDATES',
+  // Not CATEGORY_UPDATES — Gmail puts many real client threads (orders, receipts) in Updates; we still filter by content rules.
   'CATEGORY_FORUMS',
   'SPAM',
   'TRASH',
@@ -29,7 +29,7 @@ const BASE_QUERY_FILTERS = [
   '-in:trash',
   '-category:promotions',
   '-category:social',
-  '-category:updates',
+  // Do not exclude category:updates — otherwise many legitimate inbound emails never appear in messages.list.
   '-category:forums',
   '-is:muted',
 ].join(' ');
