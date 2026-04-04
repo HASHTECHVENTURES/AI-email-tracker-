@@ -11,6 +11,7 @@ type AppShellProps = {
   subtitle: string;
   lastSyncLabel?: string | null;
   nextIngestionCountdownLabel?: string | null;
+  nextReportCountdownLabel?: string | null;
   isActive?: boolean;
   aiBriefingsEnabled?: boolean;
   mailboxCrawlEnabled?: boolean;
@@ -29,6 +30,63 @@ function navItemClass(active: boolean): string {
     : 'block w-full rounded-xl px-3 py-2.5 text-sm font-medium text-slate-600 transition-colors hover:bg-white/80 hover:text-slate-900';
 }
 
+function ShellStatusStrip({
+  mailboxCrawlEnabled,
+  isActive,
+  aiBriefingsEnabled,
+  lastSyncLabel,
+  nextIngestionCountdownLabel,
+  nextReportCountdownLabel,
+  onRefresh,
+}: {
+  mailboxCrawlEnabled?: boolean;
+  isActive: boolean;
+  aiBriefingsEnabled?: boolean;
+  lastSyncLabel?: string | null;
+  nextIngestionCountdownLabel?: string | null;
+  nextReportCountdownLabel?: string | null;
+  onRefresh?: () => void;
+}) {
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-2xl border border-slate-200/80 bg-white px-4 py-3 shadow-card">
+      <span
+        className={`h-2 w-2 rounded-full ${
+          mailboxCrawlEnabled === false ? 'bg-slate-300' : isActive ? 'bg-emerald-500' : 'bg-red-500'
+        }`}
+      />
+      <span className="text-sm text-slate-600">
+        {mailboxCrawlEnabled === false ? 'Sync paused' : isActive ? 'In sync' : 'Sync issue'}
+      </span>
+      {aiBriefingsEnabled === false ? (
+        <span
+          className="rounded-lg bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200/80"
+          title="AI briefings disabled in Settings"
+        >
+          AI off
+        </span>
+      ) : null}
+      {lastSyncLabel ? <span className="text-xs text-slate-400">· {lastSyncLabel}</span> : null}
+      {nextIngestionCountdownLabel ? (
+        <span className="text-xs tabular-nums text-slate-400">· Next {nextIngestionCountdownLabel}</span>
+      ) : null}
+      {nextReportCountdownLabel ? (
+        <span className="text-xs tabular-nums text-slate-400" title="Time until the next scheduled executive report">
+          · Report {nextReportCountdownLabel}
+        </span>
+      ) : null}
+      {onRefresh ? (
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="ml-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+        >
+          Refresh
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function AppShell({
   role,
   companyName,
@@ -36,6 +94,7 @@ export function AppShell({
   subtitle,
   lastSyncLabel,
   nextIngestionCountdownLabel,
+  nextReportCountdownLabel,
   isActive = true,
   aiBriefingsEnabled,
   mailboxCrawlEnabled,
@@ -92,6 +151,9 @@ export function AppShell({
                   <Link href="/employees" className={navItemClass(pathname === '/employees')}>
                     Employees
                   </Link>
+                  <Link href="/ai-reports" className={navItemClass(pathname === '/ai-reports')}>
+                    Reports
+                  </Link>
                 </>
               ) : null}
 
@@ -101,7 +163,7 @@ export function AppShell({
                 </Link>
               ) : null}
 
-              {!isEmployee && showOrg && isHead ? (
+              {showOrg && isHead ? (
                 <>
                   <Link href="/manager-messages" className={navItemClass(managerMessagesActive)}>
                     Conversations
@@ -110,12 +172,6 @@ export function AppShell({
                     Alerts
                   </Link>
                 </>
-              ) : null}
-
-              {showOrg ? (
-                <Link href="/ai-reports" className={navItemClass(pathname === '/ai-reports')}>
-                  Reports
-                </Link>
               ) : null}
 
               <Link href="/settings" className={navItemClass(pathname === '/settings')}>
@@ -147,37 +203,15 @@ export function AppShell({
                 <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">{title}</h1>
                 <p className="mt-1 max-w-2xl text-sm text-slate-500">{subtitle}</p>
               </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-2xl border border-slate-200/80 bg-white px-4 py-3 shadow-card">
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    mailboxCrawlEnabled === false ? 'bg-slate-300' : isActive ? 'bg-emerald-500' : 'bg-red-500'
-                  }`}
-                />
-                <span className="text-sm text-slate-600">
-                  {mailboxCrawlEnabled === false ? 'Sync paused' : isActive ? 'In sync' : 'Sync issue'}
-                </span>
-                {aiBriefingsEnabled === false ? (
-                  <span
-                    className="rounded-lg bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200/80"
-                    title="AI briefings disabled in Settings"
-                  >
-                    AI off
-                  </span>
-                ) : null}
-                {lastSyncLabel ? <span className="text-xs text-slate-400">· {lastSyncLabel}</span> : null}
-                {nextIngestionCountdownLabel ? (
-                  <span className="text-xs tabular-nums text-slate-400">· Next {nextIngestionCountdownLabel}</span>
-                ) : null}
-                {onRefresh ? (
-                  <button
-                    type="button"
-                    onClick={onRefresh}
-                    className="ml-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
-                  >
-                    Refresh
-                  </button>
-                ) : null}
-              </div>
+              <ShellStatusStrip
+                mailboxCrawlEnabled={mailboxCrawlEnabled}
+                isActive={isActive}
+                aiBriefingsEnabled={aiBriefingsEnabled}
+                lastSyncLabel={lastSyncLabel}
+                nextIngestionCountdownLabel={nextIngestionCountdownLabel}
+                nextReportCountdownLabel={nextReportCountdownLabel}
+                onRefresh={onRefresh}
+              />
             </header>
 
             <div className="flex flex-col gap-8">{children}</div>

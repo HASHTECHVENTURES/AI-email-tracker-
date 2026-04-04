@@ -1,9 +1,17 @@
-import { Controller, ForbiddenException, Get, Query, Req } from '@nestjs/common';
+import {
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  NotFoundException,
+  Param,
+  Query,
+  Req,
+} from '@nestjs/common';
 import { Request } from 'express';
 import { getRequestContext } from '../common/request-context';
 import { DashboardService } from './dashboard.service';
 import { EmployeesService } from '../employees/employees.service';
-import { SettingsService } from '../settings/settings.service';
 
 const emptyAiReport = {
   generated_at: null as string | null,
@@ -18,7 +26,6 @@ export class DashboardController {
   constructor(
     private readonly dashboardService: DashboardService,
     private readonly employeesService: EmployeesService,
-    private readonly settingsService: SettingsService,
   ) {}
 
   @Get()
@@ -82,16 +89,8 @@ export class DashboardController {
   @Get('ai-report')
   async getLastAiReport(@Req() req: Request) {
     const ctx = getRequestContext(req);
-    const settings = await this.settingsService.getAll();
-    if (ctx.role === 'HEAD' && ctx.departmentId) {
-      if (!settings.ai_enabled || !settings.ai_for_managers_enabled) {
-        return emptyAiReport;
-      }
-      const report = await this.dashboardService.getLastAiReport(ctx.companyId, {
-        scope: 'DEPARTMENT_HEAD',
-        departmentId: ctx.departmentId,
-      });
-      return report ?? emptyAiReport;
+    if (ctx.role === 'HEAD') {
+      return emptyAiReport;
     }
     const report =
       ctx.role === 'CEO'
@@ -104,22 +103,10 @@ export class DashboardController {
   async generateAiReportNow(@Req() req: Request) {
     const ctx = getRequestContext(req);
     if (ctx.role === 'HEAD') {
-      if (!ctx.departmentId) {
-        throw new ForbiddenException('Department manager must have a department assigned');
-      }
-      const settings = await this.settingsService.getAll();
-      if (!settings.ai_enabled || !settings.ai_for_managers_enabled) {
-        throw new ForbiddenException('AI for department managers is disabled by your organization (CEO Settings).');
-      }
-      return this.dashboardService.generateAiReport(ctx.companyId, {
-        force: true,
-        minCooldownMs: 0,
-        scope: 'DEPARTMENT_HEAD',
-        departmentId: ctx.departmentId,
-      });
+      throw new ForbiddenException('Executive AI reports are only available to the CEO.');
     }
     if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only CEO or department managers can generate AI reports');
+      throw new ForbiddenException('Only the CEO can generate AI executive reports.');
     }
     return this.dashboardService.generateAiReport(ctx.companyId, {
       force: true,
@@ -133,22 +120,33 @@ export class DashboardController {
     const ctx = getRequestContext(req);
     const n = Number(limit ?? '50');
     const lim = Number.isFinite(n) ? n : 50;
-    const settings = await this.settingsService.getAll();
-    if (ctx.role === 'HEAD' && ctx.departmentId) {
-      if (!settings.ai_enabled || !settings.ai_for_managers_enabled) {
-        return { total: 0, items: [] };
-      }
-      const items = await this.dashboardService.getAiReportArchive(ctx.companyId, lim, {
-        scope: 'DEPARTMENT_HEAD',
-        departmentId: ctx.departmentId,
-      });
-      return { total: items.length, items };
+    if (ctx.role === 'HEAD') {
+      return { total: 0, items: [] };
     }
     if (ctx.role === 'CEO') {
       const items = await this.dashboardService.getAiReportArchive(ctx.companyId, lim, { scope: 'EXECUTIVE' });
       return { total: items.length, items };
     }
     return { total: 0, items: [] };
+  }
+
+  @Delete('ai-reports/:id')
+  async deleteAiReport(@Req() req: Request, @Param('id') id: string) {
+    const ctx = getRequestContext(req);
+
+    if (ctx.role === 'HEAD') {
+      throw new ForbiddenException('Only the CEO can delete executive report archives.');
+    }
+
+    if (ctx.role === 'CEO') {
+      const ok = await this.dashboardService.deleteExecutiveAiReport(ctx.companyId, id);
+      if (!ok) {
+        throw new NotFoundException('Report not found or you cannot delete it');
+      }
+      return { ok: true };
+    }
+
+    throw new ForbiddenException('You cannot delete this report');
   }
 
   /** Ingested mail archive (same data as legacy GET /employees/mail-archive). */

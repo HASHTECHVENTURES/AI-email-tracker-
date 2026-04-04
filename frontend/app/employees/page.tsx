@@ -585,7 +585,7 @@ function EmployeesPageInner() {
           {(isManager || isCeo) && employees.length > 0 ? (
             <p className="mt-3 text-xs text-slate-500">
               {isManager
-                ? 'Pause Email fetch or AI on a card for that mailbox only — other team members are unchanged.'
+                ? 'Use Time tracker on each card to set when mail sync and SLA follow-ups start (same as CEO “Tracking start”). Pause Email fetch or AI per mailbox only — others are unchanged.'
                 : 'Email / AI columns pause one mailbox at a time. Company-wide switches live under Settings.'}
             </p>
           ) : null}
@@ -649,7 +649,7 @@ function EmployeesPageInner() {
                           onClick={() => void deleteEmployee(emp.id, emp.name)}
                           className="rounded-xl border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50"
                         >
-                          Remove
+                          Delete
                         </button>
                       </div>
                       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
@@ -674,6 +674,41 @@ function EmployeesPageInner() {
                         >
                           Save
                         </button>
+                      </div>
+                      <div className="mt-3 space-y-2 rounded-xl border border-indigo-100 bg-indigo-50/40 p-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-900/80">
+                          Time tracker
+                        </p>
+                        <p className="text-xs text-slate-600">
+                          Only messages at or after this time are ingested and tracked for SLAs.
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="datetime-local"
+                            value={
+                              trackingInputs[emp.id] ??
+                              (emp.tracking_start_at
+                                ? toLocalDatetimeLocalValue(new Date(emp.tracking_start_at))
+                                : '')
+                            }
+                            onChange={(e) =>
+                              setTrackingInputs((prev) => ({
+                                ...prev,
+                                [emp.id]: e.target.value,
+                              }))
+                            }
+                            disabled={trackingSavingFor === emp.id}
+                            className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs focus:ring-2 focus:ring-brand-500 disabled:bg-slate-50 sm:max-w-[240px]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void saveTrackingStart(emp.id)}
+                            disabled={trackingSavingFor === emp.id}
+                            className="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs font-medium text-indigo-900 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {trackingSavingFor === emp.id ? 'Saving…' : 'Save'}
+                          </button>
+                        </div>
                       </div>
                       <div className="mt-3 space-y-2 rounded-xl border border-slate-100 bg-white/80 p-3">
                         <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">This mailbox only</p>

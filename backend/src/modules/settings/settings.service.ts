@@ -155,7 +155,7 @@ export class SettingsService {
     await this.setMany(pairs);
   }
 
-  async getRuntimeStatus(): Promise<RuntimeStatus> {
+  async getRuntimeStatus(companyId?: string): Promise<RuntimeStatus> {
     const { data, error } = await this.supabase
       .from('system_settings')
       .select('key, value');
@@ -200,7 +200,9 @@ export class SettingsService {
       ? alignNext(lastFinished, INGESTION_INTERVAL_SECONDS)
       : null;
 
-    const lastReportAt = map.get('last_ai_report_at') ?? null;
+    const lastReportAt = companyId
+      ? map.get(`last_ai_report_at_${companyId}`) ?? map.get('last_ai_report_at') ?? null
+      : map.get('last_ai_report_at') ?? null;
     // No report yet -> start hourly window from "now"; else hourly from last report (rolled forward)
     const nextReportAt = lastReportAt
       ? alignNext(lastReportAt, REPORT_INTERVAL_SECONDS)
@@ -282,6 +284,7 @@ export class SettingsService {
     last_sync_at: string | null;
     employees_tracked: number;
     ai_status: boolean;
+    ai_for_managers_enabled: boolean;
     email_crawl_enabled: boolean;
     seconds_until_next_ingestion: number | null;
     last_report_at: string | null;
@@ -290,7 +293,7 @@ export class SettingsService {
     ai_model_configured: boolean;
   }> {
     const [runtime, settings, tracked] = await Promise.all([
-      this.getRuntimeStatus(),
+      this.getRuntimeStatus(companyId),
       this.getAll(),
       this.countActiveEmployeesWithOAuth(companyId),
     ]);
@@ -319,6 +322,7 @@ export class SettingsService {
       last_sync_at: lastSyncAt,
       employees_tracked: tracked,
       ai_status: settings.ai_enabled,
+      ai_for_managers_enabled: settings.ai_for_managers_enabled,
       email_crawl_enabled: settings.email_crawl_enabled,
       seconds_until_next_ingestion: secondsUntilNextIngestion,
       last_report_at: settings.ai_enabled ? runtime.lastReportAt : null,

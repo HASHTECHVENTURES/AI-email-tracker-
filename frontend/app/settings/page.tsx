@@ -327,7 +327,7 @@ export default function SettingsPage() {
       <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
         <h2 className="text-base font-semibold text-slate-900">AI</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Company-wide switch: Inbox AI classification, thread enrichment (Gemini), AI for manager and employee mailboxes, and executive AI reports. When off, follow-up timing still runs on{' '}
+          Company-wide switch: Inbox AI classification, thread enrichment (Gemini), AI for manager and employee mailboxes, and CEO executive reports (Reports page — managers do not get this). When off, follow-up timing still runs on{' '}
           <strong className="font-medium text-slate-600">rules</strong> if email sync is on. Managers can pause AI per mailbox on{' '}
           <strong className="font-medium text-slate-600">Employees</strong>.
         </p>
@@ -421,7 +421,7 @@ export default function SettingsPage() {
         ) : null}
       </section>
 
-      {(isCeo || isHead) && (
+      {isCeo && (
         <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
           <h2 className="text-base font-semibold text-slate-900">Mail troubleshooting</h2>
           <p className="mt-1 text-sm text-slate-500">

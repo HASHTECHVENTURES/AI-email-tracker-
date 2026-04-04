@@ -153,7 +153,7 @@ export class EmailIngestionService {
         }
 
         if (cycleSettings.ai_enabled) {
-          this.dashboardService
+          void this.dashboardService
             .generateAiReport(companyId, { minCooldownMs: 3_600_000, scope: 'EXECUTIVE' })
             .catch((err) => {
               this.logger.warn(`Auto AI report failed for ${companyId}: ${(err as Error).message}`);

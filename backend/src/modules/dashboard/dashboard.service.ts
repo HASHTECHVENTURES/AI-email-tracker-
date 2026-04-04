@@ -93,6 +93,7 @@ export interface AiReport {
 }
 
 export interface AiReportArchiveItem extends AiReport {
+  id: string;
   created_at: string;
 }
 
@@ -393,26 +394,28 @@ Keep each bullet under 18 words.
 --- DATA ---
 ${dataBlock}`;
       } else {
+        const teamMailboxRows = employees.map((e) => ({
+          employee_id: e.employee_id,
+          name: e.employee_name,
+          email: e.employee_email,
+          total: e.total,
+          missed: e.missed,
+          pending: e.pending,
+          avg_delay: e.avg_delay_hours,
+        }));
+        const canonicalNames = employees.map((e) => e.employee_name).filter((n) => n.trim().length > 0);
         dataBlock = [
           `Department metrics: ${JSON.stringify(metrics)}`,
-          `Team mailboxes: ${JSON.stringify(
-            employees.map((e) => ({
-              name: e.employee_name,
-              email: e.employee_email,
-              total: e.total,
-              missed: e.missed,
-              pending: e.pending,
-              avg_delay: e.avg_delay_hours,
-            })),
-          )}`,
-          `Needs attention (${attention.length}): ${JSON.stringify(
+          `Team mailboxes (authoritative spellings for people on this team): ${JSON.stringify(teamMailboxRows)}`,
+          `canonical_team_names_only: ${JSON.stringify(canonicalNames)}`,
+          `Needs attention (${attention.length}) — use assigned_to / employee_id only for names; short_reason text is omitted because it may contain errors: ${JSON.stringify(
             attention.slice(0, 12).map((c) => ({
-              client: c.client_email,
+              employee_id: c.employee_id,
               assigned_to: c.employee_name,
+              client: c.client_email,
               status: c.follow_up_status,
               priority: c.priority,
-              delay: c.delay_hours,
-              reason: c.short_reason,
+              delay_hours: Number(Number(c.delay_hours).toFixed(2)),
             })),
           )}`,
         ].join('\n');
@@ -428,7 +431,12 @@ Return ONLY valid JSON (no markdown):
   "recommendation": "one sentence next step for the manager"
 }
 
-Keep bullets under 20 words. Use client/employee detail from the data when useful.
+Keep bullets under 20 words.
+
+STRICT RULES FOR NAMES:
+- The ONLY valid internal teammate names are the strings in JSON key "canonical_team_names_only" and the "name" / "assigned_to" fields in the data above. Copy spelling and capitalization EXACTLY (e.g. "josh" stays "josh").
+- Do NOT invent, substitute, or "normalize" names (no "John" if the data says "josh"). Do NOT use placeholder names.
+- If you mention a teammate, they MUST appear in canonical_team_names_only or as assigned_to for a row.
 
 --- DATA ---
 ${dataBlock}`;
@@ -558,7 +566,7 @@ ${dataBlock}`;
 
     let q = this.supabase
       .from('dashboard_reports')
-      .select('content, created_at, report_scope, department_id')
+      .select('id, content, created_at, report_scope, department_id')
       .eq('company_id', companyId)
       .eq('report_scope', scope);
 
@@ -575,12 +583,17 @@ ${dataBlock}`;
       this.logger.error('Failed to load AI report archive', error.message);
       const { data: legacy } = await this.supabase
         .from('dashboard_reports')
-        .select('content, created_at')
+        .select('id, content, created_at')
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
         .limit(safeLimit);
-      const rows = (legacy ?? []) as Array<{ content: Partial<AiReport> | null; created_at: string }>;
+      const rows = (legacy ?? []) as Array<{
+        id: string;
+        content: Partial<AiReport> | null;
+        created_at: string;
+      }>;
       return rows.map((r) => ({
+        id: r.id,
         created_at: r.created_at,
         generated_at: r.content?.generated_at ?? r.created_at,
         key_issues: Array.isArray(r.content?.key_issues) ? r.content!.key_issues!.slice(0, 6) : [],
@@ -592,8 +605,13 @@ ${dataBlock}`;
       }));
     }
 
-    const rows = (data ?? []) as Array<{ content: Partial<AiReport> | null; created_at: string }>;
+    const rows = (data ?? []) as Array<{
+      id: string;
+      content: Partial<AiReport> | null;
+      created_at: string;
+    }>;
     return rows.map((r) => ({
+      id: r.id,
       created_at: r.created_at,
       generated_at: r.content?.generated_at ?? r.created_at,
       key_issues: Array.isArray(r.content?.key_issues) ? r.content!.key_issues!.slice(0, 6) : [],
@@ -603,6 +621,28 @@ ${dataBlock}`;
       patterns: Array.isArray(r.content?.patterns) ? r.content!.patterns!.slice(0, 6) : [],
       recommendation: typeof r.content?.recommendation === 'string' ? r.content.recommendation : '',
     }));
+  }
+
+  /** CEO: delete one executive archived report. */
+  async deleteExecutiveAiReport(companyId: string, reportId: string): Promise<boolean> {
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRe.test(reportId)) return false;
+
+    const { data, error } = await this.supabase
+      .from('dashboard_reports')
+      .delete()
+      .eq('id', reportId)
+      .eq('company_id', companyId)
+      .eq('report_scope', 'EXECUTIVE')
+      .is('department_id', null)
+      .select('id');
+
+    if (error) {
+      this.logger.error('deleteExecutiveAiReport', error.message);
+      return false;
+    }
+    return (data?.length ?? 0) > 0;
   }
 
   /**
@@ -786,16 +826,8 @@ ${dataBlock}`;
     const filterEmployee =
       scope.role === 'EMPLOYEE' ? scopedEmployeeId : filters?.employeeId ?? scopedEmployeeId;
 
-    const settings = await this.settingsService.getAll();
     const reportPromise =
-      scope.role === 'CEO'
-        ? this.getLastAiReport(companyId, { scope: 'EXECUTIVE' })
-        : scope.role === 'HEAD' &&
-            scope.departmentId &&
-            settings.ai_enabled &&
-            settings.ai_for_managers_enabled
-          ? this.getLastAiReport(companyId, { scope: 'DEPARTMENT_HEAD', departmentId: scope.departmentId })
-          : Promise.resolve(null);
+      scope.role === 'CEO' ? this.getLastAiReport(companyId, { scope: 'EXECUTIVE' }) : Promise.resolve(null);
 
     const rollupsPromise =
       scope.role === 'CEO' ? this.getCeoDepartmentRollups(companyId) : Promise.resolve(undefined);

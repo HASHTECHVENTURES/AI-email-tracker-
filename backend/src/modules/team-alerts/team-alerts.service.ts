@@ -20,6 +20,8 @@ export interface TeamAlertDto {
   from_manager_email: string | null;
   /** Parent manager message when this row is an employee reply */
   in_reply_to: string | null;
+  /** True when this row was written by the signed-in employee (portal user). */
+  is_own_message: boolean;
 }
 
 export interface TeamAlertSentItem {
@@ -30,7 +32,7 @@ export interface TeamAlertSentItem {
   employee_id: string;
   employee_name: string;
   employee_email: string;
-  replies: Array<{ id: string; body: string; created_at: string }>;
+  replies: Array<{ id: string; body: string; created_at: string; from_manager: boolean }>;
 }
 
 @Injectable()
@@ -148,6 +150,73 @@ export class TeamAlertsService {
     return { ok: true as const, id: inserted.id, created_at: inserted.created_at };
   }
 
+  /** Manager follow-up in an existing thread (same root as employee replies). */
+  async replyFromManager(ctx: RequestContext, fromUserId: string, threadRootId: string, message: string) {
+    if (ctx.role !== 'HEAD') {
+      throw new ForbiddenException('Only department managers can reply here');
+    }
+    if (!ctx.departmentId) {
+      throw new ForbiddenException('Your manager profile must be assigned to a department');
+    }
+    const body = message.trim();
+    if (!body) {
+      throw new BadRequestException('Message is required');
+    }
+    if (body.length > 4000) {
+      throw new BadRequestException('Message must be at most 4000 characters');
+    }
+
+    const { data: root, error: rErr } = await this.supabase
+      .from('team_alerts')
+      .select('id, company_id, employee_id, from_user_id, in_reply_to')
+      .eq('id', threadRootId)
+      .maybeSingle();
+
+    if (rErr || !root) {
+      throw new NotFoundException('Thread not found');
+    }
+    if (root.company_id !== ctx.companyId) {
+      throw new ForbiddenException();
+    }
+    if ((root as { in_reply_to?: string | null }).in_reply_to) {
+      throw new BadRequestException('threadRootId must be your original message');
+    }
+    if (root.from_user_id !== fromUserId) {
+      throw new ForbiddenException('You can only reply on threads you started');
+    }
+
+    const { data: emp, error: empErr } = await this.supabase
+      .from('employees')
+      .select('id, department_id')
+      .eq('id', root.employee_id as string)
+      .maybeSingle();
+    if (empErr || !emp) {
+      throw new NotFoundException('Team member not found');
+    }
+    if (emp.department_id !== ctx.departmentId) {
+      throw new ForbiddenException('This thread is outside your department');
+    }
+
+    const { data: inserted, error: insErr } = await this.supabase
+      .from('team_alerts')
+      .insert({
+        company_id: ctx.companyId,
+        employee_id: root.employee_id as string,
+        from_user_id: fromUserId,
+        body,
+        in_reply_to: threadRootId,
+      })
+      .select('id, created_at')
+      .maybeSingle();
+
+    if (insErr || !inserted) {
+      this.logger.error(`team_alerts manager reply insert: ${insErr?.message}`);
+      throw new BadRequestException('Could not send reply');
+    }
+
+    return { ok: true as const, id: inserted.id, created_at: inserted.created_at };
+  }
+
   async listSentByManager(ctx: RequestContext, fromUserId: string): Promise<{ items: TeamAlertSentItem[] }> {
     if (ctx.role !== 'HEAD') {
       throw new ForbiddenException('Only department managers can view sent team messages');
@@ -169,11 +238,14 @@ export class TeamAlertsService {
 
     const list = rows ?? [];
     const parentIds = list.map((r) => r.id as string);
-    const repliesByParent = new Map<string, Array<{ id: string; body: string; created_at: string }>>();
+    const repliesByParent = new Map<
+      string,
+      Array<{ id: string; body: string; created_at: string; from_manager: boolean }>
+    >();
     if (parentIds.length > 0) {
       const { data: replyRows, error: rErr } = await this.supabase
         .from('team_alerts')
-        .select('id, body, created_at, in_reply_to')
+        .select('id, body, created_at, in_reply_to, from_user_id')
         .in('in_reply_to', parentIds)
         .order('created_at', { ascending: true });
       if (!rErr && replyRows) {
@@ -184,6 +256,7 @@ export class TeamAlertsService {
             id: rr.id as string,
             body: rr.body as string,
             created_at: rr.created_at as string,
+            from_manager: (rr.from_user_id as string) === fromUserId,
           });
           repliesByParent.set(pid, arr);
         }
@@ -243,11 +316,25 @@ export class TeamAlertsService {
     }
 
     const list = rows ?? [];
-    /** Latest employee reply per parent — parents without read_at still count as handled once replied. */
+
+    let employeeLinkedUserId: string | null = null;
+    const { data: empUserRow } = await this.supabase
+      .from('users')
+      .select('id')
+      .eq('linked_employee_id', ctx.employeeId)
+      .maybeSingle();
+    if (empUserRow?.id) {
+      employeeLinkedUserId = empUserRow.id as string;
+    }
+
+    /** Latest employee reply per parent — manager follow-ups do not count as “handled”. */
     const latestReplyAtByParent = new Map<string, string>();
     for (const r of list) {
       const pid = (r as { in_reply_to?: string | null }).in_reply_to;
       if (!pid) continue;
+      if (employeeLinkedUserId && (r as { from_user_id: string }).from_user_id !== employeeLinkedUserId) {
+        continue;
+      }
       const created = r.created_at as string;
       const prev = latestReplyAtByParent.get(pid);
       if (!prev || created > prev) latestReplyAtByParent.set(pid, created);
@@ -274,20 +361,24 @@ export class TeamAlertsService {
     }
 
     const items: TeamAlertDto[] = list.map((r) => {
-      const u = userMap.get(r.from_user_id as string);
+      const uid = r.from_user_id as string;
+      const u = userMap.get(uid);
       const replyTo = (r as { in_reply_to?: string | null }).in_reply_to ?? null;
       const id = r.id as string;
       const storedRead = (r.read_at as string | null) ?? null;
       const impliedRead = !replyTo ? latestReplyAtByParent.get(id) : undefined;
       const read_at = storedRead ?? impliedRead ?? null;
+      const isOwn = !!(employeeLinkedUserId && uid === employeeLinkedUserId);
+      const fromManagerSide = !replyTo || (!isOwn && !!replyTo);
       return {
         id,
         body: r.body as string,
         created_at: r.created_at as string,
         read_at,
-        from_manager_name: replyTo ? null : u?.name ?? null,
-        from_manager_email: replyTo ? null : u?.email ?? null,
+        from_manager_name: fromManagerSide ? u?.name ?? null : null,
+        from_manager_email: fromManagerSide ? u?.email ?? null : null,
         in_reply_to: replyTo,
+        is_own_message: isOwn,
       };
     });
 
@@ -320,5 +411,50 @@ export class TeamAlertsService {
       throw new BadRequestException('Could not update alert');
     }
     return { ok: true as const };
+  }
+
+  /**
+   * Employee: any row where employee_id matches (manager message or own reply).
+   * Manager: only root messages they sent (deleting parent cascades replies).
+   * CEO: any alert in the company.
+   */
+  async deleteAlert(ctx: RequestContext, userId: string, alertId: string): Promise<void> {
+    const { data: row, error: fetchErr } = await this.supabase
+      .from('team_alerts')
+      .select('id, company_id, employee_id, from_user_id, in_reply_to')
+      .eq('id', alertId)
+      .maybeSingle();
+
+    if (fetchErr || !row) {
+      throw new NotFoundException('Alert not found');
+    }
+    if (row.company_id !== ctx.companyId) {
+      throw new ForbiddenException();
+    }
+
+    const inReplyTo = (row as { in_reply_to?: string | null }).in_reply_to ?? null;
+
+    if (ctx.role === 'EMPLOYEE') {
+      if (!ctx.employeeId || row.employee_id !== ctx.employeeId) {
+        throw new ForbiddenException('You can only delete alerts on your own inbox');
+      }
+    } else if (ctx.role === 'HEAD') {
+      if (inReplyTo) {
+        throw new BadRequestException('Delete your original message to remove the whole thread');
+      }
+      if (row.from_user_id !== userId) {
+        throw new ForbiddenException('You can only delete messages you sent');
+      }
+    } else if (ctx.role === 'CEO') {
+      /* company scoped above */
+    } else {
+      throw new ForbiddenException();
+    }
+
+    const { error: delErr } = await this.supabase.from('team_alerts').delete().eq('id', alertId);
+    if (delErr) {
+      this.logger.error(`deleteAlert: ${delErr.message}`);
+      throw new BadRequestException('Could not delete alert');
+    }
   }
 }

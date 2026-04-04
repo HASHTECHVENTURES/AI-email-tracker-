@@ -21,6 +21,7 @@ type TeamAlertItem = {
   from_manager_name: string | null;
   from_manager_email: string | null;
   in_reply_to?: string | null;
+  is_own_message?: boolean;
 };
 
 export default function MessagesPage() {
@@ -32,6 +33,7 @@ export default function MessagesPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [replyModalParent, setReplyModalParent] = useState<TeamAlertItem | null>(null);
+  const [deletingAlertId, setDeletingAlertId] = useState<string | null>(null);
 
   const repliesByParent = useMemo(() => {
     const m = new Map<string, TeamAlertItem[]>();
@@ -101,6 +103,24 @@ export default function MessagesPage() {
     await load();
   }
 
+  async function removeAlert(id: string) {
+    if (!token) return;
+    if (!window.confirm('Delete this manager message and any replies? This cannot be undone.')) return;
+    setDeletingAlertId(id);
+    try {
+      const res = await apiFetch(`/team-alerts/${encodeURIComponent(id)}`, token, { method: 'DELETE' });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setError((j.message as string) || 'Could not delete');
+        return;
+      }
+      setReplyModalParent((p) => (p?.id === id ? null : p));
+      await load();
+    } finally {
+      setDeletingAlertId(null);
+    }
+  }
+
   if (!me || authLoading) {
     return (
       <AppShell role="EMPLOYEE" title="Messages & alerts" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
@@ -152,13 +172,23 @@ export default function MessagesPage() {
                         </p>
                         {thread.length > 0 ? (
                           <ul className="mt-3 space-y-2 border-t border-amber-200/80 pt-3">
-                            {thread.map((r) => (
-                              <li key={r.id} className="rounded-lg bg-white/80 px-2 py-2 text-xs text-slate-700">
-                                <span className="font-semibold text-brand-700">You</span> ·{' '}
-                                {new Date(r.created_at).toLocaleString()}
-                                <p className="mt-1 whitespace-pre-wrap text-slate-800">{r.body}</p>
-                              </li>
-                            ))}
+                            {thread.map((r) => {
+                              const mine = r.is_own_message === true;
+                              return (
+                                <li
+                                  key={r.id}
+                                  className={`rounded-lg px-2 py-2 text-xs ${
+                                    mine ? 'bg-white/80 text-slate-700' : 'bg-slate-100/90 text-slate-800'
+                                  }`}
+                                >
+                                  <span className={`font-semibold ${mine ? 'text-brand-700' : 'text-slate-700'}`}>
+                                    {mine ? 'You' : 'Manager'}
+                                  </span>{' '}
+                                  · {new Date(r.created_at).toLocaleString()}
+                                  <p className="mt-1 whitespace-pre-wrap text-slate-800">{r.body}</p>
+                                </li>
+                              );
+                            })}
                           </ul>
                         ) : null}
                       </div>
@@ -166,16 +196,26 @@ export default function MessagesPage() {
                         <button
                           type="button"
                           onClick={() => setReplyModalParent(a)}
-                          className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-center text-xs font-medium text-blue-900 transition hover:bg-blue-50"
+                          disabled={deletingAlertId === a.id}
+                          className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-center text-xs font-medium text-blue-900 transition hover:bg-blue-50 disabled:opacity-50"
                         >
                           Reply
                         </button>
                         <button
                           type="button"
                           onClick={() => void dismiss(a.id)}
-                          className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-950 transition hover:bg-amber-100"
+                          disabled={deletingAlertId === a.id}
+                          className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-950 transition hover:bg-amber-100 disabled:opacity-50"
                         >
                           Dismiss
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void removeAlert(a.id)}
+                          disabled={deletingAlertId === a.id}
+                          className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-50"
+                        >
+                          {deletingAlertId === a.id ? 'Deleting…' : 'Delete'}
                         </button>
                       </div>
                     </div>
@@ -209,23 +249,42 @@ export default function MessagesPage() {
                       </p>
                       {thread.length > 0 ? (
                         <ul className="mt-3 space-y-2 border-t border-slate-100 pt-3">
-                          {thread.map((r) => (
-                            <li key={r.id} className="rounded-lg bg-slate-50 px-2 py-2 text-xs">
-                              <span className="font-semibold text-brand-700">You</span> ·{' '}
-                              {new Date(r.created_at).toLocaleString()}
-                              <p className="mt-1 whitespace-pre-wrap text-slate-800">{r.body}</p>
-                            </li>
-                          ))}
+                          {thread.map((r) => {
+                            const mine = r.is_own_message === true;
+                            return (
+                              <li
+                                key={r.id}
+                                className={`rounded-lg px-2 py-2 text-xs ${mine ? 'bg-slate-50' : 'bg-indigo-50/60'}`}
+                              >
+                                <span className={`font-semibold ${mine ? 'text-brand-700' : 'text-indigo-900'}`}>
+                                  {mine ? 'You' : 'Manager'}
+                                </span>{' '}
+                                · {new Date(r.created_at).toLocaleString()}
+                                <p className="mt-1 whitespace-pre-wrap text-slate-800">{r.body}</p>
+                              </li>
+                            );
+                          })}
                         </ul>
                       ) : null}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setReplyModalParent(a)}
-                      className="shrink-0 rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-blue-900 transition hover:bg-blue-50"
-                    >
-                      Reply
-                    </button>
+                    <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
+                      <button
+                        type="button"
+                        onClick={() => setReplyModalParent(a)}
+                        disabled={deletingAlertId === a.id}
+                        className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-blue-900 transition hover:bg-blue-50 disabled:opacity-50"
+                      >
+                        Reply
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void removeAlert(a.id)}
+                        disabled={deletingAlertId === a.id}
+                        className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-50"
+                      >
+                        {deletingAlertId === a.id ? 'Deleting…' : 'Delete'}
+                      </button>
+                    </div>
                   </div>
                 );
               })}

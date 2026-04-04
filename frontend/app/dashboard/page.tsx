@@ -64,6 +64,7 @@ type TeamAlertItem = {
   from_manager_name: string | null;
   from_manager_email: string | null;
   in_reply_to?: string | null;
+  is_own_message?: boolean;
 };
 
 async function parseApiErrorMessage(res: Response): Promise<string> {
@@ -92,6 +93,8 @@ export default function DashboardPage() {
   const [reassignTarget, setReassignTarget] = useState<ConversationRow | null>(null);
   /** Per-row resolve: a single boolean disabled every Resolve on the page. */
   const [resolvingConversationId, setResolvingConversationId] = useState<string | null>(null);
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
+  const [deletingTeamAlertId, setDeletingTeamAlertId] = useState<string | null>(null);
   const [teamAlerts, setTeamAlerts] = useState<{ items: TeamAlertItem[]; unread_count: number } | null>(null);
   const [replyModalParent, setReplyModalParent] = useState<TeamAlertItem | null>(null);
 
@@ -215,6 +218,56 @@ export default function DashboardPage() {
       await refresh();
     } finally {
       setResolvingConversationId(null);
+    }
+  }
+
+  async function deleteThread(conversationId: string, hint?: string | null) {
+    if (!token) return;
+    const label = hint?.trim() ? ` — ${hint.trim()}` : '';
+    if (
+      !window.confirm(
+        `Permanently delete this thread${label}? Synced messages for this conversation will be removed. This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setDeletingConversationId(conversationId);
+    try {
+      const res = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}`, token, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        setError(await parseApiErrorMessage(res));
+        return;
+      }
+      setModal(null);
+      await refresh();
+    } finally {
+      setDeletingConversationId(null);
+    }
+  }
+
+  async function deleteTeamAlert(alertId: string) {
+    if (!token) return;
+    if (
+      !window.confirm(
+        'Delete this manager message and any replies? This cannot be undone.',
+      )
+    ) {
+      return;
+    }
+    setDeletingTeamAlertId(alertId);
+    try {
+      const res = await apiFetch(`/team-alerts/${encodeURIComponent(alertId)}`, token, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        setError(await parseApiErrorMessage(res));
+        return;
+      }
+      await refresh();
+    } finally {
+      setDeletingTeamAlertId(null);
     }
   }
 
@@ -452,7 +505,7 @@ export default function DashboardPage() {
                     {Number(c.delay_hours).toFixed(1)}h / {Number(c.sla_hours).toFixed(0)}h
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <div className="flex justify-end gap-2">
+                    <div className="flex flex-wrap justify-end gap-2">
                       <button
                         type="button"
                         onClick={() => window.open(c.open_gmail_link, '_blank', 'noopener,noreferrer')}
@@ -463,10 +516,24 @@ export default function DashboardPage() {
                       <button
                         type="button"
                         onClick={() => void markDone(c.conversation_id)}
-                        disabled={resolvingConversationId === c.conversation_id}
+                        disabled={
+                          resolvingConversationId === c.conversation_id ||
+                          deletingConversationId === c.conversation_id
+                        }
                         className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 disabled:opacity-50"
                       >
                         {resolvingConversationId === c.conversation_id ? 'Resolving…' : 'Resolve'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteThread(c.conversation_id, c.client_email)}
+                        disabled={
+                          resolvingConversationId === c.conversation_id ||
+                          deletingConversationId === c.conversation_id
+                        }
+                        className="rounded-xl border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        {deletingConversationId === c.conversation_id ? 'Deleting…' : 'Delete'}
                       </button>
                     </div>
                   </td>
@@ -545,9 +612,18 @@ export default function DashboardPage() {
                     <button
                       type="button"
                       onClick={() => void dismissTeamAlert(a.id)}
-                      className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-950 transition hover:bg-amber-100"
+                      disabled={deletingTeamAlertId === a.id}
+                      className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-950 transition hover:bg-amber-100 disabled:opacity-50"
                     >
                       Dismiss
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void deleteTeamAlert(a.id)}
+                      disabled={deletingTeamAlertId === a.id}
+                      className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-50"
+                    >
+                      {deletingTeamAlertId === a.id ? 'Deleting…' : 'Delete'}
                     </button>
                   </div>
                 </div>
@@ -653,10 +729,24 @@ export default function DashboardPage() {
                           <button
                             type="button"
                             onClick={() => void markDone(c.conversation_id)}
-                            disabled={resolvingConversationId === c.conversation_id}
+                            disabled={
+                              resolvingConversationId === c.conversation_id ||
+                              deletingConversationId === c.conversation_id
+                            }
                             className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:opacity-95 disabled:opacity-50"
                           >
                             {resolvingConversationId === c.conversation_id ? 'Resolving…' : 'Resolve'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void deleteThread(c.conversation_id, c.client_email)}
+                            disabled={
+                              resolvingConversationId === c.conversation_id ||
+                              deletingConversationId === c.conversation_id
+                            }
+                            className="rounded-xl border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
+                          >
+                            {deletingConversationId === c.conversation_id ? 'Deleting…' : 'Delete'}
                           </button>
                         </div>
                       </td>
@@ -779,10 +869,24 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={() => void markDone(modal.conversation_id)}
-                disabled={resolvingConversationId === modal.conversation_id}
+                disabled={
+                  resolvingConversationId === modal.conversation_id ||
+                  deletingConversationId === modal.conversation_id
+                }
                 className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-2 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-50"
               >
                 {resolvingConversationId === modal.conversation_id ? 'Resolving…' : 'Resolve'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void deleteThread(modal.conversation_id, modal.client_email)}
+                disabled={
+                  resolvingConversationId === modal.conversation_id ||
+                  deletingConversationId === modal.conversation_id
+                }
+                className="rounded-xl border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+              >
+                {deletingConversationId === modal.conversation_id ? 'Deleting…' : 'Delete thread'}
               </button>
               <button
                 type="button"

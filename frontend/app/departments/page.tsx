@@ -63,6 +63,7 @@ export default function DepartmentsPage() {
   const [alertSaving, setAlertSaving] = useState(false);
   const [alertError, setAlertError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [deletingDeptId, setDeletingDeptId] = useState<string | null>(null);
 
   const load = useCallback(async (token: string) => {
     const res = await apiFetch('/departments', token);
@@ -114,6 +115,25 @@ export default function DepartmentsPage() {
 
   async function reloadTeam() {
     if (token) await loadTeam(token);
+  }
+
+  async function deleteDepartment(id: string, name: string) {
+    if (!token) return;
+    if (!window.confirm(`Delete department “${name}”? Only empty departments can be removed.`)) return;
+    setDeletingDeptId(id);
+    setError(null);
+    try {
+      const res = await apiFetch(`/departments/${encodeURIComponent(id)}`, token, { method: 'DELETE' });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setError((j.message as string) || 'Could not delete department');
+        return;
+      }
+      setNotice('Department deleted.');
+      await load(token);
+    } finally {
+      setDeletingDeptId(null);
+    }
   }
 
   function openPortalPasswordModal(member: TeamMember) {
@@ -341,6 +361,16 @@ export default function DepartmentsPage() {
                     : 'No manager assigned'}
                 </p>
                 <p className="mt-4 text-xs font-medium text-slate-400">{d.employee_count ?? 0} employees</p>
+                {isCeo && (d.employee_count ?? 0) === 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => void deleteDepartment(d.id, d.name)}
+                    disabled={deletingDeptId === d.id}
+                    className="mt-3 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:opacity-50"
+                  >
+                    {deletingDeptId === d.id ? 'Deleting…' : 'Delete department'}
+                  </button>
+                ) : null}
               </article>
             ))}
           </div>

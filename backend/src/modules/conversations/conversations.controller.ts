@@ -114,8 +114,18 @@ export class ConversationsController {
     const ctx = getRequestContext(req);
     const conversationId = decodeURIComponent(id);
     const row = await this.conversationsService.getConversationScopeRow(ctx.companyId, conversationId);
-    if (row) enforceConversationAccess(ctx, row);
+    if (!row) throw new NotFoundException('Conversation not found');
+    enforceConversationAccess(ctx, row);
     await this.conversationsService.deleteConversation(ctx.companyId, conversationId);
+    if (req.user) {
+      await this.auditLogService.log({
+        userId: req.user.id,
+        companyId: ctx.companyId,
+        action: 'conversation_deleted',
+        entity: 'conversation',
+        entityId: conversationId,
+      });
+    }
     return { status: 'ok', action: 'deleted' };
   }
 

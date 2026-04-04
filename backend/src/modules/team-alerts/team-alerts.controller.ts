@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
   Param,
@@ -86,11 +87,51 @@ export class TeamAlertsController {
     return result;
   }
 
+  @Post('reply-manager')
+  async replyManager(
+    @Req() req: Request,
+    @Body() body: { threadRootId?: string; message?: string },
+  ) {
+    const ctx = getRequestContext(req);
+    const user = req.user;
+    if (!user) throw new ForbiddenException();
+    const threadRootId = body.threadRootId?.trim();
+    const message = body.message ?? '';
+    if (!threadRootId) {
+      throw new BadRequestException('threadRootId is required');
+    }
+    const result = await this.teamAlertsService.replyFromManager(ctx, user.id, threadRootId, message);
+    await this.auditLogService.log({
+      userId: user.id,
+      companyId: ctx.companyId,
+      action: 'team_alert_manager_reply',
+      entity: 'team_alert',
+      entityId: threadRootId,
+    });
+    return result;
+  }
+
   @Patch('read/:id')
   async markRead(@Req() req: Request, @Param('id') id: string) {
     const ctx = getRequestContext(req);
     const user = req.user;
     if (!user) throw new ForbiddenException();
     return this.teamAlertsService.markRead(ctx, id);
+  }
+
+  @Delete(':id')
+  async remove(@Req() req: Request, @Param('id') id: string) {
+    const ctx = getRequestContext(req);
+    const user = req.user;
+    if (!user) throw new ForbiddenException();
+    await this.teamAlertsService.deleteAlert(ctx, user.id, id.trim());
+    await this.auditLogService.log({
+      userId: user.id,
+      companyId: ctx.companyId,
+      action: 'team_alert_deleted',
+      entity: 'team_alert',
+      entityId: id.trim(),
+    });
+    return { ok: true as const };
   }
 }
