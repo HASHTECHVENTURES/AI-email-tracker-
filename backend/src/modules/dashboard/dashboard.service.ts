@@ -53,6 +53,8 @@ export interface ConversationListItem {
   manually_closed: boolean;
   is_ignored: boolean;
   open_gmail_link: string;
+  /** ISO timestamp — used for "resolved today" style KPIs */
+  updated_at: string;
 }
 
 interface ConversationDbRow {
@@ -73,6 +75,7 @@ interface ConversationDbRow {
   lifecycle_status: string;
   manually_closed: boolean;
   is_ignored: boolean;
+  updated_at: string;
 }
 
 export interface ConversationFilters {
@@ -112,7 +115,15 @@ export interface CeoDepartmentRollup {
 
 export interface SimplifiedDashboardResponse {
   needs_attention: ConversationListItem[];
-  ai_insights: { lines: string[]; last_updated_at: string | null };
+  ai_insights: {
+    /** @deprecated prefer structured fields */
+    lines: string[];
+    key_issues: string[];
+    employee_insights: string[];
+    patterns: string[];
+    recommendation: string | null;
+    last_updated_at: string | null;
+  };
   conversations: ConversationListItem[];
   onboarding: {
     show: boolean;
@@ -221,7 +232,9 @@ export class DashboardService {
   async getConversationsList(filters: ConversationFilters): Promise<ConversationListItem[]> {
     let query = this.supabase
       .from('conversations')
-      .select('conversation_id, employee_id, company_id, department_id, provider_thread_id, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored')
+      .select(
+        'conversation_id, employee_id, company_id, department_id, provider_thread_id, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, updated_at',
+      )
       .eq('company_id', filters.companyId)
       .eq('is_ignored', false)
       .order('updated_at', { ascending: false });
@@ -273,6 +286,7 @@ export class DashboardService {
         manually_closed: r.manually_closed,
         is_ignored: r.is_ignored,
         open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
+        updated_at: r.updated_at,
       };
     });
   }
@@ -863,7 +877,7 @@ ${dataBlock}`;
       rollupsPromise,
     ]);
 
-    const attentionCap = scope.role === 'HEAD' ? 50 : scope.role === 'CEO' ? 12 : 5;
+    const attentionCap = scope.role === 'HEAD' ? 50 : scope.role === 'CEO' ? 40 : 5;
     const needs_attention = all
       .filter(
         (c) =>
@@ -872,19 +886,20 @@ ${dataBlock}`;
       )
       .slice(0, attentionCap);
 
-    const insightLines =
-      scope.role === 'EMPLOYEE'
-        ? []
-        : [
-            ...(report?.key_issues ?? []),
-            ...(report?.employee_insights ?? []),
-            ...(report?.patterns ?? []),
-          ];
+    const keyIssues = scope.role === 'EMPLOYEE' ? [] : (report?.key_issues ?? []);
+    const employeeInsights = scope.role === 'EMPLOYEE' ? [] : (report?.employee_insights ?? []);
+    const patterns = scope.role === 'EMPLOYEE' ? [] : (report?.patterns ?? []);
+    const recommendation = scope.role === 'EMPLOYEE' ? null : (report?.recommendation?.trim() || null);
+    const insightLines = [...keyIssues, ...employeeInsights, ...patterns];
 
     const out: SimplifiedDashboardResponse = {
       needs_attention,
       ai_insights: {
         lines: insightLines,
+        key_issues: keyIssues,
+        employee_insights: employeeInsights,
+        patterns,
+        recommendation,
         last_updated_at: scope.role === 'EMPLOYEE' ? null : (report?.generated_at ?? null),
       },
       conversations: all,

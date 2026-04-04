@@ -38,11 +38,19 @@ type ConversationRow = {
   short_reason: string;
   reason: string;
   open_gmail_link: string;
+  updated_at?: string;
 };
 
 type DashboardPayload = {
   needs_attention: ConversationRow[];
-  ai_insights: { lines: string[]; last_updated_at: string | null };
+  ai_insights: {
+    lines: string[];
+    key_issues: string[];
+    employee_insights: string[];
+    patterns: string[];
+    recommendation: string | null;
+    last_updated_at: string | null;
+  };
   conversations: ConversationRow[];
   onboarding: {
     show: boolean;
@@ -66,6 +74,70 @@ type TeamAlertItem = {
   in_reply_to?: string | null;
   is_own_message?: boolean;
 };
+
+function localDayStartMs(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function isResolvedToday(row: ConversationRow): boolean {
+  if (row.follow_up_status !== 'DONE') return false;
+  const t = row.updated_at ? new Date(row.updated_at).getTime() : 0;
+  return t >= localDayStartMs();
+}
+
+function needsAttentionPredicate(c: ConversationRow): boolean {
+  return c.follow_up_status === 'MISSED' || (c.priority === 'HIGH' && c.follow_up_status !== 'DONE');
+}
+
+type TeamHealth = 'at_risk' | 'watch' | 'steady';
+
+function teamHealth(row: { attention: number; missed: number; pending: number }): TeamHealth {
+  if (row.missed > 0) return 'at_risk';
+  if (row.attention > 0) return 'watch';
+  if (row.pending > 0) return 'watch';
+  return 'steady';
+}
+
+function CeoDelayMeter({ delay, sla }: { delay: number; sla: number }) {
+  const ratio = sla > 0 ? Math.min(1, delay / sla) : 0;
+  const over = delay > sla;
+  const pct = Math.round(ratio * 100);
+  const hot = !over && sla > 0 && delay / sla > 0.85;
+  return (
+    <div className="min-w-[132px] max-w-[200px]">
+      <div className="flex justify-between gap-2 text-[11px] font-semibold tabular-nums">
+        <span className={over ? 'text-red-600' : hot ? 'text-amber-700' : 'text-slate-800'}>
+          {delay.toFixed(1)}h
+        </span>
+        <span className="font-normal text-slate-400">/ {sla.toFixed(0)}h</span>
+      </div>
+      <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100">
+        <div
+          className={`h-full rounded-full ${over ? 'bg-red-500' : hot ? 'bg-amber-500' : 'bg-emerald-500'}`}
+          style={{ width: `${Math.min(100, pct)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function TeamHealthDot({ health }: { health: TeamHealth }) {
+  const meta = {
+    at_risk: { cls: 'bg-red-500 shadow-[0_0_0_3px_rgba(239,68,68,0.22)]', label: 'At risk — missed SLAs' },
+    watch: { cls: 'bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.28)]', label: 'Watch — queue or attention items' },
+    steady: { cls: 'bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.2)]', label: 'Steady' },
+  }[health];
+  return (
+    <span
+      className={`inline-block h-3 w-3 shrink-0 rounded-full ${meta.cls}`}
+      title={meta.label}
+      role="img"
+      aria-label={meta.label}
+    />
+  );
+}
 
 async function parseApiErrorMessage(res: Response): Promise<string> {
   try {
@@ -99,6 +171,7 @@ export default function DashboardPage() {
   const [replyModalParent, setReplyModalParent] = useState<TeamAlertItem | null>(null);
 
   const buildDashboardPath = useCallback(() => {
+    if (me?.role === 'CEO') return '/dashboard';
     const qs = new URLSearchParams();
     if (filterStatus) qs.set('status', filterStatus);
     if (filterPriority) qs.set('priority', filterPriority);
@@ -298,11 +371,14 @@ export default function DashboardPage() {
   /** Must run before any early return — same hook order when `me` is still null. */
   const kpi = useMemo(() => {
     const conv = dash?.conversations ?? [];
+    const needsAttentionTotal = conv.filter(needsAttentionPredicate).length;
+    const resolvedToday = conv.filter(isResolvedToday).length;
     return {
-      needsAttention: dash?.needs_attention?.length ?? 0,
+      needsAttention: needsAttentionTotal,
       pending: conv.filter((c) => c.follow_up_status === 'PENDING').length,
       missed: conv.filter((c) => c.follow_up_status === 'MISSED').length,
-      resolved: conv.filter((c) => c.follow_up_status === 'DONE').length,
+      resolvedToday,
+      resolvedAll: conv.filter((c) => c.follow_up_status === 'DONE').length,
     };
   }, [dash]);
 
@@ -344,6 +420,11 @@ export default function DashboardPage() {
     );
   }, [dash]);
 
+  const ceoActionRows = useMemo(() => {
+    const rows = dash?.needs_attention ?? [];
+    return [...rows].sort((a, b) => Number(b.delay_hours) - Number(a.delay_hours));
+  }, [dash?.needs_attention]);
+
   if (!me || authLoading) {
     return (
       <AppShell
@@ -364,7 +445,7 @@ export default function DashboardPage() {
     ? 'Your follow-ups and SLA.'
     : isHead
       ? 'What needs you right now — then how your team is trending.'
-      : 'Company pulse and priorities.';
+      : 'Attention, team load, and AI context — executive view.';
 
   /** Live next-sync countdown: useful for managers/employees; hidden on CEO overview. */
   const nextSyncLabelForRole = isCeo ? null : syncCountdownLabel;
@@ -374,7 +455,7 @@ export default function DashboardPage() {
       <AppShell
         role={me.role}
         companyName={me.company_name ?? null}
-        title={isEmployee ? 'My follow-ups' : isHead ? 'Workspace' : 'Overview'}
+        title={isEmployee ? 'My follow-ups' : isHead ? 'Workspace' : 'Command center'}
         subtitle={dashboardSubtitle}
         lastSyncLabel={lastSyncLabel}
         nextIngestionCountdownLabel={nextSyncLabelForRole}
@@ -417,9 +498,20 @@ export default function DashboardPage() {
   const attentionCount = kpi.needsAttention;
   const pendingCount = kpi.pending;
   const missedCount = kpi.missed;
-  const resolvedCount = kpi.resolved;
+  const resolvedTodayCount = kpi.resolvedToday;
   const conversations = dash.conversations ?? [];
   const needsAttentionRows = dash.needs_attention ?? [];
+  const aiKeyIssues = dash.ai_insights.key_issues ?? [];
+  const aiPatterns = dash.ai_insights.patterns ?? [];
+  const aiPeopleLines = dash.ai_insights.employee_insights ?? [];
+  const aiRecommendation = dash.ai_insights.recommendation?.trim() || null;
+  const aiLegacyLines = dash.ai_insights.lines ?? [];
+  const hasAiInsights =
+    aiKeyIssues.length > 0 ||
+    aiPatterns.length > 0 ||
+    aiPeopleLines.length > 0 ||
+    Boolean(aiRecommendation) ||
+    aiLegacyLines.length > 0;
 
   const cardClass =
     'rounded-2xl border border-slate-200/60 bg-surface-card p-6 shadow-card';
@@ -551,7 +643,7 @@ export default function DashboardPage() {
       <AppShell
         role={me.role}
         companyName={me.company_name ?? null}
-        title={isEmployee ? 'My follow-ups' : isHead ? 'Workspace' : 'Overview'}
+        title={isEmployee ? 'My follow-ups' : isHead ? 'Workspace' : 'Command center'}
         subtitle={dashboardSubtitle}
         lastSyncLabel={lastSyncLabel}
         nextIngestionCountdownLabel={nextSyncLabelForRole}
@@ -561,29 +653,345 @@ export default function DashboardPage() {
         onRefresh={() => void refresh()}
         onSignOut={() => void ctxSignOut()}
       >
-        <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {(
-            [
-              {
-                label: 'Needs attention',
-                value: attentionCount,
-                bar: 'from-brand-600 to-violet-500',
-              },
-              { label: 'Pending', value: pendingCount, bar: 'from-amber-400 to-amber-600' },
-              { label: 'Missed SLA', value: missedCount, bar: 'from-red-400 to-red-600' },
-              { label: 'Resolved', value: resolvedCount, bar: 'from-emerald-400 to-teal-600' },
-            ] as const
-          ).map((k) => (
-            <div
-              key={k.label}
-              className="relative overflow-hidden rounded-2xl border border-slate-200/60 bg-surface-card p-6 shadow-card"
-            >
-              <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${k.bar}`} aria-hidden />
-              <p className="text-3xl font-bold tabular-nums tracking-tight text-slate-900">{k.value}</p>
-              <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{k.label}</p>
-            </div>
-          ))}
-        </section>
+        {isCeo ? (
+          <>
+            <section className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:gap-4" aria-label="Executive KPIs">
+              {(
+                [
+                  {
+                    label: 'Needs attention',
+                    value: attentionCount,
+                    accent: 'from-violet-500 to-brand-600',
+                  },
+                  { label: 'Pending', value: pendingCount, accent: 'from-amber-400 to-orange-500' },
+                  { label: 'Missed SLA', value: missedCount, accent: 'from-red-500 to-rose-600' },
+                  { label: 'Resolved today', value: resolvedTodayCount, accent: 'from-emerald-400 to-teal-500' },
+                ] as const
+              ).map((k) => (
+                <div
+                  key={k.label}
+                  className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-md shadow-slate-900/[0.06] ring-1 ring-slate-900/[0.04]"
+                >
+                  <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${k.accent}`} aria-hidden />
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">{k.label}</p>
+                  <p className="mt-3 text-3xl font-bold tabular-nums tracking-tight text-slate-950 sm:text-4xl">{k.value}</p>
+                </div>
+              ))}
+            </section>
+
+            {dash.onboarding?.show ? (
+              <section className={cardClass}>
+                <h2 className="text-sm font-semibold text-slate-900">Setup</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {dash.onboarding?.state ?? '—'} · {dash.onboarding?.employee_count ?? 0} people ·{' '}
+                  {dash.onboarding?.mailboxes_connected ?? 0} mailboxes
+                </p>
+              </section>
+            ) : null}
+
+            <section className="rounded-2xl border-2 border-slate-900/10 bg-white p-6 shadow-lg shadow-slate-900/[0.08] ring-1 ring-slate-900/[0.05] sm:p-8">
+              <header className="mb-8 border-b border-slate-100 pb-6">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-brand-600">Now</p>
+                <h2 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">Action required</h2>
+                <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">
+                  Highest delay first. Missed SLA and high-priority threads are visually emphasized for fast decisions.
+                </p>
+                {attentionCount > ceoActionRows.length ? (
+                  <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-950 ring-1 ring-amber-100">
+                    Showing {ceoActionRows.length} of {attentionCount} items in this queue — open{' '}
+                    <Link href="/departments" className="font-semibold text-brand-700 underline-offset-2 hover:underline">
+                      Departments
+                    </Link>{' '}
+                    or{' '}
+                    <Link href="/employees" className="font-semibold text-brand-700 underline-offset-2 hover:underline">
+                      Employees
+                    </Link>{' '}
+                    to go deeper.
+                  </p>
+                ) : null}
+              </header>
+              {ceoActionRows.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 px-6 py-14 text-center">
+                  <p className="text-lg font-semibold text-slate-800">Nothing critical in queue</p>
+                  <p className="mt-2 text-sm text-slate-500">No missed SLAs or high-priority open threads right now.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-200 bg-slate-50/40">
+                  <table className="min-w-[920px] w-full text-sm">
+                    <thead className="bg-slate-100/80 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                      <tr>
+                        <th className="px-4 py-3 pl-5">Client</th>
+                        <th className="px-4 py-3">Owner</th>
+                        <th className="px-4 py-3">Delay vs SLA</th>
+                        <th className="px-4 py-3">Priority</th>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3 pr-5 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200/80">
+                      {ceoActionRows.map((c) => {
+                        const delay = Number(c.delay_hours);
+                        const sla = Number(c.sla_hours);
+                        const leftAccent =
+                          c.follow_up_status === 'MISSED'
+                            ? 'border-l-red-500 bg-red-50/20'
+                            : c.priority === 'HIGH'
+                              ? 'border-l-violet-600 bg-violet-50/15'
+                              : 'border-l-slate-200 bg-white';
+                        return (
+                          <tr
+                            key={c.conversation_id}
+                            className={`border-l-[5px] transition-colors hover:bg-white/90 ${leftAccent}`}
+                          >
+                            <td className="px-4 py-4 pl-5 align-top">
+                              <button
+                                type="button"
+                                onClick={() => setModal(c)}
+                                className="text-left font-semibold text-slate-950 hover:text-brand-600"
+                              >
+                                {c.client_email ?? '—'}
+                              </button>
+                            </td>
+                            <td className="px-4 py-4 align-top text-slate-700">{c.employee_name}</td>
+                            <td className="px-4 py-4 align-top">
+                              <CeoDelayMeter delay={delay} sla={sla} />
+                            </td>
+                            <td className="px-4 py-4 align-top">
+                              <Badge tone={c.priority === 'HIGH' ? 'high' : c.priority === 'MEDIUM' ? 'medium' : 'low'}>
+                                {c.priority}
+                              </Badge>
+                            </td>
+                            <td className="px-4 py-4 align-top">
+                              <Badge
+                                tone={
+                                  c.follow_up_status === 'MISSED'
+                                    ? 'missed'
+                                    : c.follow_up_status === 'PENDING'
+                                      ? 'pending'
+                                      : 'done'
+                                }
+                              >
+                                {c.follow_up_status}
+                              </Badge>
+                            </td>
+                            <td className="px-4 py-4 pr-5 text-right align-top">
+                              <div className="flex flex-wrap justify-end gap-2">
+                                <a
+                                  href={c.open_gmail_link}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300"
+                                >
+                                  Gmail
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => setReassignTarget(c)}
+                                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-brand-200 hover:text-brand-700"
+                                >
+                                  Reassign
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void markDone(c.conversation_id)}
+                                  disabled={
+                                    resolvingConversationId === c.conversation_id ||
+                                    deletingConversationId === c.conversation_id
+                                  }
+                                  className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:opacity-95 disabled:opacity-50"
+                                >
+                                  {resolvingConversationId === c.conversation_id ? 'Resolving…' : 'Resolve'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void deleteThread(c.conversation_id, c.client_email)}
+                                  disabled={
+                                    resolvingConversationId === c.conversation_id ||
+                                    deletingConversationId === c.conversation_id
+                                  }
+                                  className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
+                                >
+                                  {deletingConversationId === c.conversation_id ? 'Deleting…' : 'Delete'}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+
+            <section className={cardClass}>
+              <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-5">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Team</p>
+                  <h2 className="mt-1 text-xl font-bold text-slate-950">Performance by teammate</h2>
+                  <p className="mt-1 text-sm text-slate-600">Status dot reflects risk: missed SLAs, attention queue, or steady.</p>
+                </div>
+                <Link href="/employees" className="text-sm font-semibold text-brand-600 hover:text-brand-700">
+                  Manage team →
+                </Link>
+              </div>
+              {employeePerformance.length === 0 ? (
+                <p className="text-sm text-slate-500">No teammate activity in scope yet.</p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-100">
+                  <table className="min-w-[560px] w-full text-sm">
+                    <thead className="bg-slate-50/90 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-4 py-3 pl-5">Status</th>
+                        <th className="px-4 py-3">Teammate</th>
+                        <th className="px-4 py-3">Attention</th>
+                        <th className="px-4 py-3">Missed</th>
+                        <th className="px-4 py-3">Pending</th>
+                        <th className="px-4 py-3 pr-5">Resolved</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {employeePerformance.map((row) => {
+                        const h = teamHealth(row);
+                        return (
+                          <tr key={row.employee_id} className="hover:bg-slate-50/60">
+                            <td className="px-4 py-3 pl-5">
+                              <TeamHealthDot health={h} />
+                            </td>
+                            <td className="px-4 py-3">
+                              <Link
+                                href={`/employees?focus=${encodeURIComponent(row.employee_id)}`}
+                                className="font-semibold text-slate-900 hover:text-brand-600"
+                              >
+                                {row.employee}
+                              </Link>
+                            </td>
+                            <td className="px-4 py-3 tabular-nums font-medium text-slate-800">{row.attention}</td>
+                            <td className="px-4 py-3 tabular-nums font-medium text-red-600">{row.missed}</td>
+                            <td className="px-4 py-3 tabular-nums font-medium text-amber-600">{row.pending}</td>
+                            <td className="px-4 py-3 pr-5 tabular-nums font-medium text-emerald-600">{row.resolved}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+
+            <section className={`${cardClass} border-slate-300/80 bg-gradient-to-b from-slate-50/80 to-white`}>
+              <div className="mb-6 border-b border-slate-200/80 pb-5">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">AI insights</p>
+                <h2 className="mt-1 text-xl font-bold text-slate-950">Executive briefing signals</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Pulled from your latest saved executive report. Update via{' '}
+                  <Link href="/ai-reports" className="font-semibold text-brand-600 hover:text-brand-700">
+                    Reports
+                  </Link>
+                  .
+                </p>
+                {dash.ai_insights.last_updated_at ? (
+                  <p className="mt-2 text-xs text-slate-400">
+                    Last model run: {new Date(dash.ai_insights.last_updated_at).toLocaleString()}
+                  </p>
+                ) : null}
+              </div>
+              {!hasAiInsights ? (
+                <p className="text-sm text-slate-500">
+                  No briefing on file yet. Turn AI on in Settings and generate a report, or run one from Reports.
+                </p>
+              ) : (
+                <div className="grid gap-8 lg:grid-cols-2">
+                  <div className="space-y-4">
+                    <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Key issues and risks</h3>
+                    {aiKeyIssues.length > 0 ? (
+                      <ul className="space-y-3">
+                        {aiKeyIssues.map((line, i) => (
+                          <li
+                            key={`ki-${i}`}
+                            className="flex gap-3 rounded-xl border border-red-100 bg-red-50/40 px-4 py-3 text-sm leading-relaxed text-slate-800"
+                          >
+                            <span className="mt-0.5 font-mono text-xs font-bold text-red-500">{i + 1}</span>
+                            <span>{line}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : aiLegacyLines.length > 0 ? (
+                      <ul className="space-y-2 text-sm text-slate-700">
+                        {aiLegacyLines.slice(0, 6).map((line, i) => (
+                          <li key={`leg-${i}`} className="flex gap-2">
+                            <span className="text-slate-300">·</span>
+                            {line}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-sm text-slate-500">No key issues listed.</p>
+                    )}
+                    {aiPatterns.length > 0 ? (
+                      <div className="pt-2">
+                        <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Patterns</h4>
+                        <ul className="space-y-2 text-sm text-slate-700">
+                          {aiPatterns.map((line, i) => (
+                            <li key={`pat-${i}`} className="rounded-lg bg-slate-100/80 px-3 py-2">
+                              {line}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {aiPeopleLines.length > 0 ? (
+                      <div className="pt-2">
+                        <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">People and teams</h4>
+                        <ul className="space-y-2 text-sm text-slate-700">
+                          {aiPeopleLines.map((line, i) => (
+                            <li key={`peo-${i}`} className="rounded-lg border border-slate-100 bg-white px-3 py-2">
+                              {line}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Recommendation</h3>
+                    {aiRecommendation ? (
+                      <p className="mt-3 rounded-2xl border border-violet-200 bg-violet-50/60 p-5 text-base font-medium leading-relaxed text-slate-900">
+                        {aiRecommendation}
+                      </p>
+                    ) : (
+                      <p className="mt-3 text-sm text-slate-500">No recommendation in the latest briefing.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
+          </>
+        ) : (
+          <>
+            <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              {(
+                [
+                  {
+                    label: 'Needs attention',
+                    value: attentionCount,
+                    bar: 'from-brand-600 to-violet-500',
+                  },
+                  { label: 'Pending', value: pendingCount, bar: 'from-amber-400 to-amber-600' },
+                  { label: 'Missed SLA', value: missedCount, bar: 'from-red-400 to-red-600' },
+                  { label: 'Resolved today', value: resolvedTodayCount, bar: 'from-emerald-400 to-teal-600' },
+                ] as const
+              ).map((k) => (
+                <div
+                  key={k.label}
+                  className="relative overflow-hidden rounded-2xl border border-slate-200/60 bg-surface-card p-6 shadow-card"
+                >
+                  <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${k.bar}`} aria-hidden />
+                  <p className="text-3xl font-bold tabular-nums tracking-tight text-slate-900">{k.value}</p>
+                  <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{k.label}</p>
+                </div>
+              ))}
+            </section>
 
         {isEmployee && teamAlerts?.items?.some((a) => !a.read_at && !a.in_reply_to) ? (
           <div className="space-y-3" role="region" aria-label="Messages from your manager">
@@ -629,16 +1037,6 @@ export default function DashboardPage() {
                 </div>
               ))}
           </div>
-        ) : null}
-
-        {isCeo && dash.onboarding?.show ? (
-          <section className={cardClass}>
-            <h2 className="text-sm font-semibold text-slate-900">Setup</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              {dash.onboarding?.state ?? '—'} · {dash.onboarding?.employee_count ?? 0} people ·{' '}
-              {dash.onboarding?.mailboxes_connected ?? 0} mailboxes
-            </p>
-          </section>
         ) : null}
 
         <section className={cardClass}>
@@ -758,7 +1156,7 @@ export default function DashboardPage() {
           )}
         </section>
 
-        {!isEmployee ? (
+        {!isEmployee && !isCeo ? (
           <section className={cardClass}>
             <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
               <div>
@@ -834,6 +1232,9 @@ export default function DashboardPage() {
             </>
           )}
         </section>
+
+          </>
+        )}
 
       </AppShell>
 
