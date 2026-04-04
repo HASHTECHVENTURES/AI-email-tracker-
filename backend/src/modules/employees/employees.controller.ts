@@ -118,6 +118,25 @@ export class EmployeesController {
     return { status: 'ok' };
   }
 
+  /** Per-employee: pause Gmail fetch (`tracking_paused`) and/or AI (`ai_enabled`). CEO or department HEAD only. */
+  @Patch(':id/pauses')
+  async updatePauses(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Body() body: { tracking_paused?: boolean; ai_enabled?: boolean },
+  ) {
+    const ctx = getRequestContext(req);
+    const updated = await this.employeesService.updateEmployeePauses(ctx, id, body);
+    await this.auditLogService.log({
+      userId: req.user!.id,
+      companyId: ctx.companyId,
+      action: 'employee_pauses_updated',
+      entity: 'employee',
+      entityId: id,
+    });
+    return { ok: true, employee: updated };
+  }
+
   @Patch(':id/sla')
   async updateSla(
     @Req() req: Request,

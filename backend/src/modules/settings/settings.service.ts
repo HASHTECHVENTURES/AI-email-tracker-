@@ -119,6 +119,42 @@ export class SettingsService {
     }
   }
 
+  /**
+   * CEO master switches: `email` toggles all Gmail crawl keys together;
+   * `ai` toggles AI mode, Inbox AI, manager/employee AI flags together.
+   */
+  async setCompanyMasters(opts: { email?: boolean; ai?: boolean }): Promise<void> {
+    const pairs: Array<{ key: string; value: string }> = [];
+    if (opts.email !== undefined) {
+      const v = opts.email ? 'true' : 'false';
+      pairs.push(
+        { key: 'email_crawl_enabled', value: v },
+        { key: 'email_crawl_team_mailboxes_enabled', value: v },
+        { key: 'email_crawl_employee_mailboxes_enabled', value: v },
+      );
+    }
+    if (opts.ai !== undefined) {
+      if (opts.ai) {
+        pairs.push(
+          { key: 'ai_mode', value: 'AUTO' },
+          { key: 'ai_enabled', value: 'true' },
+          { key: 'email_ai_relevance_enabled', value: 'true' },
+          { key: 'ai_for_managers_enabled', value: 'true' },
+          { key: 'ai_for_employees_enabled', value: 'true' },
+        );
+      } else {
+        pairs.push(
+          { key: 'ai_mode', value: 'OFF' },
+          { key: 'ai_enabled', value: 'false' },
+          { key: 'email_ai_relevance_enabled', value: 'false' },
+          { key: 'ai_for_managers_enabled', value: 'false' },
+          { key: 'ai_for_employees_enabled', value: 'false' },
+        );
+      }
+    }
+    await this.setMany(pairs);
+  }
+
   async getRuntimeStatus(): Promise<RuntimeStatus> {
     const { data, error } = await this.supabase
       .from('system_settings')

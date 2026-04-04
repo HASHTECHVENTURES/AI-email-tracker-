@@ -47,6 +47,10 @@ export interface OrgEmployeeDto {
   login_created?: boolean;
   /** True when a `users` row links this employee (Employee portal) */
   has_portal_login?: boolean;
+  /** When true, Gmail fetch / ingestion skips this mailbox (per-employee pause). */
+  tracking_paused?: boolean;
+  /** When false, Inbox AI + thread enrichment skip this mailbox (per-employee AI pause). */
+  ai_enabled?: boolean;
 }
 
 export interface EmployeeMessageDto {
@@ -360,7 +364,9 @@ export class EmployeesService {
 
     let query = this.supabase
       .from('employees')
-      .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at')
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
+      )
       .eq('company_id', ctx.companyId)
       .order('name', { ascending: true });
 
@@ -423,7 +429,98 @@ export class EmployeesService {
       sla_hours_default: r.sla_hours_default ?? null,
       tracking_start_at: r.tracking_start_at ?? null,
       has_portal_login: portalLinked.has(r.id),
+      tracking_paused: r.tracking_paused === true,
+      ai_enabled: r.ai_enabled !== false,
     }));
+  }
+
+  async updateEmployeePauses(
+    ctx: RequestContext,
+    employeeId: string,
+    body: { tracking_paused?: boolean; ai_enabled?: boolean },
+  ): Promise<OrgEmployeeDto> {
+    if (ctx.role === 'EMPLOYEE') {
+      throw new ForbiddenException('Employees cannot update mailbox pauses');
+    }
+    if (
+      body.tracking_paused === undefined &&
+      body.ai_enabled === undefined
+    ) {
+      throw new BadRequestException('Provide tracking_paused and/or ai_enabled');
+    }
+
+    const { data: row, error } = await this.supabase
+      .from('employees')
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
+      )
+      .eq('company_id', ctx.companyId)
+      .eq('id', employeeId)
+      .maybeSingle();
+
+    if (error) {
+      this.logger.error('Failed to load employee for pause update', error.message);
+      throw error;
+    }
+    if (!row) {
+      throw new NotFoundException('Employee not found');
+    }
+    const dbRow = row as EmployeeDbRow;
+    if (ctx.role === 'HEAD') {
+      if (!ctx.departmentId || dbRow.department_id !== ctx.departmentId) {
+        throw new ForbiddenException('You can only update pauses for employees in your department');
+      }
+    }
+
+    const patch: { tracking_paused?: boolean; ai_enabled?: boolean } = {};
+    if (typeof body.tracking_paused === 'boolean') {
+      patch.tracking_paused = body.tracking_paused;
+    }
+    if (typeof body.ai_enabled === 'boolean') {
+      patch.ai_enabled = body.ai_enabled;
+    }
+
+    const { data: updated, error: updErr } = await this.supabase
+      .from('employees')
+      .update(patch)
+      .eq('company_id', ctx.companyId)
+      .eq('id', employeeId)
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
+      )
+      .single();
+
+    if (updErr) {
+      this.logger.error('Failed to update employee pauses', updErr.message);
+      throw updErr;
+    }
+
+    const u = updated as EmployeeDbRow;
+    const deptName = await this.getDepartmentName(ctx.companyId, u.department_id);
+    const { data: portalRows } = await this.supabase
+      .from('users')
+      .select('id')
+      .eq('company_id', ctx.companyId)
+      .eq('linked_employee_id', employeeId)
+      .limit(1);
+    const hasPortal = (portalRows?.length ?? 0) > 0;
+
+    return {
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      department_id: u.department_id,
+      department_name: deptName,
+      created_at: u.created_at,
+      gmail_connected: (u.gmail_status ?? 'EXPIRED') === 'CONNECTED',
+      gmail_status: (u.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
+      last_synced_at: u.last_synced_at ?? null,
+      sla_hours_default: u.sla_hours_default ?? null,
+      tracking_start_at: u.tracking_start_at ?? null,
+      has_portal_login: hasPortal,
+      tracking_paused: u.tracking_paused === true,
+      ai_enabled: u.ai_enabled !== false,
+    };
   }
 
   async updateEmployeeSla(

@@ -22,6 +22,26 @@ interface IngestionResult {
   error?: string;
 }
 
+// #region agent log
+function agentIngestLog(payload: {
+  hypothesisId: string;
+  location: string;
+  message: string;
+  data?: Record<string, unknown>;
+  runId?: string;
+}): void {
+  void fetch('http://127.0.0.1:7758/ingest/3f959e88-e323-4293-b212-b53185d6de50', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '6b8d53' },
+    body: JSON.stringify({
+      sessionId: '6b8d53',
+      timestamp: Date.now(),
+      ...payload,
+    }),
+  }).catch(() => {});
+}
+// #endregion
+
 @Injectable()
 export class EmailIngestionService {
   private readonly logger = new Logger(EmailIngestionService.name);
@@ -51,8 +71,29 @@ export class EmailIngestionService {
    */
   async runIncrementalCycle(options?: { force?: boolean }): Promise<IngestionResult[]> {
     const pre = await this.settingsService.getAll();
+    // #region agent log
+    agentIngestLog({
+      hypothesisId: 'H1',
+      location: 'email-ingestion.service.ts:runIncrementalCycle:pre',
+      message: 'cycle settings snapshot',
+      data: {
+        email_crawl_enabled: pre.email_crawl_enabled,
+        email_crawl_team_mailboxes_enabled: pre.email_crawl_team_mailboxes_enabled,
+        email_crawl_employee_mailboxes_enabled: pre.email_crawl_employee_mailboxes_enabled,
+        force: Boolean(options?.force),
+      },
+    });
+    // #endregion
     if (!pre.email_crawl_enabled && !options?.force) {
       this.logger.debug('Ingestion skipped — mailbox crawl disabled in settings');
+      // #region agent log
+      agentIngestLog({
+        hypothesisId: 'H1',
+        location: 'email-ingestion.service.ts:runIncrementalCycle:exit',
+        message: 'ingestion skipped — email_crawl_enabled false',
+        data: { exited: true },
+      });
+      // #endregion
       return [];
     }
 
@@ -74,6 +115,8 @@ export class EmailIngestionService {
 
     const results: IngestionResult[] = [];
     const cycleSettings = await this.settingsService.getAll();
+    let dbgNoOAuth = 0;
+    let dbgWithOAuth = 0;
 
     try {
       for (const row of companies ?? []) {
@@ -83,8 +126,10 @@ export class EmailIngestionService {
         for (const employee of employees) {
           const hasOAuth = await this.oauthTokenService.hasToken(employee.id);
           if (!hasOAuth) {
+            dbgNoOAuth++;
             continue;
           }
+          dbgWithOAuth++;
 
           try {
             const result = await this.ingestForEmployee(companyId, employee, cycleSettings);
@@ -124,8 +169,34 @@ export class EmailIngestionService {
         messages: results.reduce((sum, r) => sum + r.newMessages, 0),
       });
 
+      // #region agent log
+      const errCount = results.filter((r) => r.error).length;
+      const newSum = results.reduce((sum, r) => sum + r.newMessages, 0);
+      agentIngestLog({
+        hypothesisId: 'H2-H3-H5',
+        location: 'email-ingestion.service.ts:runIncrementalCycle:success',
+        message: 'cycle finished',
+        data: {
+          companyCount: (companies ?? []).length,
+          dbgNoOAuth,
+          dbgWithOAuth,
+          resultsLength: results.length,
+          newMessagesSum: newSum,
+          resultsWithErrors: errCount,
+        },
+      });
+      // #endregion
+
       return results;
     } catch (err) {
+      // #region agent log
+      agentIngestLog({
+        hypothesisId: 'H5',
+        location: 'email-ingestion.service.ts:runIncrementalCycle:catch',
+        message: 'cycle failed',
+        data: { errMsg: (err as Error).message?.slice(0, 240) },
+      });
+      // #endregion
       await this.settingsService.markIngestionFinished({
         status: 'failed',
         error: (err as Error).message,
@@ -143,6 +214,14 @@ export class EmailIngestionService {
   ): Promise<IngestionResult> {
     const tracking = await this.employeesService.getTrackingState(companyId, employee.id);
     if (tracking?.trackingPaused) {
+      // #region agent log
+      agentIngestLog({
+        hypothesisId: 'H5',
+        location: 'email-ingestion.service.ts:ingestForEmployee',
+        message: 'skip tracking_paused',
+        data: { eidLen: employee.id.length },
+      });
+      // #endregion
       return {
         companyId,
         employeeId: employee.id,
@@ -157,6 +236,14 @@ export class EmailIngestionService {
     const portalLinked = await this.employeesService.hasPortalEmployeeLink(companyId, employee.id);
     if (portalLinked && !cycleSettings.email_crawl_employee_mailboxes_enabled) {
       this.logger.debug(`Ingest skipped (employee-portal mailbox crawl off): ${employee.name}`);
+      // #region agent log
+      agentIngestLog({
+        hypothesisId: 'H2',
+        location: 'email-ingestion.service.ts:ingestForEmployee',
+        message: 'skip employee_mailboxes_crawl_off',
+        data: { portalLinked: true },
+      });
+      // #endregion
       return {
         companyId,
         employeeId: employee.id,
@@ -169,6 +256,14 @@ export class EmailIngestionService {
     }
     if (!portalLinked && !cycleSettings.email_crawl_team_mailboxes_enabled) {
       this.logger.debug(`Ingest skipped (team mailbox crawl off): ${employee.name}`);
+      // #region agent log
+      agentIngestLog({
+        hypothesisId: 'H2',
+        location: 'email-ingestion.service.ts:ingestForEmployee',
+        message: 'skip team_mailboxes_crawl_off',
+        data: { portalLinked: false },
+      });
+      // #endregion
       return {
         companyId,
         employeeId: employee.id,
@@ -194,6 +289,14 @@ export class EmailIngestionService {
 
     if (messageIds.length === 0) {
       this.logger.log(`No new messages for ${employee.name}`);
+      // #region agent log
+      agentIngestLog({
+        hypothesisId: 'H5',
+        location: 'email-ingestion.service.ts:ingestForEmployee',
+        message: 'gmail fetch returned 0 ids',
+        data: { eidLen: employee.id.length },
+      });
+      // #endregion
       return {
         companyId,
         employeeId: employee.id,
@@ -234,7 +337,7 @@ export class EmailIngestionService {
           employee.email,
           excludePatterns,
           this.gmailService.isNoise(msg.labelIds),
-          cycleSettings.email_ai_relevance_enabled,
+          cycleSettings.email_ai_relevance_enabled && employee.aiEnabled !== false,
         );
         if (!relevant) {
           skippedFiltered++;

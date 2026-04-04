@@ -21,6 +21,20 @@ export class EmailIngestionController {
     }
 
     const internal = Boolean(req.internalApiAuth);
+    // #region agent log
+    void fetch('http://127.0.0.1:7758/ingest/3f959e88-e323-4293-b212-b53185d6de50', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '6b8d53' },
+      body: JSON.stringify({
+        sessionId: '6b8d53',
+        timestamp: Date.now(),
+        hypothesisId: 'H_manual',
+        location: 'email-ingestion.controller.ts:runIngestion',
+        message: 'GET email-ingestion/run invoked',
+        data: { internal },
+      }),
+    }).catch(() => {});
+    // #endregion
     if (!internal) {
       const s = await this.settingsService.getAll();
       if (!s.email_crawl_enabled) {

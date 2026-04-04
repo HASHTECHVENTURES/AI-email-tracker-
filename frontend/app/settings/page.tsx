@@ -1,8 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
@@ -36,10 +35,8 @@ export default function SettingsPage() {
   const [sysStatus, setSysStatus] = useState<SystemStatusLite | null>(null);
   const [slaDraft, setSlaDraft] = useState('');
   const [savingSla, setSavingSla] = useState(false);
-  const [savingAi, setSavingAi] = useState(false);
-  const [savingEmailAi, setSavingEmailAi] = useState(false);
-  const [savingCrawl, setSavingCrawl] = useState(false);
-  const [roleSavingKey, setRoleSavingKey] = useState<string | null>(null);
+  const [savingMasterEmail, setSavingMasterEmail] = useState(false);
+  const [savingMasterAi, setSavingMasterAi] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -84,6 +81,25 @@ export default function SettingsPage() {
     void load(token);
   }, [authLoading, authMe, token, router, load]);
 
+  const masterEmailOn = useMemo(() => {
+    if (!settings) return false;
+    return (
+      settings.email_crawl_enabled !== false &&
+      settings.email_crawl_team_mailboxes_enabled !== false &&
+      settings.email_crawl_employee_mailboxes_enabled !== false
+    );
+  }, [settings]);
+
+  const masterAiOn = useMemo(() => {
+    if (!settings) return false;
+    return (
+      Boolean(settings.ai_enabled) &&
+      settings.email_ai_relevance_enabled !== false &&
+      settings.ai_for_managers_enabled !== false &&
+      settings.ai_for_employees_enabled !== false
+    );
+  }, [settings]);
+
   async function saveSla() {
     if (!me || me.role !== 'CEO' || !token) return;
     setError(null);
@@ -111,95 +127,55 @@ export default function SettingsPage() {
     }
   }
 
-  async function setAiEnabled(next: boolean) {
+  async function setMasterEmail(next: boolean) {
     if (!me || me.role !== 'CEO' || !token) return;
     setError(null);
     setNotice(null);
-    setSavingAi(true);
+    setSavingMasterEmail(true);
     try {
-      const res = await apiFetch('/settings', token, {
+      const res = await apiFetch('/settings/masters', token, {
         method: 'PUT',
-        body: JSON.stringify({ key: 'ai_mode', value: next ? 'AUTO' : 'OFF' }),
+        body: JSON.stringify({ email: next }),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
-        setError((b.message as string) || 'Could not update AI setting');
-        return;
-      }
-      setNotice(next ? 'AI operations on.' : 'AI operations off (reports & thread enrichment paused).');
-      await load(token);
-    } finally {
-      setSavingAi(false);
-    }
-  }
-
-  async function saveRoleSetting(key: string, next: boolean, success: string) {
-    if (!me || me.role !== 'CEO' || !token) return;
-    setError(null);
-    setNotice(null);
-    setRoleSavingKey(key);
-    try {
-      const res = await apiFetch('/settings', token, {
-        method: 'PUT',
-        body: JSON.stringify({ key, value: next ? 'true' : 'false' }),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({}));
-        setError((b.message as string) || 'Could not save setting');
-        return;
-      }
-      setNotice(success);
-      await load(token);
-    } finally {
-      setRoleSavingKey(null);
-    }
-  }
-
-  async function setMailboxCrawl(next: boolean) {
-    if (!me || me.role !== 'CEO' || !token) return;
-    setError(null);
-    setNotice(null);
-    setSavingCrawl(true);
-    try {
-      const res = await apiFetch('/settings', token, {
-        method: 'PUT',
-        body: JSON.stringify({ key: 'email_crawl_enabled', value: next ? 'true' : 'false' }),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({}));
-        setError((b.message as string) || 'Could not update mailbox crawl setting');
+        setError((b.message as string) || 'Could not update email master');
         return;
       }
       setNotice(
         next
-          ? 'Mailbox crawl on — scheduled Gmail fetch will run again.'
-          : 'Mailbox crawl off — automatic Gmail fetch is paused (turn on to resume).',
+          ? 'Email (Gmail fetch) on for the whole company — all connected mailboxes can sync.'
+          : 'Email (Gmail fetch) paused company-wide. Managers can still pause individual mailboxes on the Employees page.',
       );
       await load(token);
     } finally {
-      setSavingCrawl(false);
+      setSavingMasterEmail(false);
     }
   }
 
-  async function setEmailAiRelevance(next: boolean) {
+  async function setMasterAi(next: boolean) {
     if (!me || me.role !== 'CEO' || !token) return;
     setError(null);
     setNotice(null);
-    setSavingEmailAi(true);
+    setSavingMasterAi(true);
     try {
-      const res = await apiFetch('/settings', token, {
+      const res = await apiFetch('/settings/masters', token, {
         method: 'PUT',
-        body: JSON.stringify({ key: 'email_ai_relevance_enabled', value: next ? 'true' : 'false' }),
+        body: JSON.stringify({ ai: next }),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
-        setError((b.message as string) || 'Could not update inbox AI setting');
+        setError((b.message as string) || 'Could not update AI master');
         return;
       }
-      setNotice(next ? 'Inbox AI classification on.' : 'Inbox AI off — using rules only for new mail.');
+      setNotice(
+        next
+          ? 'AI on — Inbox classification, thread enrichment, and manager/employee AI paths are enabled (per company defaults).'
+          : 'AI off company-wide — no Gemini for inbox, enrichment, or reports. Rules-only tracking where mail still syncs.',
+      );
       await load(token);
     } finally {
-      setSavingEmailAi(false);
+      setSavingMasterAi(false);
     }
   }
 
@@ -223,32 +199,34 @@ export default function SettingsPage() {
       isActive={sysStatus?.is_active}
       aiBriefingsEnabled={sysStatus == null ? undefined : sysStatus.ai_status}
       mailboxCrawlEnabled={sysStatus == null ? undefined : sysStatus.email_crawl_enabled}
-      onRefresh={() => { if (token) void load(token); }}
+      onRefresh={() => {
+        if (token) void load(token);
+      }}
       onSignOut={() => void ctxSignOut()}
     >
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
       {notice ? <p className="text-sm text-emerald-700">{notice}</p> : null}
 
       <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
-        <h2 className="text-base font-semibold text-slate-900">AI operations</h2>
+        <h2 className="text-base font-semibold text-slate-900">Email (Gmail fetch)</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Executive / department AI reports and Gemini enrichment on conversation threads. Does not stop Gmail fetch — use <strong className="font-medium">Mailbox crawl</strong> below to pause ingestion.
+          Company-wide switch: scheduled sync, manual ingestion, and all team / employee mailbox crawls. When off, no new mail is fetched anywhere.{' '}
+          <strong className="font-medium text-slate-600">Department managers</strong> can still pause individual mailboxes on the{' '}
+          <strong className="font-medium text-slate-600">Employees</strong> page without changing this.
         </p>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
-          <span className="text-sm font-medium text-slate-700">
-            {settings?.ai_enabled ? 'On' : 'Off'}
-          </span>
+          <span className="text-sm font-medium text-slate-700">{masterEmailOn ? 'On' : 'Off'}</span>
           {isCeo ? (
             <button
               type="button"
               role="switch"
-              aria-checked={Boolean(settings?.ai_enabled)}
-              disabled={savingAi}
-              onClick={() => void setAiEnabled(!settings?.ai_enabled)}
-              className={`relative h-8 w-14 rounded-full transition-colors ${settings?.ai_enabled ? 'bg-indigo-600' : 'bg-slate-200'} ${savingAi ? 'opacity-50' : ''}`}
+              aria-checked={masterEmailOn}
+              disabled={savingMasterEmail}
+              onClick={() => void setMasterEmail(!masterEmailOn)}
+              className={`relative h-8 w-14 rounded-full transition-colors ${masterEmailOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterEmail ? 'opacity-50' : ''}`}
             >
               <span
-                className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${settings?.ai_enabled ? 'left-7' : 'left-1'}`}
+                className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${masterEmailOn ? 'left-7' : 'left-1'}`}
               />
             </button>
           ) : (
@@ -258,206 +236,25 @@ export default function SettingsPage() {
       </section>
 
       <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
-        <h2 className="text-base font-semibold text-slate-900">Mailbox crawl (Gmail fetch)</h2>
+        <h2 className="text-base font-semibold text-slate-900">AI</h2>
         <p className="mt-1 text-sm text-slate-500">
-          When off, the app does not fetch new mail from connected mailboxes (scheduled runs every 2 minutes and CEO “run ingestion” both stop). Existing data stays in the dashboard.
+          Company-wide switch: Inbox AI classification, thread enrichment (Gemini), AI for manager and employee mailboxes, and executive AI reports. When off, follow-up timing still runs on{' '}
+          <strong className="font-medium text-slate-600">rules</strong> if email sync is on. Managers can pause AI per mailbox on{' '}
+          <strong className="font-medium text-slate-600">Employees</strong>.
         </p>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
-          <span className="text-sm font-medium text-slate-700">
-            {settings?.email_crawl_enabled !== false ? 'On' : 'Off'}
-          </span>
+          <span className="text-sm font-medium text-slate-700">{masterAiOn ? 'On' : 'Off'}</span>
           {isCeo ? (
             <button
               type="button"
               role="switch"
-              aria-checked={settings?.email_crawl_enabled !== false}
-              disabled={savingCrawl}
-              onClick={() => void setMailboxCrawl(!(settings?.email_crawl_enabled !== false))}
-              className={`relative h-8 w-14 rounded-full transition-colors ${settings?.email_crawl_enabled !== false ? 'bg-indigo-600' : 'bg-slate-200'} ${savingCrawl ? 'opacity-50' : ''}`}
+              aria-checked={masterAiOn}
+              disabled={savingMasterAi}
+              onClick={() => void setMasterAi(!masterAiOn)}
+              className={`relative h-8 w-14 rounded-full transition-colors ${masterAiOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterAi ? 'opacity-50' : ''}`}
             >
               <span
-                className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${settings?.email_crawl_enabled !== false ? 'left-7' : 'left-1'}`}
-              />
-            </button>
-          ) : (
-            <span className="text-xs text-slate-400">CEO only</span>
-          )}
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
-        <h2 className="text-base font-semibold text-slate-900">Managers & employees</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Fine-grained controls when company-wide AI and mailbox crawl are on. <strong className="font-medium text-slate-600">Team mailbox</strong> means a
-          tracked mailbox with no Employee portal user linked to it. <strong className="font-medium text-slate-600">Employee portal mailbox</strong> is linked
-          to a user with role Employee.
-        </p>
-        <ul className="mt-4 space-y-5">
-          <li className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 pb-4 last:border-0 last:pb-0">
-            <div className="min-w-0 max-w-md">
-              <p className="text-sm font-medium text-slate-800">AI for department managers</p>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Department head dashboard briefings, AI reports, and thread enrichment for team mailboxes.
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-3">
-              <span className="text-sm font-medium text-slate-700">
-                {settings?.ai_for_managers_enabled !== false ? 'On' : 'Off'}
-              </span>
-              {isCeo ? (
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={settings?.ai_for_managers_enabled !== false}
-                  disabled={roleSavingKey !== null}
-                  onClick={() =>
-                    void saveRoleSetting(
-                      'ai_for_managers_enabled',
-                      !(settings?.ai_for_managers_enabled !== false),
-                      !(settings?.ai_for_managers_enabled !== false)
-                        ? 'AI for department managers is on.'
-                        : 'AI for department managers is off.',
-                    )
-                  }
-                  className={`relative h-8 w-14 rounded-full transition-colors ${settings?.ai_for_managers_enabled !== false ? 'bg-indigo-600' : 'bg-slate-200'} ${roleSavingKey ? 'opacity-50' : ''}`}
-                >
-                  <span
-                    className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${settings?.ai_for_managers_enabled !== false ? 'left-7' : 'left-1'}`}
-                  />
-                </button>
-              ) : (
-                <span className="text-xs text-slate-400">CEO only</span>
-              )}
-            </div>
-          </li>
-          <li className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 pb-4 last:border-0 last:pb-0">
-            <div className="min-w-0 max-w-md">
-              <p className="text-sm font-medium text-slate-800">AI for employee portal mailboxes</p>
-              <p className="mt-0.5 text-xs text-slate-500">Thread enrichment for mailboxes tied to an Employee login.</p>
-            </div>
-            <div className="flex shrink-0 items-center gap-3">
-              <span className="text-sm font-medium text-slate-700">
-                {settings?.ai_for_employees_enabled !== false ? 'On' : 'Off'}
-              </span>
-              {isCeo ? (
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={settings?.ai_for_employees_enabled !== false}
-                  disabled={roleSavingKey !== null}
-                  onClick={() =>
-                    void saveRoleSetting(
-                      'ai_for_employees_enabled',
-                      !(settings?.ai_for_employees_enabled !== false),
-                      !(settings?.ai_for_employees_enabled !== false)
-                        ? 'AI for employee mailboxes is on.'
-                        : 'AI for employee mailboxes is off.',
-                    )
-                  }
-                  className={`relative h-8 w-14 rounded-full transition-colors ${settings?.ai_for_employees_enabled !== false ? 'bg-indigo-600' : 'bg-slate-200'} ${roleSavingKey ? 'opacity-50' : ''}`}
-                >
-                  <span
-                    className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${settings?.ai_for_employees_enabled !== false ? 'left-7' : 'left-1'}`}
-                  />
-                </button>
-              ) : (
-                <span className="text-xs text-slate-400">CEO only</span>
-              )}
-            </div>
-          </li>
-          <li className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 pb-4 last:border-0 last:pb-0">
-            <div className="min-w-0 max-w-md">
-              <p className="text-sm font-medium text-slate-800">Gmail fetch — team mailboxes</p>
-              <p className="mt-0.5 text-xs text-slate-500">Fetch new mail for tracked mailboxes without an Employee portal link.</p>
-            </div>
-            <div className="flex shrink-0 items-center gap-3">
-              <span className="text-sm font-medium text-slate-700">
-                {settings?.email_crawl_team_mailboxes_enabled !== false ? 'On' : 'Off'}
-              </span>
-              {isCeo ? (
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={settings?.email_crawl_team_mailboxes_enabled !== false}
-                  disabled={roleSavingKey !== null}
-                  onClick={() =>
-                    void saveRoleSetting(
-                      'email_crawl_team_mailboxes_enabled',
-                      !(settings?.email_crawl_team_mailboxes_enabled !== false),
-                      !(settings?.email_crawl_team_mailboxes_enabled !== false)
-                        ? 'Team mailbox Gmail fetch is on.'
-                        : 'Team mailbox Gmail fetch is off.',
-                    )
-                  }
-                  className={`relative h-8 w-14 rounded-full transition-colors ${settings?.email_crawl_team_mailboxes_enabled !== false ? 'bg-indigo-600' : 'bg-slate-200'} ${roleSavingKey ? 'opacity-50' : ''}`}
-                >
-                  <span
-                    className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${settings?.email_crawl_team_mailboxes_enabled !== false ? 'left-7' : 'left-1'}`}
-                  />
-                </button>
-              ) : (
-                <span className="text-xs text-slate-400">CEO only</span>
-              )}
-            </div>
-          </li>
-          <li className="flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0 max-w-md">
-              <p className="text-sm font-medium text-slate-800">Gmail fetch — employee portal mailboxes</p>
-              <p className="mt-0.5 text-xs text-slate-500">Fetch new mail only for mailboxes linked to an Employee login.</p>
-            </div>
-            <div className="flex shrink-0 items-center gap-3">
-              <span className="text-sm font-medium text-slate-700">
-                {settings?.email_crawl_employee_mailboxes_enabled !== false ? 'On' : 'Off'}
-              </span>
-              {isCeo ? (
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={settings?.email_crawl_employee_mailboxes_enabled !== false}
-                  disabled={roleSavingKey !== null}
-                  onClick={() =>
-                    void saveRoleSetting(
-                      'email_crawl_employee_mailboxes_enabled',
-                      !(settings?.email_crawl_employee_mailboxes_enabled !== false),
-                      !(settings?.email_crawl_employee_mailboxes_enabled !== false)
-                        ? 'Employee portal mailbox Gmail fetch is on.'
-                        : 'Employee portal mailbox Gmail fetch is off.',
-                    )
-                  }
-                  className={`relative h-8 w-14 rounded-full transition-colors ${settings?.email_crawl_employee_mailboxes_enabled !== false ? 'bg-indigo-600' : 'bg-slate-200'} ${roleSavingKey ? 'opacity-50' : ''}`}
-                >
-                  <span
-                    className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${settings?.email_crawl_employee_mailboxes_enabled !== false ? 'left-7' : 'left-1'}`}
-                  />
-                </button>
-              ) : (
-                <span className="text-xs text-slate-400">CEO only</span>
-              )}
-            </div>
-          </li>
-        </ul>
-      </section>
-
-      <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
-        <h2 className="text-base font-semibold text-slate-900">Inbox AI (email enrichment)</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          When on, new Gmail messages are classified with AI to decide if they become tracked conversations. When off, only built-in rules and exclude patterns apply.
-        </p>
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
-          <span className="text-sm font-medium text-slate-700">
-            {settings?.email_ai_relevance_enabled !== false ? 'On' : 'Off'}
-          </span>
-          {isCeo ? (
-            <button
-              type="button"
-              role="switch"
-              aria-checked={settings?.email_ai_relevance_enabled !== false}
-              disabled={savingEmailAi}
-              onClick={() => void setEmailAiRelevance(!(settings?.email_ai_relevance_enabled !== false))}
-              className={`relative h-8 w-14 rounded-full transition-colors ${settings?.email_ai_relevance_enabled !== false ? 'bg-indigo-600' : 'bg-slate-200'} ${savingEmailAi ? 'opacity-50' : ''}`}
-            >
-              <span
-                className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${settings?.email_ai_relevance_enabled !== false ? 'left-7' : 'left-1'}`}
+                className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${masterAiOn ? 'left-7' : 'left-1'}`}
               />
             </button>
           ) : (
@@ -502,9 +299,9 @@ export default function SettingsPage() {
 
       <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
         <h2 className="text-base font-semibold text-slate-900">Ingestion</h2>
-        {settings?.email_crawl_enabled === false ? (
+        {!masterEmailOn ? (
           <p className="mt-2 text-sm text-amber-800">
-            Mailbox crawl is off — scheduled cycles skip Gmail until you turn it back on.
+            Company email master is off — scheduled cycles skip Gmail until the CEO turns it back on.
           </p>
         ) : null}
         <ul className="mt-3 space-y-2 text-sm text-slate-600">
@@ -515,9 +312,7 @@ export default function SettingsPage() {
           <li>Last status: {runtime?.lastIngestionStatus ?? '—'}</li>
           <li>
             Last finished:{' '}
-            {runtime?.lastIngestionFinishedAt
-              ? new Date(runtime.lastIngestionFinishedAt).toLocaleString()
-              : '—'}
+            {runtime?.lastIngestionFinishedAt ? new Date(runtime.lastIngestionFinishedAt).toLocaleString() : '—'}
           </li>
         </ul>
       </section>

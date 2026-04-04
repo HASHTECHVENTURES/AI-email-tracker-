@@ -34,6 +34,10 @@ type EmployeeRow = {
   last_synced_at?: string | null;
   sla_hours_default?: number | null;
   tracking_start_at?: string | null;
+  /** When true, Gmail fetch skips this mailbox (per-employee pause). */
+  tracking_paused?: boolean;
+  /** When false, Inbox AI + thread enrichment skip this mailbox. */
+  ai_enabled?: boolean;
 };
 
 type EmployeeMessage = {
@@ -72,6 +76,7 @@ function EmployeesPageInner() {
   const [currentPage, setCurrentPage] = useState(1);
   const [sortBy, setSortBy] = useState<'name' | 'department' | 'gmail' | 'last_sync'>('last_sync');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [pauseSavingFor, setPauseSavingFor] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [addName, setAddName] = useState('');
   const [addEmail, setAddEmail] = useState('');
@@ -82,6 +87,7 @@ function EmployeesPageInner() {
   const [addSuccess, setAddSuccess] = useState<string | null>(null);
   const [addSaving, setAddSaving] = useState(false);
   const isManager = me?.role === 'HEAD' || me?.role === 'MANAGER';
+  const isCeo = me?.role === 'CEO';
   const managerDepartmentName =
     isManager && me?.department_id
       ? departments.find((d) => d.id === me.department_id)?.name ?? 'Assigned department'
@@ -302,6 +308,38 @@ function EmployeesPageInner() {
     await loadLists(session.access_token);
   }
 
+  async function patchEmployeePauses(employeeId: string, body: { tracking_paused?: boolean; ai_enabled?: boolean }) {
+    setError(null);
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return;
+    setPauseSavingFor(employeeId);
+    try {
+      const res = await apiFetch(`/employees/${encodeURIComponent(employeeId)}/pauses`, session.access_token, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        setError((b.message as string) || 'Could not update mailbox pauses');
+        return;
+      }
+      await loadLists(session.access_token);
+    } finally {
+      setPauseSavingFor(null);
+    }
+  }
+
+  function emailFetchOn(emp: EmployeeRow): boolean {
+    return emp.tracking_paused !== true;
+  }
+
+  function aiOn(emp: EmployeeRow): boolean {
+    return emp.ai_enabled !== false;
+  }
+
   const filteredEmployees = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return employees;
@@ -483,6 +521,13 @@ function EmployeesPageInner() {
               />
             </div>
           </div>
+          {(isManager || isCeo) && employees.length > 0 ? (
+            <p className="mt-3 text-xs text-slate-500">
+              {isManager
+                ? 'Pause Email fetch or AI on a card for that mailbox only — other team members are unchanged.'
+                : 'Email / AI columns pause one mailbox at a time. Company-wide switches live under Settings.'}
+            </p>
+          ) : null}
           {employees.length === 0 ? (
             <p className="mt-3 text-sm text-slate-500">Add people to get started.</p>
           ) : sortedEmployees.length === 0 ? (
@@ -569,6 +614,43 @@ function EmployeesPageInner() {
                           Save
                         </button>
                       </div>
+                      <div className="mt-3 space-y-2 rounded-xl border border-slate-100 bg-white/80 p-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">This mailbox only</p>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-slate-600">Email fetch</span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={emailFetchOn(emp)}
+                            disabled={pauseSavingFor === emp.id}
+                            onClick={() =>
+                              void patchEmployeePauses(emp.id, { tracking_paused: emailFetchOn(emp) })
+                            }
+                            title={emailFetchOn(emp) ? 'Pause Gmail sync for this person' : 'Resume Gmail sync'}
+                            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${emailFetchOn(emp) ? 'bg-indigo-600' : 'bg-slate-300'} ${pauseSavingFor === emp.id ? 'opacity-50' : ''}`}
+                          >
+                            <span
+                              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${emailFetchOn(emp) ? 'left-6' : 'left-0.5'}`}
+                            />
+                          </button>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-slate-600">AI</span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={aiOn(emp)}
+                            disabled={pauseSavingFor === emp.id}
+                            onClick={() => void patchEmployeePauses(emp.id, { ai_enabled: !aiOn(emp) })}
+                            title={aiOn(emp) ? 'Pause AI for this mailbox' : 'Enable AI for this mailbox'}
+                            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${aiOn(emp) ? 'bg-indigo-600' : 'bg-slate-300'} ${pauseSavingFor === emp.id ? 'opacity-50' : ''}`}
+                          >
+                            <span
+                              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${aiOn(emp) ? 'left-6' : 'left-0.5'}`}
+                            />
+                          </button>
+                        </div>
+                      </div>
                       {messagesLoadingFor === emp.id ? (
                         <p className="mt-2 text-xs text-slate-500">Loading…</p>
                       ) : null}
@@ -641,6 +723,7 @@ function EmployeesPageInner() {
                     </th>
                     <th className="px-3 py-3">SLA (h)</th>
                     <th className="px-3 py-3">Tracking Start</th>
+                    <th className="px-3 py-3 w-[140px]">Email / AI</th>
                     <th className="px-3 py-3">Actions</th>
                   </tr>
                 </thead>
@@ -713,6 +796,42 @@ function EmployeesPageInner() {
                           >
                             Save
                           </button>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex flex-col gap-2">
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[10px] text-slate-500">Email</span>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={emailFetchOn(emp)}
+                              disabled={pauseSavingFor === emp.id}
+                              onClick={() =>
+                                void patchEmployeePauses(emp.id, { tracking_paused: emailFetchOn(emp) })
+                              }
+                              className={`relative h-6 w-10 shrink-0 rounded-full transition-colors ${emailFetchOn(emp) ? 'bg-indigo-600' : 'bg-slate-300'} ${pauseSavingFor === emp.id ? 'opacity-50' : ''}`}
+                            >
+                              <span
+                                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${emailFetchOn(emp) ? 'left-5' : 'left-0.5'}`}
+                              />
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[10px] text-slate-500">AI</span>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={aiOn(emp)}
+                              disabled={pauseSavingFor === emp.id}
+                              onClick={() => void patchEmployeePauses(emp.id, { ai_enabled: !aiOn(emp) })}
+                              className={`relative h-6 w-10 shrink-0 rounded-full transition-colors ${aiOn(emp) ? 'bg-indigo-600' : 'bg-slate-300'} ${pauseSavingFor === emp.id ? 'opacity-50' : ''}`}
+                            >
+                              <span
+                                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${aiOn(emp) ? 'left-5' : 'left-0.5'}`}
+                              />
+                            </button>
+                          </div>
                         </div>
                       </td>
                       <td className="px-3 py-3">
