@@ -581,12 +581,24 @@ ${dataBlock}`;
 
     if (error) {
       this.logger.error('Failed to load AI report archive', error.message);
-      const { data: legacy } = await this.supabase
+      let legacyQuery = this.supabase
         .from('dashboard_reports')
-        .select('id, content, created_at')
+        .select('id, content, created_at, report_scope, department_id')
         .eq('company_id', companyId)
+        .eq('report_scope', scope);
+      if (scope === 'DEPARTMENT_HEAD') {
+        if (!opts?.departmentId) return [];
+        legacyQuery = legacyQuery.eq('department_id', opts.departmentId);
+      } else {
+        legacyQuery = legacyQuery.is('department_id', null);
+      }
+      const { data: legacy, error: legacyErr } = await legacyQuery
         .order('created_at', { ascending: false })
         .limit(safeLimit);
+      if (legacyErr) {
+        this.logger.error('Failed to load AI report archive (scoped fallback)', legacyErr.message);
+        return [];
+      }
       const rows = (legacy ?? []) as Array<{
         id: string;
         content: Partial<AiReport> | null;
@@ -625,16 +637,21 @@ ${dataBlock}`;
 
   /** CEO: delete one executive archived report. */
   async deleteExecutiveAiReport(companyId: string, reportId: string): Promise<boolean> {
-    const uuidRe =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    if (!uuidRe.test(reportId)) return false;
+    const id = reportId.trim();
+    // Accept any hyphenated 128-bit UUID string (Postgres/Supabase may emit v4, v7, etc.).
+    const uuidLoose = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidLoose.test(id)) {
+      this.logger.warn(`deleteExecutiveAiReport: rejected id format (len=${id.length})`);
+      return false;
+    }
 
+    // Company-wide (CEO) reports always use department_id = NULL; scoped manager reports set department_id.
+    // Do not require report_scope here so deletes stay aligned with listed rows if scope values differ in legacy data.
     const { data, error } = await this.supabase
       .from('dashboard_reports')
       .delete()
-      .eq('id', reportId)
+      .eq('id', id)
       .eq('company_id', companyId)
-      .eq('report_scope', 'EXECUTIVE')
       .is('department_id', null)
       .select('id');
 

@@ -133,13 +133,14 @@ export class DashboardController {
   @Delete('ai-reports/:id')
   async deleteAiReport(@Req() req: Request, @Param('id') id: string) {
     const ctx = getRequestContext(req);
+    const reportId = id?.trim() ?? '';
 
     if (ctx.role === 'HEAD') {
       throw new ForbiddenException('Only the CEO can delete executive report archives.');
     }
 
     if (ctx.role === 'CEO') {
-      const ok = await this.dashboardService.deleteExecutiveAiReport(ctx.companyId, id);
+      const ok = await this.dashboardService.deleteExecutiveAiReport(ctx.companyId, reportId);
       if (!ok) {
         throw new NotFoundException('Report not found or you cannot delete it');
       }
