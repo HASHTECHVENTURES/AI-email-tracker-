@@ -62,6 +62,30 @@ export class TeamAlertsController {
     return result;
   }
 
+  @Post('reply')
+  async reply(
+    @Req() req: Request,
+    @Body() body: { parentAlertId?: string; message?: string },
+  ) {
+    const ctx = getRequestContext(req);
+    const user = req.user;
+    if (!user) throw new ForbiddenException();
+    const parentAlertId = body.parentAlertId?.trim();
+    const message = body.message ?? '';
+    if (!parentAlertId) {
+      throw new BadRequestException('parentAlertId is required');
+    }
+    const result = await this.teamAlertsService.replyFromEmployee(ctx, user.id, parentAlertId, message);
+    await this.auditLogService.log({
+      userId: user.id,
+      companyId: ctx.companyId,
+      action: 'team_alert_reply_sent',
+      entity: 'team_alert',
+      entityId: parentAlertId,
+    });
+    return result;
+  }
+
   @Patch('read/:id')
   async markRead(@Req() req: Request, @Param('id') id: string) {
     const ctx = getRequestContext(req);

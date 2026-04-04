@@ -16,8 +16,10 @@ export interface TeamAlertDto {
   created_at: string;
   read_at: string | null;
   from_manager_name: string | null;
-  /** Manager login email — for employee Reply (mailto) in the portal */
+  /** Manager login email — optional “Email instead” link in the portal */
   from_manager_email: string | null;
+  /** Parent manager message when this row is an employee reply */
+  in_reply_to: string | null;
 }
 
 export interface TeamAlertSentItem {
@@ -28,6 +30,7 @@ export interface TeamAlertSentItem {
   employee_id: string;
   employee_name: string;
   employee_email: string;
+  replies: Array<{ id: string; body: string; created_at: string }>;
 }
 
 @Injectable()
@@ -87,6 +90,64 @@ export class TeamAlertsService {
     return { ok: true as const, id: inserted.id, created_at: inserted.created_at };
   }
 
+  async replyFromEmployee(ctx: RequestContext, employeeUserId: string, parentAlertId: string, message: string) {
+    if (ctx.role !== 'EMPLOYEE' || !ctx.employeeId) {
+      throw new ForbiddenException('Only employees can reply from the portal');
+    }
+    const body = message.trim();
+    if (!body) {
+      throw new BadRequestException('Message is required');
+    }
+    if (body.length > 4000) {
+      throw new BadRequestException('Message must be at most 4000 characters');
+    }
+
+    const { data: parent, error: pErr } = await this.supabase
+      .from('team_alerts')
+      .select('id, company_id, employee_id, in_reply_to')
+      .eq('id', parentAlertId)
+      .maybeSingle();
+
+    if (pErr || !parent) {
+      throw new NotFoundException('Message not found');
+    }
+    if (parent.company_id !== ctx.companyId || parent.employee_id !== ctx.employeeId) {
+      throw new ForbiddenException('You can only reply to messages sent to you');
+    }
+    if (parent.in_reply_to) {
+      throw new BadRequestException('You can only reply to a manager message, not to another reply');
+    }
+
+    const { data: inserted, error: insErr } = await this.supabase
+      .from('team_alerts')
+      .insert({
+        company_id: ctx.companyId,
+        employee_id: ctx.employeeId,
+        from_user_id: employeeUserId,
+        body,
+        in_reply_to: parentAlertId,
+      })
+      .select('id, created_at')
+      .maybeSingle();
+
+    if (insErr || !inserted) {
+      this.logger.error(`team_alerts reply insert: ${insErr?.message}`);
+      throw new BadRequestException('Could not send reply');
+    }
+
+    // Treat a reply as addressing the thread: hide the nag banner / "New" row like Dismiss would.
+    const now = new Date().toISOString();
+    const { error: readErr } = await this.supabase
+      .from('team_alerts')
+      .update({ read_at: now })
+      .eq('id', parentAlertId);
+    if (readErr) {
+      this.logger.warn(`replyFromEmployee: could not mark parent read ${parentAlertId}: ${readErr.message}`);
+    }
+
+    return { ok: true as const, id: inserted.id, created_at: inserted.created_at };
+  }
+
   async listSentByManager(ctx: RequestContext, fromUserId: string): Promise<{ items: TeamAlertSentItem[] }> {
     if (ctx.role !== 'HEAD') {
       throw new ForbiddenException('Only department managers can view sent team messages');
@@ -97,6 +158,7 @@ export class TeamAlertsService {
       .select('id, body, created_at, read_at, employee_id')
       .eq('from_user_id', fromUserId)
       .eq('company_id', ctx.companyId)
+      .is('in_reply_to', null)
       .order('created_at', { ascending: false })
       .limit(100);
 
@@ -106,6 +168,28 @@ export class TeamAlertsService {
     }
 
     const list = rows ?? [];
+    const parentIds = list.map((r) => r.id as string);
+    const repliesByParent = new Map<string, Array<{ id: string; body: string; created_at: string }>>();
+    if (parentIds.length > 0) {
+      const { data: replyRows, error: rErr } = await this.supabase
+        .from('team_alerts')
+        .select('id, body, created_at, in_reply_to')
+        .in('in_reply_to', parentIds)
+        .order('created_at', { ascending: true });
+      if (!rErr && replyRows) {
+        for (const rr of replyRows) {
+          const pid = rr.in_reply_to as string;
+          const arr = repliesByParent.get(pid) ?? [];
+          arr.push({
+            id: rr.id as string,
+            body: rr.body as string,
+            created_at: rr.created_at as string,
+          });
+          repliesByParent.set(pid, arr);
+        }
+      }
+    }
+
     const empIds = [...new Set(list.map((r) => r.employee_id as string))];
     let empMap = new Map<string, { name: string; email: string }>();
     if (empIds.length > 0) {
@@ -125,14 +209,16 @@ export class TeamAlertsService {
 
     const items: TeamAlertSentItem[] = list.map((r) => {
       const emp = empMap.get(r.employee_id as string);
+      const id = r.id as string;
       return {
-        id: r.id as string,
+        id,
         body: r.body as string,
         created_at: r.created_at as string,
         read_at: (r.read_at as string | null) ?? null,
         employee_id: r.employee_id as string,
         employee_name: emp?.name ?? 'Unknown',
         employee_email: emp?.email ?? '',
+        replies: repliesByParent.get(id) ?? [],
       };
     });
 
@@ -146,10 +232,10 @@ export class TeamAlertsService {
 
     const { data: rows, error } = await this.supabase
       .from('team_alerts')
-      .select('id, body, created_at, read_at, from_user_id')
+      .select('id, body, created_at, read_at, from_user_id, in_reply_to')
       .eq('employee_id', ctx.employeeId)
       .order('created_at', { ascending: false })
-      .limit(50);
+      .limit(100);
 
     if (error) {
       this.logger.error(`listForEmployee: ${error.message}`);
@@ -157,6 +243,16 @@ export class TeamAlertsService {
     }
 
     const list = rows ?? [];
+    /** Latest employee reply per parent — parents without read_at still count as handled once replied. */
+    const latestReplyAtByParent = new Map<string, string>();
+    for (const r of list) {
+      const pid = (r as { in_reply_to?: string | null }).in_reply_to;
+      if (!pid) continue;
+      const created = r.created_at as string;
+      const prev = latestReplyAtByParent.get(pid);
+      if (!prev || created > prev) latestReplyAtByParent.set(pid, created);
+    }
+
     const userIds = [...new Set(list.map((r) => r.from_user_id as string))];
     let userMap = new Map<string, { name: string | null; email: string | null }>();
     if (userIds.length > 0) {
@@ -179,17 +275,23 @@ export class TeamAlertsService {
 
     const items: TeamAlertDto[] = list.map((r) => {
       const u = userMap.get(r.from_user_id as string);
+      const replyTo = (r as { in_reply_to?: string | null }).in_reply_to ?? null;
+      const id = r.id as string;
+      const storedRead = (r.read_at as string | null) ?? null;
+      const impliedRead = !replyTo ? latestReplyAtByParent.get(id) : undefined;
+      const read_at = storedRead ?? impliedRead ?? null;
       return {
-        id: r.id as string,
+        id,
         body: r.body as string,
         created_at: r.created_at as string,
-        read_at: (r.read_at as string | null) ?? null,
-        from_manager_name: u?.name ?? null,
-        from_manager_email: u?.email ?? null,
+        read_at,
+        from_manager_name: replyTo ? null : u?.name ?? null,
+        from_manager_email: replyTo ? null : u?.email ?? null,
+        in_reply_to: replyTo,
       };
     });
 
-    const unread_count = items.filter((i) => !i.read_at).length;
+    const unread_count = items.filter((i) => !i.read_at && !i.in_reply_to).length;
     return { items, unread_count };
   }
 

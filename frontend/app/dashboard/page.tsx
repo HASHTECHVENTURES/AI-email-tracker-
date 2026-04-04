@@ -6,11 +6,11 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
 import { useAuth, type AuthMe as Me } from '@/lib/auth-context';
-import { buildManagerReplyMailto } from '@/lib/managerReplyMailto';
 import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { Badge } from '@/components/Badge';
 import { ReassignModal } from '@/components/ReassignModal';
+import { TeamAlertReplyModal } from '@/components/TeamAlertReplyModal';
 
 type SystemStatus = {
   is_active: boolean;
@@ -63,6 +63,7 @@ type TeamAlertItem = {
   read_at: string | null;
   from_manager_name: string | null;
   from_manager_email: string | null;
+  in_reply_to?: string | null;
 };
 
 async function parseApiErrorMessage(res: Response): Promise<string> {
@@ -89,8 +90,10 @@ export default function DashboardPage() {
   const [filterPriority, setFilterPriority] = useState('');
   const [modal, setModal] = useState<ConversationRow | null>(null);
   const [reassignTarget, setReassignTarget] = useState<ConversationRow | null>(null);
-  const [actionLoading, setActionLoading] = useState(false);
+  /** Per-row resolve: a single boolean disabled every Resolve on the page. */
+  const [resolvingConversationId, setResolvingConversationId] = useState<string | null>(null);
   const [teamAlerts, setTeamAlerts] = useState<{ items: TeamAlertItem[]; unread_count: number } | null>(null);
+  const [replyModalParent, setReplyModalParent] = useState<TeamAlertItem | null>(null);
 
   const buildDashboardPath = useCallback(() => {
     const qs = new URLSearchParams();
@@ -198,7 +201,7 @@ export default function DashboardPage() {
 
   async function markDone(conversationId: string) {
     if (!token) return;
-    setActionLoading(true);
+    setResolvingConversationId(conversationId);
     try {
       const res = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/mark-done`, token, {
         method: 'POST',
@@ -211,7 +214,7 @@ export default function DashboardPage() {
       setModal(null);
       await refresh();
     } finally {
-      setActionLoading(false);
+      setResolvingConversationId(null);
     }
   }
 
@@ -460,10 +463,10 @@ export default function DashboardPage() {
                       <button
                         type="button"
                         onClick={() => void markDone(c.conversation_id)}
-                        disabled={actionLoading}
+                        disabled={resolvingConversationId === c.conversation_id}
                         className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 disabled:opacity-50"
                       >
-                        Resolve
+                        {resolvingConversationId === c.conversation_id ? 'Resolving…' : 'Resolve'}
                       </button>
                     </div>
                   </td>
@@ -515,13 +518,11 @@ export default function DashboardPage() {
           ))}
         </section>
 
-        {isEmployee && teamAlerts?.items?.some((a) => !a.read_at) ? (
+        {isEmployee && teamAlerts?.items?.some((a) => !a.read_at && !a.in_reply_to) ? (
           <div className="space-y-3" role="region" aria-label="Messages from your manager">
             {(teamAlerts.items ?? [])
-              .filter((a) => !a.read_at)
-              .map((a) => {
-                const replyHref = buildManagerReplyMailto(a.from_manager_email, a.body);
-                return (
+              .filter((a) => !a.read_at && !a.in_reply_to)
+              .map((a) => (
                 <div
                   key={a.id}
                   className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-sm text-gray-900 shadow-sm sm:flex-row sm:items-start sm:justify-between"
@@ -534,21 +535,13 @@ export default function DashboardPage() {
                     </p>
                   </div>
                   <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
-                    {replyHref ? (
-                      <a
-                        href={replyHref}
-                        className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-center text-xs font-medium text-blue-900 transition hover:bg-blue-50"
-                      >
-                        Reply
-                      </a>
-                    ) : (
-                      <span
-                        className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs text-gray-400"
-                        title="Manager email not available"
-                      >
-                        Reply
-                      </span>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => setReplyModalParent(a)}
+                      className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-center text-xs font-medium text-blue-900 transition hover:bg-blue-50"
+                    >
+                      Reply
+                    </button>
                     <button
                       type="button"
                       onClick={() => void dismissTeamAlert(a.id)}
@@ -558,8 +551,7 @@ export default function DashboardPage() {
                     </button>
                   </div>
                 </div>
-                );
-              })}
+              ))}
           </div>
         ) : null}
 
@@ -661,10 +653,10 @@ export default function DashboardPage() {
                           <button
                             type="button"
                             onClick={() => void markDone(c.conversation_id)}
-                            disabled={actionLoading}
+                            disabled={resolvingConversationId === c.conversation_id}
                             className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:opacity-95 disabled:opacity-50"
                           >
-                            Resolve
+                            {resolvingConversationId === c.conversation_id ? 'Resolving…' : 'Resolve'}
                           </button>
                         </div>
                       </td>
@@ -787,10 +779,10 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={() => void markDone(modal.conversation_id)}
-                disabled={actionLoading}
+                disabled={resolvingConversationId === modal.conversation_id}
                 className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-2 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-50"
               >
-                Resolve
+                {resolvingConversationId === modal.conversation_id ? 'Resolving…' : 'Resolve'}
               </button>
               <button
                 type="button"
@@ -802,6 +794,16 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {isEmployee && token ? (
+        <TeamAlertReplyModal
+          open={replyModalParent != null}
+          parent={replyModalParent}
+          token={token}
+          onClose={() => setReplyModalParent(null)}
+          onSent={() => void refresh()}
+        />
       ) : null}
     </>
   );

@@ -16,6 +16,7 @@ type SentItem = {
   employee_id: string;
   employee_name: string;
   employee_email: string;
+  replies: Array<{ id: string; body: string; created_at: string }>;
 };
 
 export default function ManagerMessagesPage() {
@@ -34,7 +35,12 @@ export default function ManagerMessagesPage() {
       return;
     }
     const body = (await res.json()) as { items?: SentItem[] };
-    setItems(body.items ?? []);
+    setItems(
+      (body.items ?? []).map((x) => ({
+        ...x,
+        replies: x.replies ?? [],
+      })),
+    );
     setError(null);
   }, [token]);
 
@@ -108,6 +114,19 @@ export default function ManagerMessagesPage() {
                   <span className="text-amber-700"> · Awaiting</span>
                 )}
               </p>
+              {(a.replies ?? []).length > 0 ? (
+                <div className="mt-4 border-t border-slate-200 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Replies from teammate</p>
+                  <ul className="mt-2 space-y-2">
+                    {(a.replies ?? []).map((r) => (
+                      <li key={r.id} className="rounded-lg bg-brand-50/80 px-3 py-2 text-sm text-slate-800">
+                        <p className="text-xs text-slate-500">{new Date(r.created_at).toLocaleString()}</p>
+                        <p className="mt-1 whitespace-pre-wrap">{r.body}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </li>
           ))}
         </ul>

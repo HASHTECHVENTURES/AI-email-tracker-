@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS team_alerts (
   body TEXT NOT NULL,
   read_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  in_reply_to UUID REFERENCES team_alerts(id) ON DELETE CASCADE,
   CONSTRAINT team_alerts_body_len CHECK (char_length(body) <= 4000)
 );
 
@@ -223,6 +224,10 @@ CREATE INDEX IF NOT EXISTS idx_team_alerts_employee_created
 CREATE INDEX IF NOT EXISTS idx_team_alerts_employee_unread
   ON team_alerts(employee_id)
   WHERE read_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_team_alerts_in_reply_to
+  ON team_alerts(in_reply_to)
+  WHERE in_reply_to IS NOT NULL;
 
 ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
 ALTER TABLE employee_oauth_tokens ENABLE ROW LEVEL SECURITY;

@@ -1,12 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { buildManagerReplyMailto } from '@/lib/managerReplyMailto';
 import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
+import { TeamAlertReplyModal } from '@/components/TeamAlertReplyModal';
 
 type Me = {
   role: string;
@@ -20,6 +20,7 @@ type TeamAlertItem = {
   read_at: string | null;
   from_manager_name: string | null;
   from_manager_email: string | null;
+  in_reply_to?: string | null;
 };
 
 export default function MessagesPage() {
@@ -30,6 +31,22 @@ export default function MessagesPage() {
   const [items, setItems] = useState<TeamAlertItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [replyModalParent, setReplyModalParent] = useState<TeamAlertItem | null>(null);
+
+  const repliesByParent = useMemo(() => {
+    const m = new Map<string, TeamAlertItem[]>();
+    for (const i of items) {
+      if (i.in_reply_to) {
+        const arr = m.get(i.in_reply_to) ?? [];
+        arr.push(i);
+        m.set(i.in_reply_to, arr);
+      }
+    }
+    for (const arr of m.values()) {
+      arr.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    }
+    return m;
+  }, [items]);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -92,8 +109,9 @@ export default function MessagesPage() {
     );
   }
 
-  const unread = items.filter((a) => !a.read_at);
-  const read = items.filter((a) => a.read_at);
+  const unread = items.filter((a) => !a.read_at && !a.in_reply_to);
+  const read = items.filter((a) => a.read_at && !a.in_reply_to);
+  const rootMessageCount = items.filter((a) => !a.in_reply_to).length;
 
   return (
     <AppShell
@@ -103,6 +121,15 @@ export default function MessagesPage() {
       subtitle="Manager notes and alerts in one place. New items also appear on your dashboard until you dismiss them here."
       onSignOut={() => void ctxSignOut()}
     >
+      {token ? (
+        <TeamAlertReplyModal
+          open={replyModalParent != null}
+          parent={replyModalParent}
+          token={token}
+          onClose={() => setReplyModalParent(null)}
+          onSent={() => void load()}
+        />
+      ) : null}
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
 
       {loading ? (
@@ -113,45 +140,51 @@ export default function MessagesPage() {
             <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">New</h2>
             {unread.length > 0 ? (
               unread.map((a) => {
-                const replyHref = buildManagerReplyMailto(a.from_manager_email, a.body);
+                const thread = repliesByParent.get(a.id) ?? [];
                 return (
-                <div
-                  key={a.id}
-                  className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-sm shadow-sm sm:flex-row sm:items-start sm:justify-between"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="mt-1 whitespace-pre-wrap text-gray-800">{a.body}</p>
-                    <p className="mt-2 text-xs text-gray-500">
-                      From {a.from_manager_name?.trim() || 'Your manager'} · {new Date(a.created_at).toLocaleString()}
-                    </p>
+                  <div key={a.id} className="space-y-2">
+                    <div className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-sm shadow-sm sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-amber-900">Manager</p>
+                        <p className="mt-1 whitespace-pre-wrap text-gray-800">{a.body}</p>
+                        <p className="mt-2 text-xs text-gray-500">
+                          {a.from_manager_name?.trim() || 'Your manager'} · {new Date(a.created_at).toLocaleString()}
+                        </p>
+                        {thread.length > 0 ? (
+                          <ul className="mt-3 space-y-2 border-t border-amber-200/80 pt-3">
+                            {thread.map((r) => (
+                              <li key={r.id} className="rounded-lg bg-white/80 px-2 py-2 text-xs text-slate-700">
+                                <span className="font-semibold text-brand-700">You</span> ·{' '}
+                                {new Date(r.created_at).toLocaleString()}
+                                <p className="mt-1 whitespace-pre-wrap text-slate-800">{r.body}</p>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </div>
+                      <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
+                        <button
+                          type="button"
+                          onClick={() => setReplyModalParent(a)}
+                          className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-center text-xs font-medium text-blue-900 transition hover:bg-blue-50"
+                        >
+                          Reply
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void dismiss(a.id)}
+                          className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-950 transition hover:bg-amber-100"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
-                    {replyHref ? (
-                      <a
-                        href={replyHref}
-                        className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-center text-xs font-medium text-blue-900 transition hover:bg-blue-50"
-                      >
-                        Reply
-                      </a>
-                    ) : (
-                      <span className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs text-gray-400" title="Manager email not available">
-                        Reply
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => void dismiss(a.id)}
-                      className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-950 transition hover:bg-amber-100"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                </div>
                 );
               })
             ) : (
               <div className="rounded-xl border border-gray-200 bg-white px-4 py-6 text-center text-sm text-gray-600 shadow-sm">
-                {read.length === 0 && items.length === 0
+                {rootMessageCount === 0
                   ? 'Nothing here yet. When your manager sends a message or alert, it will show in this list.'
                   : 'No new items — you’re caught up.'}
               </div>
@@ -162,27 +195,38 @@ export default function MessagesPage() {
             <section className="space-y-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Earlier</h2>
               {read.map((a) => {
-                const replyHref = buildManagerReplyMailto(a.from_manager_email, a.body);
+                const thread = repliesByParent.get(a.id) ?? [];
                 return (
-                <div
-                  key={a.id}
-                  className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-700 shadow-sm sm:flex-row sm:items-start sm:justify-between"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="whitespace-pre-wrap">{a.body}</p>
-                    <p className="mt-2 text-xs text-gray-500">
-                      From {a.from_manager_name?.trim() || 'Your manager'} · {new Date(a.created_at).toLocaleString()}
-                    </p>
-                  </div>
-                  {replyHref ? (
-                    <a
-                      href={replyHref}
+                  <div
+                    key={a.id}
+                    className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-700 shadow-sm sm:flex-row sm:items-start sm:justify-between"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Manager</p>
+                      <p className="mt-1 whitespace-pre-wrap">{a.body}</p>
+                      <p className="mt-2 text-xs text-gray-500">
+                        {a.from_manager_name?.trim() || 'Your manager'} · {new Date(a.created_at).toLocaleString()}
+                      </p>
+                      {thread.length > 0 ? (
+                        <ul className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+                          {thread.map((r) => (
+                            <li key={r.id} className="rounded-lg bg-slate-50 px-2 py-2 text-xs">
+                              <span className="font-semibold text-brand-700">You</span> ·{' '}
+                              {new Date(r.created_at).toLocaleString()}
+                              <p className="mt-1 whitespace-pre-wrap text-slate-800">{r.body}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setReplyModalParent(a)}
                       className="shrink-0 rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-blue-900 transition hover:bg-blue-50"
                     >
                       Reply
-                    </a>
-                  ) : null}
-                </div>
+                    </button>
+                  </div>
                 );
               })}
             </section>
