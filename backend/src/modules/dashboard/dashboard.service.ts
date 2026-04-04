@@ -516,14 +516,15 @@ ${dataBlock}`;
     let q = this.supabase
       .from('dashboard_reports')
       .select('content, created_at, report_scope, department_id')
-      .eq('company_id', companyId)
-      .eq('report_scope', scope);
+      .eq('company_id', companyId);
 
     if (scope === 'DEPARTMENT_HEAD') {
       if (!opts?.departmentId) return null;
-      q = q.eq('department_id', opts.departmentId);
+      q = q.eq('report_scope', scope).eq('department_id', opts.departmentId);
     } else {
-      q = q.is('department_id', null);
+      q = q
+        .is('department_id', null)
+        .or('report_scope.eq.EXECUTIVE,report_scope.is.null');
     }
 
     const { data, error } = await q.order('created_at', { ascending: false }).limit(1).maybeSingle();
@@ -567,14 +568,15 @@ ${dataBlock}`;
     let q = this.supabase
       .from('dashboard_reports')
       .select('id, content, created_at, report_scope, department_id')
-      .eq('company_id', companyId)
-      .eq('report_scope', scope);
+      .eq('company_id', companyId);
 
     if (scope === 'DEPARTMENT_HEAD') {
       if (!opts?.departmentId) return [];
-      q = q.eq('department_id', opts.departmentId);
+      q = q.eq('report_scope', scope).eq('department_id', opts.departmentId);
     } else {
-      q = q.is('department_id', null);
+      q = q
+        .is('department_id', null)
+        .or('report_scope.eq.EXECUTIVE,report_scope.is.null');
     }
 
     const { data, error } = await q.order('created_at', { ascending: false }).limit(safeLimit);
@@ -584,13 +586,14 @@ ${dataBlock}`;
       let legacyQuery = this.supabase
         .from('dashboard_reports')
         .select('id, content, created_at, report_scope, department_id')
-        .eq('company_id', companyId)
-        .eq('report_scope', scope);
+        .eq('company_id', companyId);
       if (scope === 'DEPARTMENT_HEAD') {
         if (!opts?.departmentId) return [];
-        legacyQuery = legacyQuery.eq('department_id', opts.departmentId);
+        legacyQuery = legacyQuery.eq('report_scope', scope).eq('department_id', opts.departmentId);
       } else {
-        legacyQuery = legacyQuery.is('department_id', null);
+        legacyQuery = legacyQuery
+          .is('department_id', null)
+          .or('report_scope.eq.EXECUTIVE,report_scope.is.null');
       }
       const { data: legacy, error: legacyErr } = await legacyQuery
         .order('created_at', { ascending: false })

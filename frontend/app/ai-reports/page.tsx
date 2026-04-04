@@ -269,7 +269,7 @@ export default function AiReportsPage() {
       onSignOut={() => void ctxSignOut()}
     >
       <div className="flex flex-col gap-4">
-        {lastReportLabel && aiBriefingsOn ? (
+        {lastReportLabel ? (
           <p className="text-xs text-slate-500">
             Last executive briefing run: <span className="font-medium text-slate-700">{lastReportLabel}</span>
           </p>
@@ -305,7 +305,11 @@ export default function AiReportsPage() {
         {reports.length === 0 ? (
           <section className="rounded-xl border border-slate-200/80 bg-white p-10 text-center shadow-sm">
             <p className="text-sm font-medium text-slate-700">No reports in the archive yet</p>
-            <p className="mt-2 text-sm text-slate-500">Reports appear after the hourly run or when you generate one.</p>
+            <p className="mt-2 text-sm text-slate-500">
+              {aiBriefingsOn
+                ? 'Reports appear after the hourly run or when you generate one.'
+                : 'Saved briefings from when AI was on still load here. If nothing appears, try Refresh — or no reports were stored for this company yet. Turn AI on in Settings to create new ones.'}
+            </p>
           </section>
         ) : (
           <div className="space-y-6">

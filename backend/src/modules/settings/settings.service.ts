@@ -325,7 +325,8 @@ export class SettingsService {
       ai_for_managers_enabled: settings.ai_for_managers_enabled,
       email_crawl_enabled: settings.email_crawl_enabled,
       seconds_until_next_ingestion: secondsUntilNextIngestion,
-      last_report_at: settings.ai_enabled ? runtime.lastReportAt : null,
+      // Always expose last run time so CEOs can see history while AI is off; countdown only when AI is on.
+      last_report_at: runtime.lastReportAt,
       seconds_until_next_report: settings.ai_enabled ? runtime.secondsUntilNextReport : null,
       smtp_configured: smtpConfigured,
       ai_model_configured: aiModelConfigured,
