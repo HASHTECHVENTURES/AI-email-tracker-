@@ -59,7 +59,6 @@ export function AppShell({
   const isEmployee = role === 'EMPLOYEE';
   const roleLabel = isHead ? 'Manager' : isEmployee ? 'Employee' : 'CEO';
   const deptAlertsFocus = pathname === '/departments' && locHash === '#team-members';
-  const messagesAlertsFocus = pathname === '/messages' && locHash === '#manager-alerts-new';
   const managerMessagesActive = pathname === '/manager-messages';
 
   return (
@@ -80,17 +79,9 @@ export function AppShell({
               </Link>
 
               {isEmployee ? (
-                <>
-                  <Link href="/messages" className={navItemClass(pathname === '/messages' && !messagesAlertsFocus)}>
-                    Messages
-                  </Link>
-                  <Link
-                    href="/messages#manager-alerts-new"
-                    className={navItemClass(pathname === '/messages' && messagesAlertsFocus)}
-                  >
-                    Alerts
-                  </Link>
-                </>
+                <Link href="/messages" className={navItemClass(pathname === '/messages')}>
+                  Messages & alerts
+                </Link>
               ) : null}
 
               {showOrg && isCeo ? (

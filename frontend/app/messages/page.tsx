@@ -35,7 +35,7 @@ export default function MessagesPage() {
     if (!token) return;
     const res = await apiFetch('/team-alerts/mine', token);
     if (!res.ok) {
-      setError('Could not load messages.');
+      setError('Could not load messages and alerts.');
       setItems([]);
       return;
     }
@@ -86,7 +86,7 @@ export default function MessagesPage() {
 
   if (!me || authLoading) {
     return (
-      <AppShell role="EMPLOYEE" title="Messages" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
+      <AppShell role="EMPLOYEE" title="Messages & alerts" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
         <PageSkeleton />
       </AppShell>
     );
@@ -99,14 +99,14 @@ export default function MessagesPage() {
     <AppShell
       role={me.role}
       companyName={me.company_name ?? null}
-      title="Messages"
-      subtitle="Notes from your department manager. They also appear on your dashboard until dismissed."
+      title="Messages & alerts"
+      subtitle="Manager notes and alerts in one place. New items also appear on your dashboard until you dismiss them here."
       onSignOut={() => void ctxSignOut()}
     >
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
 
       {loading ? (
-        <p className="text-sm text-gray-500">Loading messages…</p>
+        <p className="text-sm text-gray-500">Loading…</p>
       ) : (
         <div className="space-y-8">
           <section id="manager-alerts-new" className="scroll-mt-24 space-y-3">
@@ -152,8 +152,8 @@ export default function MessagesPage() {
             ) : (
               <div className="rounded-xl border border-gray-200 bg-white px-4 py-6 text-center text-sm text-gray-600 shadow-sm">
                 {read.length === 0 && items.length === 0
-                  ? 'No messages yet. When your manager sends an alert, it will show here.'
-                  : 'No new alerts — you’re caught up.'}
+                  ? 'Nothing here yet. When your manager sends a message or alert, it will show in this list.'
+                  : 'No new items — you’re caught up.'}
               </div>
             )}
           </section>

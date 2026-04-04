@@ -36,7 +36,6 @@ export function WorkspaceNav({
   const isEmployee = role === 'EMPLOYEE';
   const showOrg = isCeo || isHead;
   const deptAlertsFocus = pathname === '/departments' && locHash === '#team-members';
-  const messagesAlertsFocus = pathname === '/messages' && locHash === '#manager-alerts-new';
   const managerMessagesActive = pathname === '/manager-messages';
 
   return (
@@ -64,14 +63,9 @@ export function WorkspaceNav({
           Dashboard
         </Link>
         {isEmployee ? (
-          <>
-            <Link href="/messages" style={linkStyle(pathname === '/messages' && !messagesAlertsFocus)}>
-              Messages
-            </Link>
-            <Link href="/messages#manager-alerts-new" style={linkStyle(pathname === '/messages' && messagesAlertsFocus)}>
-              Alerts
-            </Link>
-          </>
+          <Link href="/messages" style={linkStyle(pathname === '/messages')}>
+            Messages & alerts
+          </Link>
         ) : null}
         {isHead ? (
           <>
