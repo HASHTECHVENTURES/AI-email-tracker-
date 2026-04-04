@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
@@ -52,6 +52,12 @@ type DashboardConv = {
   follow_up_status: string;
 };
 
+/** `<input type="datetime-local" />` values are naive local time — never use `toISOString().slice(0,16)` (UTC). */
+function toLocalDatetimeLocalValue(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function EmployeesPageInner() {
   const PAGE_SIZE = 8;
   const router = useRouter();
@@ -77,6 +83,26 @@ function EmployeesPageInner() {
   const [sortBy, setSortBy] = useState<'name' | 'department' | 'gmail' | 'last_sync'>('last_sync');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [pauseSavingFor, setPauseSavingFor] = useState<string | null>(null);
+  const [slaSavingFor, setSlaSavingFor] = useState<string | null>(null);
+  const [trackingSavingFor, setTrackingSavingFor] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function flashNotice(message: string) {
+    setNotice(message);
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = setTimeout(() => {
+      setNotice(null);
+      noticeTimerRef.current = null;
+    }, 5000);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    };
+  }, []);
+
   const [addOpen, setAddOpen] = useState(false);
   const [addName, setAddName] = useState('');
   const [addEmail, setAddEmail] = useState('');
@@ -226,6 +252,7 @@ function EmployeesPageInner() {
 
   async function saveSla(employeeId: string) {
     setError(null);
+    setNotice(null);
     const employee = employees.find((e) => e.id === employeeId);
     const raw = (slaInputs[employeeId] ?? String(employee?.sla_hours_default ?? 24)).trim();
     const value = Number(raw);
@@ -237,17 +264,31 @@ function EmployeesPageInner() {
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    if (!session) return;
-    const res = await apiFetch(`/employees/${encodeURIComponent(employeeId)}/sla`, session.access_token, {
-      method: 'PATCH',
-      body: JSON.stringify({ sla_hours: value }),
-    });
-    if (!res.ok) {
-      const b = await res.json().catch(() => ({}));
-      setError((b.message as string) || 'Could not update SLA');
+    if (!session) {
+      setError('Session expired — refresh the page or sign in again.');
       return;
     }
-    await loadLists(session.access_token);
+    setSlaSavingFor(employeeId);
+    try {
+      const res = await apiFetch(`/employees/${encodeURIComponent(employeeId)}/sla`, session.access_token, {
+        method: 'PATCH',
+        body: JSON.stringify({ sla_hours: value }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        setError((b.message as string) || 'Could not update SLA');
+        return;
+      }
+      setSlaInputs((prev) => {
+        const next = { ...prev };
+        delete next[employeeId];
+        return next;
+      });
+      await loadLists(session.access_token);
+      flashNotice(`SLA saved (${value}h) for ${employee?.name ?? 'mailbox'}.`);
+    } finally {
+      setSlaSavingFor(null);
+    }
   }
 
   async function viewMessages(employeeId: string) {
@@ -276,12 +317,11 @@ function EmployeesPageInner() {
 
   async function saveTrackingStart(employeeId: string) {
     setError(null);
+    setNotice(null);
     const employee = employees.find((e) => e.id === employeeId);
     const raw =
       trackingInputs[employeeId] ??
-      (employee?.tracking_start_at
-        ? new Date(employee.tracking_start_at).toISOString().slice(0, 16)
-        : '');
+      (employee?.tracking_start_at ? toLocalDatetimeLocalValue(new Date(employee.tracking_start_at)) : '');
     if (!raw.trim()) {
       setError('Pick start date and time.');
       return;
@@ -291,21 +331,37 @@ function EmployeesPageInner() {
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    if (!session) return;
-    const res = await apiFetch(
-      `/employees/${encodeURIComponent(employeeId)}/tracking-start`,
-      session.access_token,
-      {
-        method: 'PATCH',
-        body: JSON.stringify({ tracking_start_at: asIso }),
-      },
-    );
-    if (!res.ok) {
-      const b = await res.json().catch(() => ({}));
-      setError((b.message as string) || 'Could not update tracking start');
+    if (!session) {
+      setError('Session expired — refresh the page or sign in again.');
       return;
     }
-    await loadLists(session.access_token);
+    setTrackingSavingFor(employeeId);
+    try {
+      const res = await apiFetch(
+        `/employees/${encodeURIComponent(employeeId)}/tracking-start`,
+        session.access_token,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ tracking_start_at: asIso }),
+        },
+      );
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        setError((b.message as string) || 'Could not update tracking start');
+        return;
+      }
+      setTrackingInputs((prev) => {
+        const next = { ...prev };
+        delete next[employeeId];
+        return next;
+      });
+      await loadLists(session.access_token);
+      flashNotice(
+        `Tracking start saved (${new Date(asIso).toLocaleString()}) for ${employee?.name ?? 'mailbox'}. Gmail fetch window was reset to match.`,
+      );
+    } finally {
+      setTrackingSavingFor(null);
+    }
   }
 
   async function patchEmployeePauses(employeeId: string, body: { tracking_paused?: boolean; ai_enabled?: boolean }) {
@@ -490,6 +546,11 @@ function EmployeesPageInner() {
       onSignOut={() => void ctxSignOut()}
     >
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {notice ? (
+        <p className="text-sm text-emerald-800" role="status">
+          {notice}
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <p className="text-sm text-slate-500">{isManager ? 'People you manage' : 'Organization'}</p>
         <button
@@ -759,15 +820,17 @@ function EmployeesPageInner() {
                                 [emp.id]: e.target.value,
                               }))
                             }
-                            className="w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-xs focus:ring-2 focus:ring-blue-500"
+                            disabled={slaSavingFor === emp.id}
+                            className="w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-xs focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
                             placeholder="24"
                           />
                           <button
                             type="button"
                             onClick={() => void saveSla(emp.id)}
-                            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700 transition-all duration-200 hover:bg-gray-50"
+                            disabled={slaSavingFor === emp.id}
+                            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700 transition-all duration-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
                           >
-                            Save
+                            {slaSavingFor === emp.id ? 'Saving…' : 'Save'}
                           </button>
                         </div>
                       </td>
@@ -778,7 +841,7 @@ function EmployeesPageInner() {
                             value={
                               trackingInputs[emp.id] ??
                               (emp.tracking_start_at
-                                ? new Date(emp.tracking_start_at).toISOString().slice(0, 16)
+                                ? toLocalDatetimeLocalValue(new Date(emp.tracking_start_at))
                                 : '')
                             }
                             onChange={(e) =>
@@ -787,14 +850,16 @@ function EmployeesPageInner() {
                                 [emp.id]: e.target.value,
                               }))
                             }
-                            className="rounded-lg border border-gray-300 px-2 py-1.5 text-xs focus:ring-2 focus:ring-blue-500"
+                            disabled={trackingSavingFor === emp.id}
+                            className="rounded-lg border border-gray-300 px-2 py-1.5 text-xs focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
                           />
                           <button
                             type="button"
                             onClick={() => void saveTrackingStart(emp.id)}
-                            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700 transition-all duration-200 hover:bg-gray-50"
+                            disabled={trackingSavingFor === emp.id}
+                            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700 transition-all duration-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
                           >
-                            Save
+                            {trackingSavingFor === emp.id ? 'Saving…' : 'Save'}
                           </button>
                         </div>
                       </td>

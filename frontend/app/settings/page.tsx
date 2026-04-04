@@ -26,6 +26,40 @@ type SystemStatusLite = {
   last_sync_at: string | null;
 };
 
+type DiagnosticsMailbox = {
+  name: string;
+  email: string;
+  has_oauth_token: boolean;
+  tracking_paused: boolean;
+  email_message_count: number;
+  conversation_count: number;
+  tracking_start_at: string | null;
+  mail_sync_start_date: string | null;
+  mail_sync_last_processed_at: string | null;
+  portal_employee_login_linked: boolean;
+  blockers: string[];
+  hints: string[];
+};
+
+type DiagnosticsPayload = {
+  generated_at: string;
+  environment: {
+    gemini_configured: boolean;
+    ingestion_cron_disabled: boolean;
+    node_env: string | null;
+  };
+  totals: { email_messages: number; conversations: number };
+  mailboxes: DiagnosticsMailbox[];
+  recent_ingested_messages: Array<{
+    employee_id: string;
+    subject: string;
+    direction: string;
+    sent_at: string;
+    ingested_at: string;
+  }>;
+  checklist: string[];
+};
+
 export default function SettingsPage() {
   const router = useRouter();
   const { me: authMe, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
@@ -39,6 +73,10 @@ export default function SettingsPage() {
   const [savingMasterAi, setSavingMasterAi] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diag, setDiag] = useState<DiagnosticsPayload | null>(null);
+  const [diagError, setDiagError] = useState<string | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
 
   const load = useCallback(async (token: string) => {
     const [sRes, rRes, sysRes] = await Promise.all([
@@ -179,6 +217,57 @@ export default function SettingsPage() {
     }
   }
 
+  async function runDiagnostics() {
+    if (!token) return;
+    setDiagError(null);
+    setDiagLoading(true);
+    try {
+      const res = await apiFetch('/system/diagnostics', token);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDiagError((body as { message?: string }).message || 'Diagnostics failed');
+        setDiag(null);
+        return;
+      }
+      setDiag(body as DiagnosticsPayload);
+    } finally {
+      setDiagLoading(false);
+    }
+  }
+
+  async function runGmailSyncNow() {
+    if (!me || me.role !== 'CEO' || !token) return;
+    setError(null);
+    setNotice(null);
+    setSyncLoading(true);
+    try {
+      const res = await apiFetch('/email-ingestion/run', token);
+      const body = (await res.json().catch(() => ({}))) as {
+        status?: string;
+        reason?: string;
+        message?: string;
+        results?: Array<{ employeeName?: string; newMessages?: number; error?: string }>;
+      };
+      if (!res.ok) {
+        setError((body as { message?: string }).message || 'Sync request failed');
+        return;
+      }
+      if (body.status === 'skipped') {
+        setNotice(body.message || 'Sync skipped — turn on Email (Gmail fetch) in Settings.');
+      } else {
+        const r = body.results ?? [];
+        const msgs = r.reduce((s, x) => s + (x.newMessages ?? 0), 0);
+        const errs = r.filter((x) => x.error).length;
+        setNotice(
+          `Sync finished: ${r.length} mailbox(es), ${msgs} new message row(s) stored${errs ? `, ${errs} with errors` : ''}.`,
+        );
+      }
+      await load(token);
+    } finally {
+      setSyncLoading(false);
+    }
+  }
+
   if (!me || authLoading) {
     return (
       <AppShell role="CEO" title="Settings" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
@@ -315,7 +404,124 @@ export default function SettingsPage() {
             {runtime?.lastIngestionFinishedAt ? new Date(runtime.lastIngestionFinishedAt).toLocaleString() : '—'}
           </li>
         </ul>
+        {isCeo ? (
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={() => void runGmailSyncNow()}
+              disabled={syncLoading}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {syncLoading ? 'Running sync…' : 'Run Gmail sync now'}
+            </button>
+            <p className="mt-2 text-xs text-slate-500">
+              Triggers one ingestion cycle immediately (same as the ~2 min scheduler). Requires company Email master on.
+            </p>
+          </div>
+        ) : null}
       </section>
+
+      {(isCeo || isHead) && (
+        <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
+          <h2 className="text-base font-semibold text-slate-900">Mail troubleshooting</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            See why Gmail may not appear on dashboards: OAuth, pauses, company crawl flags, tracking start date, and recent ingested
+            messages.
+          </p>
+          <button
+            type="button"
+            onClick={() => void runDiagnostics()}
+            disabled={diagLoading}
+            className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+          >
+            {diagLoading ? 'Loading…' : 'Run diagnostics'}
+          </button>
+          {diagError ? <p className="mt-3 text-sm text-red-600">{diagError}</p> : null}
+          {diag ? (
+            <div className="mt-4 space-y-4 text-sm">
+              <div className="rounded-lg bg-slate-50 p-3 text-slate-700">
+                <p className="font-medium text-slate-900">Environment</p>
+                <ul className="mt-2 list-inside list-disc space-y-1 text-xs">
+                  <li>Gemini configured: {diag.environment.gemini_configured ? 'yes' : 'no'} (needed for Inbox AI relevance)</li>
+                  <li>
+                    Ingestion cron disabled:{' '}
+                    {diag.environment.ingestion_cron_disabled
+                      ? 'yes — scheduled sync is off (unset DISABLE_INGESTION_CRON on the API host)'
+                      : 'no'}
+                  </li>
+                </ul>
+              </div>
+              <div>
+                <p className="font-medium text-slate-900">Totals</p>
+                <p className="mt-1 text-slate-600">
+                  {diag.totals.email_messages} email message row(s), {diag.totals.conversations} conversation(s) in this company.
+                </p>
+              </div>
+              <div>
+                <p className="font-medium text-slate-900">Checklist</p>
+                <ul className="mt-2 list-inside list-disc space-y-1 text-slate-600">
+                  {diag.checklist.map((c, i) => (
+                    <li key={i}>{c}</li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <p className="font-medium text-slate-900">Per mailbox</p>
+                <ul className="mt-2 space-y-3">
+                  {diag.mailboxes.map((m) => (
+                    <li key={m.email} className="rounded-lg border border-slate-100 p-3">
+                      <p className="font-medium text-slate-800">
+                        {m.name} · {m.email}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        OAuth: {m.has_oauth_token ? 'yes' : 'no'} · Paused: {m.tracking_paused ? 'yes' : 'no'} · Messages:{' '}
+                        {m.email_message_count} · Conversations: {m.conversation_count}
+                        {m.tracking_start_at ? ` · Tracking start: ${new Date(m.tracking_start_at).toLocaleString()}` : ''}
+                        {m.mail_sync_start_date
+                          ? ` · Gmail fetch “after”: ${new Date(m.mail_sync_start_date).toLocaleString()} (set at Connect Gmail — only newer mail is listed)`
+                          : ''}
+                        {m.mail_sync_last_processed_at
+                          ? ` · Last cursor: ${new Date(m.mail_sync_last_processed_at).toLocaleString()}`
+                          : ''}
+                        {m.portal_employee_login_linked ? ' · Portal-linked mailbox' : ' · Team mailbox'}
+                      </p>
+                      {m.blockers.length > 0 ? (
+                        <ul className="mt-2 space-y-1 text-xs text-red-700">
+                          {m.blockers.map((b, i) => (
+                            <li key={i}>{b}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {m.hints.length > 0 ? (
+                        <ul className="mt-2 space-y-1 text-xs text-amber-800">
+                          {m.hints.map((h, i) => (
+                            <li key={i}>{h}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {diag.recent_ingested_messages.length > 0 ? (
+                <div>
+                  <p className="font-medium text-slate-900">Recent ingested (latest 15)</p>
+                  <ul className="mt-2 max-h-48 overflow-auto text-xs text-slate-600">
+                    {diag.recent_ingested_messages.map((r, i) => (
+                      <li key={i} className="border-b border-slate-100 py-1">
+                        <span className="text-slate-400">{new Date(r.ingested_at).toLocaleString()}</span> · {r.direction} ·{' '}
+                        {(r.subject || '(no subject)').slice(0, 80)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <p className="text-xs text-amber-800">No rows in email_messages yet for this company — sync may not have stored anything.</p>
+              )}
+            </div>
+          ) : null}
+        </section>
+      )}
     </AppShell>
   );
 }
