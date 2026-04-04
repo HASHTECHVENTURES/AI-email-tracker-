@@ -583,23 +583,18 @@ ${dataBlock}`;
 
     if (error) {
       this.logger.error('Failed to load AI report archive', error.message);
-      let legacyQuery = this.supabase
-        .from('dashboard_reports')
-        .select('id, content, created_at, report_scope, department_id')
-        .eq('company_id', companyId);
       if (scope === 'DEPARTMENT_HEAD') {
-        if (!opts?.departmentId) return [];
-        legacyQuery = legacyQuery.eq('report_scope', scope).eq('department_id', opts.departmentId);
-      } else {
-        legacyQuery = legacyQuery
-          .is('department_id', null)
-          .or('report_scope.eq.EXECUTIVE,report_scope.is.null');
+        return [];
       }
-      const { data: legacy, error: legacyErr } = await legacyQuery
+      // Pre-migration DBs only have id, company_id, content, created_at — scoped columns are missing.
+      const { data: legacy, error: legacyErr } = await this.supabase
+        .from('dashboard_reports')
+        .select('id, content, created_at')
+        .eq('company_id', companyId)
         .order('created_at', { ascending: false })
         .limit(safeLimit);
       if (legacyErr) {
-        this.logger.error('Failed to load AI report archive (scoped fallback)', legacyErr.message);
+        this.logger.error('Failed to load AI report archive (legacy fallback)', legacyErr.message);
         return [];
       }
       const rows = (legacy ?? []) as Array<{
