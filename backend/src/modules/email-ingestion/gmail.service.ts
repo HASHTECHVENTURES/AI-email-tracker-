@@ -3,6 +3,7 @@ import { google, gmail_v1 } from 'googleapis';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { EmailMessage } from '../common/types';
 import { retryWithBackoff } from '../common/retry.util';
+import { getGoogleOAuthCredentials } from '../common/google-oauth-credentials';
 
 /**
  * Gmail label IDs that indicate the message is NOT a direct human conversation.
@@ -43,11 +44,8 @@ export class GmailService {
     const accessToken = await this.oauthTokenService.getValidAccessToken(employeeId);
     const refreshToken = await this.oauthTokenService.getRefreshToken(employeeId);
 
-    const oauth2 = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI,
-    );
+    const { clientId, clientSecret, redirectUri } = getGoogleOAuthCredentials();
+    const oauth2 = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
 
     oauth2.setCredentials({
       access_token: accessToken,
