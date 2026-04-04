@@ -310,6 +310,9 @@ export default function DashboardPage() {
       ? 'What needs you right now — then how your team is trending.'
       : 'Company pulse and priorities.';
 
+  /** Live next-sync countdown: useful for managers/employees; hidden on CEO overview. */
+  const nextSyncLabelForRole = isCeo ? null : syncCountdownLabel;
+
   if (!dash) {
     return (
       <AppShell
@@ -318,7 +321,7 @@ export default function DashboardPage() {
         title={isEmployee ? 'My follow-ups' : isHead ? 'Workspace' : 'Overview'}
         subtitle={dashboardSubtitle}
         lastSyncLabel={lastSyncLabel}
-        nextIngestionCountdownLabel={syncCountdownLabel}
+        nextIngestionCountdownLabel={nextSyncLabelForRole}
         isActive={status?.is_active}
         aiBriefingsEnabled={status == null ? undefined : status.ai_status}
         mailboxCrawlEnabled={status == null ? undefined : status.email_crawl_enabled !== false}
@@ -481,7 +484,7 @@ export default function DashboardPage() {
         title={isEmployee ? 'My follow-ups' : isHead ? 'Workspace' : 'Overview'}
         subtitle={dashboardSubtitle}
         lastSyncLabel={lastSyncLabel}
-        nextIngestionCountdownLabel={syncCountdownLabel}
+        nextIngestionCountdownLabel={nextSyncLabelForRole}
         isActive={status?.is_active}
         aiBriefingsEnabled={status == null ? undefined : status.ai_status}
         mailboxCrawlEnabled={status == null ? undefined : status.email_crawl_enabled !== false}

@@ -7,6 +7,23 @@ const NOISE_SUBJECT_KEYWORDS =
 
 const NOISE_BODY_SNIPPET = /\b(unsubscribe|view in browser|manage preferences|you are receiving this email because)\b/i;
 
+/** Shared public inbox domains — do not treat "same domain" as same company (e.g. two @gmail.com users). */
+const PUBLIC_EMAIL_DOMAINS = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'yahoo.com',
+  'yahoo.co.uk',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'msn.com',
+  'icloud.com',
+  'me.com',
+  'proton.me',
+  'protonmail.com',
+  'aol.com',
+]);
+
 /**
  * Heuristic filter: skip bulk / automated mail so follow-up tracking stays human-to-human.
  */
@@ -31,7 +48,8 @@ export function isRelevantEmail(
   if (NOISE_SUBJECT_KEYWORDS.test(subject) || NOISE_BODY_SNIPPET.test(body)) return false;
 
   const domain = employeeEmail.split('@')[1]?.toLowerCase() ?? '';
-  if (domain && from.endsWith(`@${domain}`)) return false;
+  // Skip colleague@acme.com → employee@acme.com; but allow client@gmail.com → tracked@gmail.com.
+  if (domain && !PUBLIC_EMAIL_DOMAINS.has(domain) && from.endsWith(`@${domain}`)) return false;
 
   return true;
 }
