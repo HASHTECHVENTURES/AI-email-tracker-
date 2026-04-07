@@ -1,12 +1,47 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import type { Session } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { PasswordInput } from '@/components/PasswordInput';
 
 const PENDING_KEY = 'pendingSignup';
+
+/** Shown on dashboard after redirect when onboarding finds an existing profile (duplicate signup). */
+const AUTH_NOTICE_STORAGE_KEY = 'ai_et_auth_notice_v1';
+
+const DUPLICATE_WORKSPACE_MSG =
+  'A workspace is already set up for this email and company profile. You can continue with your existing account.';
+
+function mapSupabaseSignUpError(message: string): string {
+  if (/already registered|already been registered|user already registered|email address is already|exists/i.test(message)) {
+    return 'An account with this email already exists. Use Log in, or reset your password if you forgot it.';
+  }
+  return message;
+}
+
+function writeAuthNoticeForDashboard(message: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.setItem(AUTH_NOTICE_STORAGE_KEY, JSON.stringify({ message }));
+  } catch {
+    /* ignore quota */
+  }
+}
+
+/** Dev / staging shortcut: click the grid icon to fill login fields. Disable in production by not setting NEXT_PUBLIC_SHOW_AUTH_QUICK_FILL. */
+const DEV_ADMIN_EMAIL = 'email@gmail.com';
+const DEV_ADMIN_PASSWORD = 'Hello1234@';
+
+function showAuthQuickFill(): boolean {
+  if (typeof process.env.NEXT_PUBLIC_SHOW_AUTH_QUICK_FILL === 'string') {
+    return process.env.NEXT_PUBLIC_SHOW_AUTH_QUICK_FILL === 'true';
+  }
+  return process.env.NODE_ENV === 'development';
+}
 
 type TabMode = 'login' | 'create';
 type SignupRole = 'ceo' | 'manager' | 'employee';
@@ -95,10 +130,18 @@ function AuthPageInner() {
   const errCode = searchParams.get('error_code');
   const errDescription = searchParams.get('error_description');
   const nextPathRaw = searchParams.get('next');
-  const safeNext =
-    nextPathRaw && nextPathRaw.startsWith('/') && !nextPathRaw.startsWith('//')
-      ? nextPathRaw
-      : '/dashboard';
+  const hasExplicitNext = Boolean(
+    nextPathRaw && nextPathRaw.startsWith('/') && !nextPathRaw.startsWith('//'),
+  );
+  const safeNext = hasExplicitNext ? (nextPathRaw as string) : '/dashboard';
+
+  /** Platform operators default to /admin, not the CEO dashboard. */
+  function postLoginPath(role: string | undefined, path: string): string {
+    if (role === 'PLATFORM_ADMIN') {
+      if (!hasExplicitNext || path === '/dashboard') return '/admin';
+    }
+    return path;
+  }
 
   const friendlyAuthError = (() => {
     const code = (errCode ?? '').toLowerCase();
@@ -128,7 +171,13 @@ function AuthPageInner() {
   const [companyName, setCompanyName] = useState('');
   const [loading, setLoading] = useState(false);
   const [info, setInfo] = useState<string | null>(friendlyAuthError);
+  const [infoVariant, setInfoVariant] = useState<'default' | 'notice'>('default');
   const [pendingEmailHint, setPendingEmailHint] = useState<string | null>(null);
+
+  const clearFeedback = () => {
+    setInfo(null);
+    setInfoVariant('default');
+  };
 
   const readPendingSignup = (): PendingSignup | null => {
     if (typeof window === 'undefined') return null;
@@ -150,10 +199,45 @@ function AuthPageInner() {
     localStorage.setItem(PENDING_KEY, s);
   };
 
-  const clearPending = () => {
+  const clearPending = useCallback(() => {
     localStorage.removeItem(PENDING_KEY);
     sessionStorage.removeItem(PENDING_KEY);
-  };
+  }, []);
+
+  const finalizeOnboarding = useCallback(
+    async (session: Session, res: Response, opts?: { quiet?: boolean }) => {
+      const data = (await res.json().catch(() => ({}))) as {
+        created?: boolean;
+        message?: string;
+      };
+      if (!res.ok) {
+        if (!opts?.quiet) {
+          setInfoVariant('default');
+          setInfo(typeof data.message === 'string' ? data.message : 'Could not complete setup.');
+        }
+        return 'error' as const;
+      }
+      if (data.created === false) {
+        writeAuthNoticeForDashboard(DUPLICATE_WORKSPACE_MSG);
+        if (!opts?.quiet) {
+          setInfoVariant('notice');
+          setInfo(`${DUPLICATE_WORKSPACE_MSG} Taking you to your dashboard…`);
+          await refreshMe(session.access_token);
+          await new Promise((r) => setTimeout(r, 1200));
+        } else {
+          await refreshMe(session.access_token);
+        }
+        clearPending();
+        router.replace(safeNext);
+        return 'navigated' as const;
+      }
+      clearPending();
+      await refreshMe(session.access_token);
+      router.replace(safeNext);
+      return 'navigated' as const;
+    },
+    [refreshMe, router, safeNext, clearPending],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -194,7 +278,7 @@ function AuthPageInner() {
         if (!me) {
           return;
         }
-        router.replace(safeNext);
+        router.replace(postLoginPath(status.user.role, safeNext));
         return;
       }
 
@@ -210,9 +294,9 @@ function AuthPageInner() {
           });
           if (cancelled) return;
           if (onboardRes.ok) {
-            clearPending();
-            router.replace(safeNext);
-            return;
+            const outcome = await finalizeOnboarding(session, onboardRes, { quiet: true });
+            if (cancelled) return;
+            if (outcome === 'navigated') return;
           }
         }
       }
@@ -232,11 +316,11 @@ function AuthPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [authCtxLoading, authCtxError, me, router, safeNext, completeFromEmail]);
+  }, [authCtxLoading, authCtxError, me, router, safeNext, hasExplicitNext, completeFromEmail, finalizeOnboarding]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setInfo(null);
+    clearFeedback();
     setLoading(true);
     try {
       const supabase = createClient();
@@ -261,8 +345,11 @@ function AuthPageInner() {
         return;
       }
       const statusRes = await apiFetch('/auth/status', session.access_token);
-      const status = await statusRes.json().catch(() => ({}));
-      if ((status as { needs_onboarding?: boolean }).needs_onboarding) {
+      const status = (await statusRes.json().catch(() => ({}))) as {
+        needs_onboarding?: boolean;
+        user?: { role?: string };
+      };
+      if (status.needs_onboarding) {
         const pending = readPendingSignup();
         if (pending?.full_name && pending?.company_name) {
           const onboardRes = await apiFetch('/auth/onboarding', session.access_token, {
@@ -273,17 +360,15 @@ function AuthPageInner() {
             }),
           });
           if (onboardRes.ok) {
-            clearPending();
-            await refreshMe(session.access_token);
-            router.replace(safeNext);
-            return;
+            const outcome = await finalizeOnboarding(session, onboardRes, { quiet: true });
+            if (outcome === 'navigated') return;
           }
         }
         setPhase('onboarding');
         return;
       }
       await refreshMe(session.access_token);
-      router.replace(safeNext);
+      router.replace(postLoginPath(status.user?.role, safeNext));
     } finally {
       setLoading(false);
     }
@@ -291,7 +376,7 @@ function AuthPageInner() {
 
   const handleCreateCeo = async (e: React.FormEvent) => {
     e.preventDefault();
-    setInfo(null);
+    clearFeedback();
     setLoading(true);
     try {
       const supabase = createClient();
@@ -320,7 +405,8 @@ function AuthPageInner() {
         },
       });
       if (error) {
-        setInfo(error.message);
+        setInfoVariant('notice');
+        setInfo(mapSupabaseSignUpError(error.message));
         return;
       }
       const {
@@ -334,19 +420,10 @@ function AuthPageInner() {
             company_name: trimmedCo,
           }),
         });
-        if (onboardRes.ok) {
-          clearPending();
-          router.replace(safeNext);
-          return;
-        }
-        const errBody = await onboardRes.json().catch(() => ({}));
-        setInfo(
-          typeof (errBody as { message?: string }).message === 'string'
-            ? (errBody as { message: string }).message
-            : 'Could not create workspace.',
-        );
+        await finalizeOnboarding(session, onboardRes, { quiet: false });
         return;
       }
+      setInfoVariant('default');
       setInfo('Check your email to verify your account, then sign in.');
     } finally {
       setLoading(false);
@@ -355,7 +432,7 @@ function AuthPageInner() {
 
   const handleOnboarding = async (e: React.FormEvent) => {
     e.preventDefault();
-    setInfo(null);
+    clearFeedback();
     setLoading(true);
     try {
       const supabase = createClient();
@@ -385,13 +462,7 @@ function AuthPageInner() {
           company_name: trimmedCo,
         }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setInfo(typeof body.message === 'string' ? body.message : 'Something went wrong.');
-        return;
-      }
-      clearPending();
-      router.replace(safeNext);
+      await finalizeOnboarding(session, res, { quiet: false });
     } finally {
       setLoading(false);
     }
@@ -439,7 +510,14 @@ function AuthPageInner() {
               </button>
             </form>
             {info ? (
-              <p className="mt-4 text-sm text-gray-500" role="status">
+              <p
+                className={`mt-4 text-sm ${
+                  infoVariant === 'notice'
+                    ? 'rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-amber-950'
+                    : 'text-gray-500'
+                }`}
+                role="status"
+              >
                 {info}
               </p>
             ) : null}
@@ -450,7 +528,35 @@ function AuthPageInner() {
   }
 
   return (
-    <div className={`grid grid-cols-1 lg:grid-cols-2 ${shellClass}`}>
+    <div className={`relative grid grid-cols-1 lg:grid-cols-2 ${shellClass}`}>
+      {showAuthQuickFill() ? (
+        <button
+          type="button"
+          title="Fill demo credentials (development)"
+          aria-label="Fill demo email and password for quick sign-in"
+          onClick={() => {
+            setTab('login');
+            setEmail(DEV_ADMIN_EMAIL);
+            setPassword(DEV_ADMIN_PASSWORD);
+            clearFeedback();
+          }}
+          className="fixed right-4 top-4 z-50 flex h-10 w-10 items-center justify-center rounded-lg border border-gray-200 bg-white/90 text-gray-600 shadow-sm backdrop-blur-sm transition hover:bg-gray-50 hover:text-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        >
+          <span className="sr-only">Admin quick fill</span>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            className="h-5 w-5"
+            aria-hidden
+          >
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            <rect x="14" y="14" width="7" height="7" rx="1.5" />
+          </svg>
+        </button>
+      ) : null}
       <BrandingPanel />
       <main className="flex items-center justify-center px-6 py-12 lg:px-12">
         <div className={cardClass}>
@@ -459,7 +565,7 @@ function AuthPageInner() {
               type="button"
               onClick={() => {
                 setTab('login');
-                setInfo(null);
+                clearFeedback();
               }}
               className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
                 tab === 'login' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
@@ -471,7 +577,7 @@ function AuthPageInner() {
               type="button"
               onClick={() => {
                 setTab('create');
-                setInfo(null);
+                clearFeedback();
               }}
               className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
                 tab === 'create' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
@@ -501,9 +607,8 @@ function AuthPageInner() {
                 </label>
                 <label className="block text-sm font-medium text-gray-700">
                   Password
-                  <input
+                  <PasswordInput
                     required
-                    type="password"
                     value={password}
                     onChange={(ev) => setPassword(ev.target.value)}
                     className={`mt-1.5 ${inputClass}`}
@@ -558,9 +663,8 @@ function AuthPageInner() {
                     </label>
                     <label className="block text-sm font-medium text-gray-700">
                       Password
-                      <input
+                      <PasswordInput
                         required
-                        type="password"
                         value={password}
                         onChange={(ev) => setPassword(ev.target.value)}
                         className={`mt-1.5 ${inputClass}`}
@@ -579,7 +683,7 @@ function AuthPageInner() {
                     type="button"
                     onClick={() => {
                       setTab('login');
-                      setInfo(null);
+                      clearFeedback();
                     }}
                     className={btnPrimaryClass}
                   >
@@ -591,7 +695,14 @@ function AuthPageInner() {
           )}
 
           {info ? (
-            <p className="mt-4 text-sm text-gray-500" role="status">
+            <p
+              className={`mt-4 text-sm ${
+                infoVariant === 'notice'
+                  ? 'rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-amber-950'
+                  : 'text-gray-500'
+              }`}
+              role="status"
+            >
               {info}
             </p>
           ) : null}

@@ -1,6 +1,6 @@
 export type FollowUpStatus = 'DONE' | 'PENDING' | 'MISSED';
 export type Priority = 'LOW' | 'MEDIUM' | 'HIGH';
-export type EmployeeRole = 'CEO' | 'HEAD' | 'EMPLOYEE';
+export type EmployeeRole = 'CEO' | 'HEAD' | 'EMPLOYEE' | 'PLATFORM_ADMIN';
 
 export interface Employee {
   id: string;

@@ -15,6 +15,8 @@ export interface TeamAlertDto {
   body: string;
   created_at: string;
   read_at: string | null;
+  /** User id of the author of this row (manager for roots; employee for own replies). */
+  from_user_id: string;
   from_manager_name: string | null;
   /** Manager login email — optional “Email instead” link in the portal */
   from_manager_email: string | null;
@@ -375,6 +377,7 @@ export class TeamAlertsService {
         body: r.body as string,
         created_at: r.created_at as string,
         read_at,
+        from_user_id: uid,
         from_manager_name: fromManagerSide ? u?.name ?? null : null,
         from_manager_email: fromManagerSide ? u?.email ?? null : null,
         in_reply_to: replyTo,

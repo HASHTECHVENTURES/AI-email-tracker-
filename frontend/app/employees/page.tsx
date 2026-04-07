@@ -3,10 +3,11 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, oauthErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
+import { PasswordInput } from '@/components/PasswordInput';
 
 type Me = {
   id: string;
@@ -114,6 +115,7 @@ function EmployeesPageInner() {
   const [addSaving, setAddSaving] = useState(false);
   const isManager = me?.role === 'HEAD' || me?.role === 'MANAGER';
   const isCeo = me?.role === 'CEO';
+  const myEmailNorm = me?.email?.trim().toLowerCase() ?? '';
   const managerDepartmentName =
     isManager && me?.department_id
       ? departments.find((d) => d.id === me.department_id)?.name ?? 'Assigned department'
@@ -148,6 +150,10 @@ function EmployeesPageInner() {
       router.replace('/auth');
       return;
     }
+    if (authMe.role === 'PLATFORM_ADMIN') {
+      router.replace('/admin');
+      return;
+    }
     const user = authMe as Me;
     setMe(user);
     if (user.role === 'EMPLOYEE') {
@@ -168,14 +174,7 @@ function EmployeesPageInner() {
     if (!oauthErr && connected !== '1') return;
 
     if (oauthErr) {
-      const help: Record<string, string> = {
-        exchange_failed:
-          'Gmail connection could not be completed. Confirm Railway GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI match your Google Cloud web client, then try Connect Gmail again.',
-        access_denied: 'Google sign-in was cancelled or denied.',
-        not_configured: 'Server is missing Google OAuth configuration.',
-        missing_code_or_state: 'Invalid return from Google. Click Connect Gmail again.',
-      };
-      setError(help[oauthErr] ?? `Gmail connection failed (${oauthErr}).`);
+      setError(oauthErrorMessage(oauthErr));
     }
     if (connected === '1') {
       setAddSuccess('Gmail connected successfully.');
@@ -213,7 +212,7 @@ function EmployeesPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [me, employees.length, token]);
+  }, [me, token]);
 
   async function connectGmail(employeeId: string) {
     const supabase = createClient();
@@ -265,7 +264,7 @@ function EmployeesPageInner() {
       data: { session },
     } = await supabase.auth.getSession();
     if (!session) {
-      setError('Session expired — refresh the page or sign in again.');
+      setError('Your session expired. Please sign in again.');
       return;
     }
     setSlaSavingFor(employeeId);
@@ -332,7 +331,7 @@ function EmployeesPageInner() {
       data: { session },
     } = await supabase.auth.getSession();
     if (!session) {
-      setError('Session expired — refresh the page or sign in again.');
+      setError('Your session expired. Please sign in again.');
       return;
     }
     setTrackingSavingFor(employeeId);
@@ -397,12 +396,16 @@ function EmployeesPageInner() {
   }
 
   const filteredEmployees = useMemo(() => {
+    const visible =
+      isManager && myEmailNorm
+        ? employees.filter((emp) => emp.email.trim().toLowerCase() !== myEmailNorm)
+        : employees;
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return employees;
-    return employees.filter((emp) =>
+    if (!q) return visible;
+    return visible.filter((emp) =>
       [emp.name, emp.email, emp.department_name].some((v) => v.toLowerCase().includes(q)),
     );
-  }, [employees, searchQuery]);
+  }, [employees, searchQuery, isManager, myEmailNorm]);
 
   const sortedEmployees = useMemo(() => {
     const arr = [...filteredEmployees];
@@ -526,6 +529,7 @@ function EmployeesPageInner() {
     <AppShell
       role={me.role}
       companyName={me.company_name ?? null}
+      userDisplayName={me.full_name?.trim() || me.email}
       title={isManager ? 'Team' : 'Employees'}
       subtitle={
         isManager
@@ -585,8 +589,8 @@ function EmployeesPageInner() {
           {(isManager || isCeo) && employees.length > 0 ? (
             <p className="mt-3 text-xs text-slate-500">
               {isManager
-                ? 'Use Time tracker on each card to set when mail sync and SLA follow-ups start (same as CEO “Tracking start”). Pause Email fetch or AI per mailbox only — others are unchanged.'
-                : 'Email / AI columns pause one mailbox at a time. Company-wide switches live under Settings.'}
+                ? 'Use Time tracker to control when tracking starts. Email and AI switches affect only that mailbox.'
+                : 'Email and AI switches here affect one mailbox at a time. Company-wide controls are in Settings.'}
             </p>
           ) : null}
           {employees.length === 0 ? (
@@ -1042,22 +1046,20 @@ function EmployeesPageInner() {
                 required
                 autoComplete="off"
               />
-              <input
-                type="password"
+              <PasswordInput
                 value={addPassword}
                 onChange={(e) => setAddPassword(e.target.value)}
                 placeholder="Password (min 8 characters)"
-                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                className="rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
                 required
                 minLength={8}
                 autoComplete="new-password"
               />
-              <input
-                type="password"
+              <PasswordInput
                 value={addConfirm}
                 onChange={(e) => setAddConfirm(e.target.value)}
                 placeholder="Confirm password"
-                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                className="rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
                 required
                 minLength={8}
                 autoComplete="new-password"

@@ -94,6 +94,17 @@ export class EmployeesController {
     return this.employeesService.listOrgEmployees(ctx);
   }
 
+  /** Manager self-mailbox: create/find tracked mailbox row using signed-in manager email. */
+  @Post('my-mailbox')
+  async ensureMyMailbox(@Req() req: Request) {
+    const ctx = getRequestContext(req);
+    const user = req.user;
+    if (!user) {
+      throw new ForbiddenException();
+    }
+    return this.employeesService.ensureMyMailbox(ctx, user);
+  }
+
   @Get('mail-archive')
   async mailArchive(
     @Req() req: Request,

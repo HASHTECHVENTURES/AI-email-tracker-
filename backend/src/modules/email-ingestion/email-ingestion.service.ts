@@ -7,6 +7,7 @@ import { EmployeesService } from '../employees/employees.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { SettingsService, type SystemSettings } from '../settings/settings.service';
 import { DashboardService } from '../dashboard/dashboard.service';
+import { CompanyPolicyService } from '../company-policy/company-policy.service';
 import { GmailService } from './gmail.service';
 import { isRelevantEmail } from './email-filter.util';
 import { OauthTokenService } from '../auth/oauth-token.service';
@@ -55,6 +56,7 @@ export class EmailIngestionService {
     private readonly conversationsService: ConversationsService,
     private readonly settingsService: SettingsService,
     private readonly dashboardService: DashboardService,
+    private readonly companyPolicyService: CompanyPolicyService,
   ) {
     const key = process.env.GEMINI_API_KEY?.trim();
     if (!key) {
@@ -121,6 +123,11 @@ export class EmailIngestionService {
     try {
       for (const row of companies ?? []) {
         const companyId = (row as { id: string }).id;
+        const emailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(companyId);
+        if (!emailCrawlOn) {
+          this.logger.debug(`Ingestion skipped for company ${companyId} (platform email crawl off)`);
+          continue;
+        }
         const employees = await this.employeesService.listActive(companyId);
 
         for (const employee of employees) {
@@ -153,11 +160,14 @@ export class EmailIngestionService {
         }
 
         if (cycleSettings.ai_enabled) {
-          void this.dashboardService
-            .generateAiReport(companyId, { minCooldownMs: 3_600_000, scope: 'EXECUTIVE' })
-            .catch((err) => {
-              this.logger.warn(`Auto AI report failed for ${companyId}: ${(err as Error).message}`);
-            });
+          const aiOn = await this.companyPolicyService.isAiEnabledForCompany(companyId);
+          if (aiOn) {
+            void this.dashboardService
+              .generateAiReport(companyId, { minCooldownMs: 3_600_000, scope: 'EXECUTIVE' })
+              .catch((err) => {
+                this.logger.warn(`Auto AI report failed for ${companyId}: ${(err as Error).message}`);
+              });
+          }
         }
       }
 

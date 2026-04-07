@@ -7,6 +7,7 @@ import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
+import { PasswordInput } from '@/components/PasswordInput';
 
 type Me = {
   id: string;
@@ -89,6 +90,10 @@ export default function DepartmentsPage() {
     if (authLoading) return;
     if (!authMe || !token) {
       router.replace('/auth');
+      return;
+    }
+    if (authMe.role === 'PLATFORM_ADMIN') {
+      router.replace('/admin');
       return;
     }
     if (authMe.role === 'EMPLOYEE') {
@@ -185,7 +190,7 @@ export default function DepartmentsPage() {
       }
       closeAlertModal();
       setError(null);
-      setNotice(`Alert sent to ${alertTarget.name}. They will see it on their dashboard.`);
+      setNotice(`Message sent to ${alertTarget.name}.`);
     } finally {
       setAlertSaving(false);
     }
@@ -319,10 +324,9 @@ export default function DepartmentsPage() {
     <AppShell
       role={me.role}
       companyName={me.company_name ?? null}
+      userDisplayName={authMe?.full_name?.trim() || authMe?.email}
       title={isCeo ? 'Departments' : 'Alerts'}
-      subtitle={
-        isCeo ? 'Org structure and manager access.' : 'Message your team and manage portal access.'
-      }
+      subtitle={isCeo ? 'Org structure and manager access.' : 'Message your team and manage portal access.'}
       onSignOut={() => void ctxSignOut()}
     >
       {isCeo ? (
@@ -379,42 +383,13 @@ export default function DepartmentsPage() {
 
       {isCeo ? (
         <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
-          <h2 className="text-base font-semibold text-slate-900">Manager password</h2>
-          <p className="mt-1 text-sm text-slate-500">Set a new password when needed. Existing passwords are never shown.</p>
-          <form onSubmit={(e) => void handleManagerPasswordReset(e)} className="mt-4 flex flex-wrap gap-3">
-            <select
-              value={passwordDepartmentId}
-              onChange={(e) => setPasswordDepartmentId(e.target.value)}
-              className="min-w-[220px] rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
-              required
-            >
-              <option value="">Select department</option>
-              {rows.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
-            <input
-              type="password"
-              value={newManagerPassword}
-              onChange={(e) => setNewManagerPassword(e.target.value)}
-              className="min-w-[260px] flex-1 rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
-              placeholder="New password (min 8 chars)"
-              required
-            />
-            <button className="rounded-lg bg-gray-900 px-4 py-3 text-sm font-medium text-white transition-all duration-200 hover:bg-black hover:shadow-md">
-              Update Password
-            </button>
-          </form>
-        </section>
-      ) : null}
-
-      {isCeo ? (
-        <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
           <h2 className="text-base font-semibold text-slate-900">Assign manager</h2>
           <p className="mt-1 text-sm text-slate-500">Invite by email or create an account with password.</p>
-          <form onSubmit={(e) => void assignManager(e)} className="mt-4 flex flex-wrap gap-3">
+          <form onSubmit={(e) => void assignManager(e)} className="mt-4 flex max-w-xl flex-col gap-3">
             <select
               value={managerDepartmentId}
               onChange={(e) => setManagerDepartmentId(e.target.value)}
-              className="min-w-[220px] rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
               required
             >
               <option value="">Select department</option>
@@ -423,26 +398,66 @@ export default function DepartmentsPage() {
             <input
               value={managerName}
               onChange={(e) => setManagerName(e.target.value)}
-              className="min-w-[220px] rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
               placeholder="Manager name (optional)"
             />
             <input
               type="email"
               value={managerEmail}
               onChange={(e) => setManagerEmail(e.target.value)}
-              className="min-w-[260px] flex-1 rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
               placeholder="Manager email"
               required
             />
-            <input
-              type="password"
+            <p className="text-xs text-slate-500">If they are new, set a portal password below (min 8 characters).</p>
+            <PasswordInput
               value={managerPassword}
               onChange={(e) => setManagerPasswordInput(e.target.value)}
-              className="min-w-[220px] rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
-              placeholder="Password (required if user not exists)"
+              className="min-h-[48px] rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+              placeholder="Password if new user (min 8 chars)"
+              title="Required when this email has no account yet"
+              autoComplete="new-password"
             />
-            <button className="rounded-lg bg-gray-900 px-4 py-3 text-sm font-medium text-white transition-all duration-200 hover:bg-black hover:shadow-md">
+            <button
+              type="submit"
+              className="min-h-[48px] w-full rounded-lg bg-gray-900 px-5 text-sm font-medium text-white transition-all duration-200 hover:bg-black hover:shadow-md sm:w-auto sm:self-start"
+            >
               Assign Manager
+            </button>
+          </form>
+        </section>
+      ) : null}
+
+      {isCeo ? (
+        <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
+          <h2 className="text-base font-semibold text-slate-900">Manager password</h2>
+          <p className="mt-1 text-sm text-slate-500">Set a new password when needed. Existing passwords are never shown.</p>
+          <form
+            onSubmit={(e) => void handleManagerPasswordReset(e)}
+            className="mt-4 flex max-w-xl flex-col gap-3"
+          >
+            <select
+              value={passwordDepartmentId}
+              onChange={(e) => setPasswordDepartmentId(e.target.value)}
+              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+              required
+            >
+              <option value="">Select department</option>
+              {rows.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+            <PasswordInput
+              value={newManagerPassword}
+              onChange={(e) => setNewManagerPassword(e.target.value)}
+              className="min-h-[48px] rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+              placeholder="New password (min 8 chars)"
+              required
+              autoComplete="new-password"
+            />
+            <button
+              type="submit"
+              className="min-h-[48px] w-full rounded-lg bg-gray-900 px-5 text-sm font-medium text-white transition-all duration-200 hover:bg-black hover:shadow-md sm:w-auto sm:self-start"
+            >
+              Update Password
             </button>
           </form>
         </section>
@@ -456,7 +471,7 @@ export default function DepartmentsPage() {
           <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="text-lg font-bold text-slate-900">Team</h2>
-              <p className="mt-1 text-sm text-slate-500">Portal access and quick alerts.</p>
+              <p className="mt-1 text-sm text-slate-500">Portal access and team messages.</p>
             </div>
           </div>
           {teamLoadError ? <p className="text-sm text-red-600">{teamLoadError}</p> : null}
@@ -583,9 +598,9 @@ export default function DepartmentsPage() {
         >
           <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-xl">
             <h3 id="team-alert-title" className="text-lg font-bold text-slate-900">
-              Alert · {alertTarget.name}
+              Message · {alertTarget.name}
             </h3>
-            <p className="mt-1 text-sm text-slate-500">Shows on their dashboard when they sign in.</p>
+            <p className="mt-1 text-sm text-slate-500">This appears in their Messages area and dashboard.</p>
             <form onSubmit={(e) => void submitTeamAlert(e)} className="mt-5 space-y-4">
               {alertError ? <p className="text-sm text-red-600">{alertError}</p> : null}
               <textarea
@@ -640,22 +655,20 @@ export default function DepartmentsPage() {
             </p>
             <form onSubmit={(e) => void submitPortalPassword(e)} className="mt-4 space-y-3">
               {portalPasswordError ? <p className="text-sm text-red-600">{portalPasswordError}</p> : null}
-              <input
-                type="password"
+              <PasswordInput
                 value={portalPassword}
                 onChange={(ev) => setPortalPassword(ev.target.value)}
                 placeholder="New password"
-                className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:ring-2 focus:ring-amber-500"
+                className="rounded-lg border border-gray-300 px-4 py-3 text-sm focus:ring-2 focus:ring-amber-500"
                 minLength={8}
                 autoComplete="new-password"
                 required
               />
-              <input
-                type="password"
+              <PasswordInput
                 value={portalPasswordConfirm}
                 onChange={(ev) => setPortalPasswordConfirm(ev.target.value)}
                 placeholder="Confirm password"
-                className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:ring-2 focus:ring-amber-500"
+                className="rounded-lg border border-gray-300 px-4 py-3 text-sm focus:ring-2 focus:ring-amber-500"
                 minLength={8}
                 autoComplete="new-password"
                 required

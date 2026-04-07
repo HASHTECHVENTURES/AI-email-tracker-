@@ -5,6 +5,7 @@ import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { TelegramService } from '../alerts/telegram.service';
 import { EmailService } from '../email/email.service';
 import { SettingsService } from '../settings/settings.service';
+import { CompanyPolicyService } from '../company-policy/company-policy.service';
 import type { EmployeeRole } from '../common/types';
 
 export interface GlobalMetrics {
@@ -149,6 +150,7 @@ export class DashboardService {
     private readonly telegramService: TelegramService,
     private readonly emailService: EmailService,
     private readonly settingsService: SettingsService,
+    private readonly companyPolicyService: CompanyPolicyService,
   ) {
     const apiKey = process.env.GEMINI_API_KEY;
     const genAI = new GoogleGenerativeAI(apiKey ?? '');
@@ -200,7 +202,8 @@ export class DashboardService {
       .from('employees')
       .select('id, name, email')
       .eq('company_id', companyId)
-      .eq('is_active', true);
+      .eq('is_active', true)
+      .or('mailbox_type.is.null,mailbox_type.eq.TEAM');
     if (departmentId) {
       empQuery = empQuery.eq('department_id', departmentId);
     }
@@ -319,6 +322,17 @@ export class DashboardService {
       return {
         generated_at: new Date().toISOString(),
         key_issues: ['AI operations are off in Settings (CEO). Turn them on to generate reports.'],
+        employee_insights: [],
+        patterns: [],
+        recommendation: '',
+      };
+    }
+
+    const companyAiOn = await this.companyPolicyService.isAiEnabledForCompany(companyId);
+    if (!companyAiOn) {
+      return {
+        generated_at: new Date().toISOString(),
+        key_issues: ['AI is disabled for this organization by the platform administrator.'],
         employee_insights: [],
         patterns: [],
         recommendation: '',
@@ -850,6 +864,7 @@ ${dataBlock}`;
     companyId: string,
     scope: { departmentId?: string; employeeId?: string; role: EmployeeRole },
     filters?: { status?: string; employeeId?: string; priority?: string },
+    actorEmail?: string,
   ): Promise<SimplifiedDashboardResponse> {
     const scopedEmployeeId = scope.role === 'EMPLOYEE' ? scope.employeeId : undefined;
     const filterEmployee =
@@ -861,7 +876,7 @@ ${dataBlock}`;
     const rollupsPromise =
       scope.role === 'CEO' ? this.getCeoDepartmentRollups(companyId) : Promise.resolve(undefined);
 
-    const [report, all, onboarding, employeeFilterOptions, ceo_department_rollups] = await Promise.all([
+    const [report, all, onboarding, employeeFilterOptions, ceo_department_rollups, actorEmployeeId] = await Promise.all([
       reportPromise,
       this.getConversationsList({
         companyId,
@@ -875,10 +890,20 @@ ${dataBlock}`;
         ? Promise.resolve([] as { id: string; name: string }[])
         : this.getEmployeeFilterOptions(companyId),
       rollupsPromise,
+      scope.role === 'EMPLOYEE' || !actorEmail
+        ? Promise.resolve<string | null>(null)
+        : this.getEmployeeIdByEmail(companyId, actorEmail),
     ]);
 
+    const visibleConversations = actorEmployeeId
+      ? all.filter((c) => c.employee_id !== actorEmployeeId)
+      : all;
+    const visibleEmployeeFilterOptions = actorEmployeeId
+      ? employeeFilterOptions.filter((o) => o.id !== actorEmployeeId)
+      : employeeFilterOptions;
+
     const attentionCap = scope.role === 'HEAD' ? 50 : scope.role === 'CEO' ? 40 : 5;
-    const needs_attention = all
+    const needs_attention = visibleConversations
       .filter(
         (c) =>
           c.follow_up_status === 'MISSED' ||
@@ -902,9 +927,9 @@ ${dataBlock}`;
         recommendation,
         last_updated_at: scope.role === 'EMPLOYEE' ? null : (report?.generated_at ?? null),
       },
-      conversations: all,
+      conversations: visibleConversations,
       onboarding,
-      employee_filter_options: employeeFilterOptions,
+      employee_filter_options: visibleEmployeeFilterOptions,
     };
 
     if (scope.role === 'CEO') {
@@ -913,13 +938,30 @@ ${dataBlock}`;
 
     if (scope.role === 'EMPLOYEE' && scope.employeeId) {
       out.my_followups = {
-        missed: all.filter((c) => c.follow_up_status === 'MISSED').length,
-        pending: all.filter((c) => c.follow_up_status === 'PENDING').length,
-        done: all.filter((c) => c.follow_up_status === 'DONE').length,
+        missed: visibleConversations.filter((c) => c.follow_up_status === 'MISSED').length,
+        pending: visibleConversations.filter((c) => c.follow_up_status === 'PENDING').length,
+        done: visibleConversations.filter((c) => c.follow_up_status === 'DONE').length,
       };
     }
 
     return out;
+  }
+
+  private async getEmployeeIdByEmail(companyId: string, email: string): Promise<string | null> {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized) return null;
+    const { data, error } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('email', normalized)
+      .limit(1);
+    if (error) {
+      this.logger.warn(`getEmployeeIdByEmail: ${error.message}`);
+      return null;
+    }
+    const row = (data ?? [])[0] as { id?: string } | undefined;
+    return row?.id ?? null;
   }
 
   private async getEmployeeFilterOptions(companyId: string): Promise<{ id: string; name: string }[]> {
@@ -927,6 +969,7 @@ ${dataBlock}`;
       .from('employees')
       .select('id, name')
       .eq('company_id', companyId)
+      .or('mailbox_type.is.null,mailbox_type.eq.TEAM')
       .order('name', { ascending: true });
     if (error) {
       this.logger.warn(`getEmployeeFilterOptions: ${error.message}`);

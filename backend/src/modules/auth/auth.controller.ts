@@ -245,8 +245,15 @@ export class AuthController {
         entityId: payload.employee_id,
       });
 
+      const mailboxType = await this.employeesService.getMailboxType(payload.employee_id);
+      let returnPage = '/employees';
+      if (mailboxType === 'SELF') {
+        returnPage = '/my-email';
+      } else if (actor.role === 'HEAD') {
+        returnPage = '/my-mail';
+      }
       res.redirect(
-        `${frontendBase}/employees?connected=1&employee_id=${encodeURIComponent(payload.employee_id)}`,
+        `${frontendBase}${returnPage}?connected=1&employee_id=${encodeURIComponent(payload.employee_id)}`,
       );
     } catch (err) {
       // eslint-disable-next-line no-console

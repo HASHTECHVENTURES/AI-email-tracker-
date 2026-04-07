@@ -6,9 +6,10 @@ import { TelegramService } from '../alerts/telegram.service';
 import { EmailModule } from '../email/email.module';
 import { EmployeesModule } from '../employees/employees.module';
 import { SettingsModule } from '../settings/settings.module';
+import { CompanyPolicyModule } from '../company-policy/company-policy.module';
 
 @Module({
-  imports: [EmailModule, EmployeesModule, SettingsModule],
+  imports: [EmailModule, EmployeesModule, SettingsModule, CompanyPolicyModule],
   controllers: [DashboardController],
   providers: [supabaseProvider, DashboardService, TelegramService],
   exports: [DashboardService],

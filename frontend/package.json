@@ -2,10 +2,12 @@
   "name": "ai-email-tracker-frontend",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack -p 3001",
-    "dev:clean": "rm -rf .next node_modules/.cache && next dev --turbopack -p 3001",
-    "build": "next build",
+    "dev": "next dev -p 3001",
+    "dev:turbo": "next dev -p 3001 --turbo",
+    "dev:clean": "rm -rf .next-dev .next node_modules/.cache && next dev -p 3001",
+    "build": "rm -rf .next && next build",
     "start": "next start -p 3001",
+    "rebuild:start": "rm -rf .next .next-dev && npm run build && next start -p 3001",
     "lint": "next lint"
   },
   "dependencies": {

@@ -159,6 +159,10 @@ export default function AiReportsPage() {
       router.replace('/auth');
       return;
     }
+    if (authMe.role === 'PLATFORM_ADMIN') {
+      router.replace('/admin');
+      return;
+    }
     if (authMe.role !== 'CEO') {
       router.replace('/dashboard');
       return;
@@ -255,6 +259,7 @@ export default function AiReportsPage() {
     <AppShell
       role={me.role}
       companyName={me.company_name ?? null}
+      userDisplayName={me.full_name?.trim() || me.email}
       title="Reports"
       subtitle="Executive briefings — generated on the company schedule or on demand."
       lastSyncLabel={lastSyncLabel}

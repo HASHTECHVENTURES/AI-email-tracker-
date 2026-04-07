@@ -64,6 +64,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setError(null);
         return;
       }
+      // Signed in to Supabase but no `users` row yet — backend returns 403 ONBOARDING_REQUIRED (see AppAuthGuard).
+      if (meRes.status === 403) {
+        let body: unknown;
+        try {
+          body = await meRes.json();
+        } catch {
+          body = null;
+        }
+        const o = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
+        const nested =
+          o?.message && typeof o.message === 'object' && o.message !== null
+            ? (o.message as Record<string, unknown>)
+            : null;
+        const code = (typeof o?.code === 'string' ? o.code : nested?.code) as string | undefined;
+        if (code === 'ONBOARDING_REQUIRED') {
+          setMe(null);
+          setError(null);
+          return;
+        }
+      }
       setError('Could not load profile.');
       setMe(null);
       return;

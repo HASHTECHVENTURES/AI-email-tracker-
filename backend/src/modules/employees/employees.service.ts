@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
@@ -17,7 +18,7 @@ interface EmployeeDbRow {
   name: string;
   email: string;
   company_id: string;
-  department_id: string;
+  department_id: string | null;
   created_by: string | null;
   created_at: string;
   is_active?: boolean;
@@ -28,6 +29,8 @@ interface EmployeeDbRow {
   exclude_patterns?: string[] | null;
   gmail_status?: 'CONNECTED' | 'EXPIRED' | 'REVOKED';
   last_synced_at?: string | null;
+  /** `SELF` = CEO-added tracking row; `TEAM` / null = org directory mailboxes */
+  mailbox_type?: string | null;
 }
 
 /** Org directory row returned to API clients */
@@ -35,7 +38,7 @@ export interface OrgEmployeeDto {
   id: string;
   name: string;
   email: string;
-  department_id: string;
+  department_id: string | null;
   department_name: string;
   created_at: string;
   gmail_connected?: boolean;
@@ -51,6 +54,13 @@ export interface OrgEmployeeDto {
   tracking_paused?: boolean;
   /** When false, Inbox AI + thread enrichment skip this mailbox (per-employee AI pause). */
   ai_enabled?: boolean;
+  /** `SELF` = CEO self-tracking add; `TEAM` / null = team / manager mailboxes */
+  mailbox_type?: 'SELF' | 'TEAM' | null;
+  /**
+   * CEO My Email only: true when this `employees` row is the department manager’s inbox
+   * (matches a `users` row with role HEAD — by `linked_employee_id` or work email).
+   */
+  is_manager_mailbox?: boolean;
 }
 
 export interface EmployeeMessageDto {
@@ -77,6 +87,17 @@ export class EmployeesService {
   private readonly logger = new Logger(EmployeesService.name);
 
   constructor(@Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient) {}
+
+  /** PostgREST / Postgres when `employees.mailbox_type` migration (013) was not applied */
+  private isMissingMailboxTypeColumn(err: unknown): boolean {
+    const m = String((err as Error)?.message ?? err ?? '');
+    const c = String((err as { code?: string })?.code ?? '');
+    return (
+      c === '42703' ||
+      m.includes('mailbox_type') ||
+      (m.includes('column') && m.includes('does not exist'))
+    );
+  }
 
   /**
    * Creates org employee + (when password set) Supabase Auth user and `public.users` row so they can log in
@@ -189,6 +210,157 @@ export class EmployeesService {
     const dtoOut = this.toOrgDto(row, dept.name);
     dtoOut.login_created = true;
     return dtoOut;
+  }
+
+  /**
+   * Department manager self-mailbox helper for `/my-mail`:
+   * ensure there is a tracked mailbox row that matches the manager's login email.
+   */
+  async ensureMyMailbox(ctx: RequestContext, user: AuthedRequestUser): Promise<OrgEmployeeDto> {
+    if (ctx.role !== 'HEAD') {
+      throw new ForbiddenException('Only managers can create or access a personal manager mailbox');
+    }
+    if (!ctx.departmentId) {
+      throw new ForbiddenException('Manager must have a department assigned');
+    }
+
+    const email = user.email.trim().toLowerCase();
+    const name =
+      user.fullName?.trim() ||
+      email.split('@')[0] ||
+      'Manager';
+
+    const existing = await this.supabase
+      .from('employees')
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
+      )
+      .eq('company_id', ctx.companyId)
+      .eq('email', email)
+      .maybeSingle();
+
+    if (existing.error) {
+      this.logger.error(`ensureMyMailbox lookup: ${existing.error.message}`);
+      throw new InternalServerErrorException(existing.error.message);
+    }
+
+    if (existing.data) {
+      const row = existing.data as EmployeeDbRow;
+      if (row.department_id !== ctx.departmentId) {
+        throw new ForbiddenException('Your login email is already used by another department mailbox');
+      }
+      const deptName = await this.getDepartmentName(ctx.companyId, row.department_id);
+      return {
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        department_id: row.department_id,
+        department_name: deptName,
+        created_at: row.created_at,
+        gmail_connected: (row.gmail_status ?? 'EXPIRED') === 'CONNECTED',
+        gmail_status: (row.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
+        last_synced_at: row.last_synced_at ?? null,
+        sla_hours_default: row.sla_hours_default ?? null,
+        tracking_start_at: row.tracking_start_at ?? null,
+        tracking_paused: row.tracking_paused === true,
+        ai_enabled: row.ai_enabled !== false,
+        mailbox_type: (row.mailbox_type as 'TEAM' | null | undefined) ?? null,
+      };
+    }
+
+    const startIso = new Date().toISOString();
+    const insertResult = await this.supabase
+      .from('employees')
+      .insert({
+        name,
+        email,
+        company_id: ctx.companyId,
+        department_id: ctx.departmentId,
+        created_by: user.id,
+        is_active: true,
+        ai_enabled: true,
+        tracking_paused: false,
+        tracking_start_at: startIso,
+        mailbox_type: 'TEAM',
+      })
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
+      )
+      .single();
+
+    if (insertResult.error && this.isMissingMailboxTypeColumn(insertResult.error)) {
+      const fallback = await this.supabase
+        .from('employees')
+        .insert({
+          name,
+          email,
+          company_id: ctx.companyId,
+          department_id: ctx.departmentId,
+          created_by: user.id,
+          is_active: true,
+          ai_enabled: true,
+          tracking_paused: false,
+          tracking_start_at: startIso,
+        })
+        .select(
+          'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
+        )
+        .single();
+      if (fallback.error) {
+        if (fallback.error.code === '23505') {
+          throw new BadRequestException('A mailbox with your email already exists in this company');
+        }
+        this.logger.error(`ensureMyMailbox fallback insert: ${fallback.error.message}`);
+        throw new InternalServerErrorException(fallback.error.message);
+      }
+      await this.ensureMailSyncState((fallback.data as EmployeeDbRow).id, startIso);
+      const row = fallback.data as EmployeeDbRow;
+      const deptName = await this.getDepartmentName(ctx.companyId, row.department_id);
+      return {
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        department_id: row.department_id,
+        department_name: deptName,
+        created_at: row.created_at,
+        gmail_connected: (row.gmail_status ?? 'EXPIRED') === 'CONNECTED',
+        gmail_status: (row.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
+        last_synced_at: row.last_synced_at ?? null,
+        sla_hours_default: row.sla_hours_default ?? null,
+        tracking_start_at: row.tracking_start_at ?? null,
+        tracking_paused: row.tracking_paused === true,
+        ai_enabled: row.ai_enabled !== false,
+        mailbox_type: null,
+      };
+    }
+
+    if (insertResult.error) {
+      if (insertResult.error.code === '23505') {
+        throw new BadRequestException('A mailbox with your email already exists in this company');
+      }
+      this.logger.error(`ensureMyMailbox insert: ${insertResult.error.message}`);
+      throw new InternalServerErrorException(insertResult.error.message);
+    }
+
+    const row = insertResult.data as EmployeeDbRow;
+    await this.ensureMailSyncState(row.id, startIso);
+    const deptName = await this.getDepartmentName(ctx.companyId, row.department_id);
+    return {
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      department_id: row.department_id,
+      department_name: deptName,
+      created_at: row.created_at,
+      gmail_connected: (row.gmail_status ?? 'EXPIRED') === 'CONNECTED',
+      gmail_status: (row.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
+      last_synced_at: row.last_synced_at ?? null,
+      sla_hours_default: row.sla_hours_default ?? null,
+      tracking_start_at: row.tracking_start_at ?? null,
+      tracking_paused: row.tracking_paused === true,
+      ai_enabled: row.ai_enabled !== false,
+      mailbox_type: (row.mailbox_type as 'TEAM' | null | undefined) ?? null,
+    };
   }
 
   private async safeDeleteAuthUser(userId: string): Promise<void> {
@@ -365,9 +537,10 @@ export class EmployeesService {
     let query = this.supabase
       .from('employees')
       .select(
-        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
       )
       .eq('company_id', ctx.companyId)
+      .or('mailbox_type.is.null,mailbox_type.eq.TEAM')
       .order('name', { ascending: true });
 
     if (ctx.role === 'HEAD') {
@@ -377,14 +550,38 @@ export class EmployeesService {
       query = query.eq('department_id', ctx.departmentId);
     }
 
-    const { data, error } = await query;
-    if (error) {
+    const listResult = await query;
+    let data = listResult.data as EmployeeDbRow[] | null;
+    let error = listResult.error;
+    if (error && this.isMissingMailboxTypeColumn(error)) {
+      this.logger.warn('listOrgEmployees: mailbox_type unavailable, listing without column (apply migration 013)');
+      let q2 = this.supabase
+        .from('employees')
+        .select(
+          'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
+        )
+        .eq('company_id', ctx.companyId)
+        .order('name', { ascending: true });
+      if (ctx.role === 'HEAD') {
+        if (!ctx.departmentId) {
+          return [];
+        }
+        q2 = q2.eq('department_id', ctx.departmentId);
+      }
+      const r2 = await q2;
+      if (r2.error) {
+        this.logger.error('Failed to list employees (legacy)', r2.error.message);
+        throw new InternalServerErrorException(r2.error.message);
+      }
+      data = (r2.data ?? []) as EmployeeDbRow[] | null;
+      error = null;
+    } else if (error) {
       this.logger.error('Failed to list employees', error.message);
-      throw error;
+      throw new InternalServerErrorException(error.message);
     }
 
     const rows = (data ?? []) as EmployeeDbRow[];
-    const deptIds = [...new Set(rows.map((r) => r.department_id))];
+    const deptIds = [...new Set(rows.map((r) => r.department_id).filter((d): d is string => d != null))];
     const deptNameById = new Map<string, string>();
     if (deptIds.length > 0) {
       const { data: depts, error: deptErr } = await this.supabase
@@ -394,7 +591,7 @@ export class EmployeesService {
         .in('id', deptIds);
       if (deptErr) {
         this.logger.error('Failed to load department names', deptErr.message);
-        throw deptErr;
+        throw new InternalServerErrorException(deptErr.message);
       }
       for (const d of depts ?? []) {
         deptNameById.set((d as { id: string; name: string }).id, (d as { id: string; name: string }).name);
@@ -421,7 +618,7 @@ export class EmployeesService {
       name: r.name,
       email: r.email,
       department_id: r.department_id,
-      department_name: deptNameById.get(r.department_id) ?? '—',
+      department_name: (r.department_id ? deptNameById.get(r.department_id) : undefined) ?? '—',
       created_at: r.created_at,
       gmail_connected: (r.gmail_status ?? 'EXPIRED') === 'CONNECTED',
       gmail_status: (r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
@@ -431,7 +628,125 @@ export class EmployeesService {
       has_portal_login: portalLinked.has(r.id),
       tracking_paused: r.tracking_paused === true,
       ai_enabled: r.ai_enabled !== false,
+      mailbox_type: (r.mailbox_type as 'TEAM' | null | undefined) ?? null,
     }));
+  }
+
+  /**
+   * TEAM / org mailboxes company-wide (excludes `mailbox_type = SELF`).
+   * Merged into the CEO My Email API so manager-connected inboxes appear alongside CEO-added mailboxes.
+   */
+  async listTeamMailboxesAcrossCompany(companyId: string): Promise<OrgEmployeeDto[]> {
+    const teamResult = await this.supabase
+      .from('employees')
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
+      )
+      .eq('company_id', companyId)
+      .or('mailbox_type.is.null,mailbox_type.eq.TEAM')
+      .order('name', { ascending: true });
+
+    let data = teamResult.data as EmployeeDbRow[] | null;
+    let error = teamResult.error;
+    if (error && this.isMissingMailboxTypeColumn(error)) {
+      this.logger.warn(
+        'listTeamMailboxesAcrossCompany: mailbox_type unavailable, listing all company mailboxes (apply migration 013)',
+      );
+      const r2 = await this.supabase
+        .from('employees')
+        .select(
+          'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
+        )
+        .eq('company_id', companyId)
+        .order('name', { ascending: true });
+      if (r2.error) {
+        this.logger.error('Failed to list team mailboxes (legacy)', r2.error.message);
+        throw new InternalServerErrorException(r2.error.message);
+      }
+      data = (r2.data ?? []) as EmployeeDbRow[] | null;
+      error = null;
+    } else if (error) {
+      this.logger.error('Failed to list team mailboxes', error.message);
+      throw new InternalServerErrorException(error.message);
+    }
+
+    const rows = (data ?? []) as EmployeeDbRow[];
+    const deptIds = [...new Set(rows.map((r) => r.department_id).filter((d): d is string => d != null))];
+    const deptNameById = new Map<string, string>();
+    if (deptIds.length > 0) {
+      const { data: depts, error: deptErr } = await this.supabase
+        .from('departments')
+        .select('id, name')
+        .eq('company_id', companyId)
+        .in('id', deptIds);
+      if (deptErr) {
+        this.logger.error('Failed to load department names', deptErr.message);
+        throw new InternalServerErrorException(deptErr.message);
+      }
+      for (const d of depts ?? []) {
+        deptNameById.set((d as { id: string; name: string }).id, (d as { id: string; name: string }).name);
+      }
+    }
+
+    const empIds = rows.map((r) => r.id);
+    const portalLinked = new Set<string>();
+    if (empIds.length > 0) {
+      const { data: profiles } = await this.supabase
+        .from('users')
+        .select('linked_employee_id')
+        .eq('company_id', companyId)
+        .not('linked_employee_id', 'is', null)
+        .in('linked_employee_id', empIds);
+      for (const p of profiles ?? []) {
+        const lid = (p as { linked_employee_id: string }).linked_employee_id;
+        if (lid) portalLinked.add(lid);
+      }
+    }
+
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      department_id: r.department_id,
+      department_name: (r.department_id ? deptNameById.get(r.department_id) : undefined) ?? '—',
+      created_at: r.created_at,
+      gmail_connected: (r.gmail_status ?? 'EXPIRED') === 'CONNECTED',
+      gmail_status: (r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
+      last_synced_at: r.last_synced_at ?? null,
+      sla_hours_default: r.sla_hours_default ?? null,
+      tracking_start_at: r.tracking_start_at ?? null,
+      has_portal_login: portalLinked.has(r.id),
+      tracking_paused: r.tracking_paused === true,
+      ai_enabled: r.ai_enabled !== false,
+      mailbox_type: (r.mailbox_type as 'TEAM' | null | undefined) ?? null,
+    }));
+  }
+
+  /**
+   * Department manager inboxes for CEO "My Email": `users` rows with role HEAD
+   * (linked employee row and/or manager work email).
+   */
+  async getManagerMailboxIndicators(companyId: string): Promise<{
+    linkedEmployeeIds: Set<string>;
+    emailsNormalized: Set<string>;
+  }> {
+    const { data, error } = await this.supabase
+      .from('users')
+      .select('email, linked_employee_id')
+      .eq('company_id', companyId)
+      .eq('role', 'HEAD');
+    if (error) {
+      this.logger.error('getManagerMailboxIndicators', error.message);
+      return { linkedEmployeeIds: new Set(), emailsNormalized: new Set() };
+    }
+    const linkedEmployeeIds = new Set<string>();
+    const emailsNormalized = new Set<string>();
+    for (const row of data ?? []) {
+      const r = row as { email?: string; linked_employee_id?: string | null };
+      if (r.linked_employee_id) linkedEmployeeIds.add(r.linked_employee_id);
+      if (r.email) emailsNormalized.add(String(r.email).trim().toLowerCase());
+    }
+    return { linkedEmployeeIds, emailsNormalized };
   }
 
   async updateEmployeePauses(
@@ -857,7 +1172,8 @@ export class EmployeesService {
     };
   }
 
-  private async getDepartmentName(companyId: string, departmentId: string): Promise<string> {
+  private async getDepartmentName(companyId: string, departmentId: string | null): Promise<string> {
+    if (!departmentId) return '—';
     const { data } = await this.supabase
       .from('departments')
       .select('name')
@@ -888,7 +1204,7 @@ export class EmployeesService {
       name: row.name,
       email: row.email,
       companyId: row.company_id,
-      departmentId: row.department_id,
+      departmentId: row.department_id ?? undefined,
       active: row.is_active !== false,
       slaHoursDefault: row.sla_hours_default ?? undefined,
       aiEnabled: row.ai_enabled !== false,
@@ -925,7 +1241,7 @@ export class EmployeesService {
       name: row.name,
       email: row.email,
       companyId: row.company_id,
-      departmentId: row.department_id,
+      departmentId: row.department_id ?? undefined,
       active: row.is_active !== false,
       slaHoursDefault: row.sla_hours_default ?? undefined,
       aiEnabled: row.ai_enabled !== false,
@@ -991,5 +1307,148 @@ export class EmployeesService {
 
   getSlaHours(employee: Employee, globalDefault = 24): number {
     return employee.slaHoursDefault ?? globalDefault;
+  }
+
+  // ── Self-tracking (CEO / Manager mailbox) helpers ──
+
+  async listSelfTracked(companyId: string): Promise<OrgEmployeeDto[]> {
+    const { data, error } = await this.supabase
+      .from('employees')
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
+      )
+      .eq('company_id', companyId)
+      .eq('mailbox_type', 'SELF')
+      .order('name', { ascending: true });
+
+    if (error && this.isMissingMailboxTypeColumn(error)) {
+      this.logger.warn('listSelfTracked: mailbox_type unavailable, returning none (apply migration 013)');
+      return [];
+    }
+    if (error) {
+      this.logger.error('Failed to list self-tracked mailboxes', error.message);
+      throw new InternalServerErrorException(error.message);
+    }
+
+    const rows = (data ?? []) as EmployeeDbRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      department_id: r.department_id,
+      department_name: '—',
+      created_at: r.created_at,
+      gmail_connected: (r.gmail_status ?? 'EXPIRED') === 'CONNECTED',
+      gmail_status: (r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
+      last_synced_at: r.last_synced_at ?? null,
+      sla_hours_default: r.sla_hours_default ?? null,
+      tracking_start_at: r.tracking_start_at ?? null,
+      tracking_paused: r.tracking_paused === true,
+      ai_enabled: r.ai_enabled !== false,
+      mailbox_type: 'SELF' as const,
+    }));
+  }
+
+  async createSelfTrackedMailbox(
+    companyId: string,
+    userId: string,
+    dto: { name: string; email: string; departmentId?: string },
+  ): Promise<OrgEmployeeDto> {
+    const name = dto.name.trim();
+    const email = dto.email.trim().toLowerCase();
+    if (!name || !email) {
+      throw new BadRequestException('name and email are required');
+    }
+
+    const startIso = new Date().toISOString();
+
+    const { data, error } = await this.supabase
+      .from('employees')
+      .insert({
+        name,
+        email,
+        company_id: companyId,
+        department_id: dto.departmentId ?? null,
+        created_by: userId,
+        is_active: true,
+        ai_enabled: true,
+        tracking_paused: false,
+        tracking_start_at: startIso,
+        mailbox_type: 'SELF',
+      })
+      .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at')
+      .single();
+
+    if (error) {
+      if (error.code === '23505') {
+        throw new BadRequestException('A mailbox with this email already exists in your company');
+      }
+      if (this.isMissingMailboxTypeColumn(error)) {
+        throw new BadRequestException(
+          'Database is missing column employees.mailbox_type. Apply migration 013_self_tracking_mailboxes.sql',
+        );
+      }
+      this.logger.error('Failed to create self-tracked mailbox', error.message);
+      throw new InternalServerErrorException(error.message);
+    }
+
+    const row = data as EmployeeDbRow;
+    await this.ensureMailSyncState(row.id, startIso);
+
+    return {
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      department_id: row.department_id,
+      department_name: '—',
+      created_at: row.created_at,
+      sla_hours_default: row.sla_hours_default ?? null,
+      tracking_start_at: row.tracking_start_at ?? null,
+      mailbox_type: 'SELF',
+    };
+  }
+
+  async deleteSelfTrackedMailbox(companyId: string, mailboxId: string): Promise<void> {
+    const { data: row, error } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('id', mailboxId)
+      .eq('mailbox_type', 'SELF')
+      .maybeSingle();
+
+    if (error) {
+      if (this.isMissingMailboxTypeColumn(error)) {
+        throw new BadRequestException(
+          'Database is missing column employees.mailbox_type. Apply migration 013_self_tracking_mailboxes.sql',
+        );
+      }
+      this.logger.error('Failed to load self-tracked mailbox for delete', error.message);
+      throw new InternalServerErrorException(error.message);
+    }
+    if (!row) {
+      throw new NotFoundException('Self-tracked mailbox not found');
+    }
+
+    const { error: delErr } = await this.supabase
+      .from('employees')
+      .delete()
+      .eq('id', mailboxId)
+      .eq('company_id', companyId)
+      .eq('mailbox_type', 'SELF');
+
+    if (delErr) {
+      this.logger.error('Failed to delete self-tracked mailbox', delErr.message);
+      throw new InternalServerErrorException(delErr.message);
+    }
+  }
+
+  async getMailboxType(employeeId: string): Promise<string> {
+    const { data } = await this.supabase
+      .from('employees')
+      .select('mailbox_type')
+      .eq('id', employeeId)
+      .maybeSingle();
+    return (data as { mailbox_type?: string } | null)?.mailbox_type ?? 'TEAM';
   }
 }

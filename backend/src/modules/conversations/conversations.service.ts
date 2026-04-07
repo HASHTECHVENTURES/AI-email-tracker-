@@ -8,6 +8,7 @@ import { AiEnrichmentService } from '../ai-enrichment/ai-enrichment.service';
 import { AlertsService } from '../alerts/alerts.service';
 import { SettingsService } from '../settings/settings.service';
 import { EmailService } from '../email/email.service';
+import { CompanyPolicyService } from '../company-policy/company-policy.service';
 
 interface ThreadKey {
   companyId?: string;
@@ -70,6 +71,7 @@ export class ConversationsService {
     private readonly alertsService: AlertsService,
     private readonly settingsService: SettingsService,
     private readonly emailService: EmailService,
+    private readonly companyPolicyService: CompanyPolicyService,
   ) {}
 
   async recomputeForThreads(threadKeys: ThreadKey[]): Promise<RecomputeResult> {
@@ -430,15 +432,17 @@ export class ConversationsService {
       }, conversationId);
     }
 
-    // AI enrichment: global + CEO role/mailbox-type toggles + per-mailbox
+    // AI enrichment: global + platform tenant kill switch + CEO role/mailbox-type toggles + per-mailbox
     let enriched = false;
     const settings = await this.settingsService.getAll();
     const aiEnabled = settings.ai_enabled;
+    const companyAiEnabled = await this.companyPolicyService.isAiEnabledForCompany(companyId);
     const portalLinked = await this.employeesService.hasPortalEmployeeLink(companyId, employeeId);
     const roleAiOk = portalLinked ? settings.ai_for_employees_enabled : settings.ai_for_managers_enabled;
     const employeeAiEnabled = await this.employeesService.isAutoAiEnabledForEmployee(companyId, employeeId);
     if (
       aiEnabled &&
+      companyAiEnabled &&
       roleAiOk &&
       employeeAiEnabled &&
       this.aiEnrichmentService.shouldEnrich({

@@ -4,6 +4,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import type { AuthedRequestUser } from '../../types/express';
 import type { EmployeeRole } from '../common/types';
+import { isPlatformAdminEmail } from '../platform-admin/platform-admin.guard';
 
 interface UserRow {
   id: string;
@@ -85,6 +86,12 @@ export class SaasAuthService {
 
     const normalizedEmail = email.trim().toLowerCase();
 
+    if (isPlatformAdminEmail(normalizedEmail)) {
+      throw new BadRequestException(
+        'This email is listed in PLATFORM_ADMIN_EMAILS (platform operator). Use a different email to create a tenant company, or remove it from PLATFORM_ADMIN_EMAILS.',
+      );
+    }
+
     const { data: company, error: companyErr } = await this.supabase
       .from('companies')
       .insert({ name: trimmedCompany })
@@ -113,6 +120,11 @@ export class SaasAuthService {
 
     if (userErr || !inserted) {
       await this.supabase.from('companies').delete().eq('id', companyId);
+      if (userErr?.code === '23505') {
+        throw new BadRequestException(
+          'This email is already registered. Sign in with that account instead of creating a new workspace.',
+        );
+      }
       throw new BadRequestException(
         userErr ? `Could not create user: ${userErr.message}` : 'Could not create user',
       );

@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth, type AuthMe as Me } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
+import { TimeGreeting } from '@/components/TimeGreeting';
 import { Badge } from '@/components/Badge';
 import { ReassignModal } from '@/components/ReassignModal';
 import { TeamAlertReplyModal } from '@/components/TeamAlertReplyModal';
@@ -69,6 +70,7 @@ type TeamAlertItem = {
   body: string;
   created_at: string;
   read_at: string | null;
+  from_user_id?: string;
   from_manager_name: string | null;
   from_manager_email: string | null;
   in_reply_to?: string | null;
@@ -139,18 +141,6 @@ function TeamHealthDot({ health }: { health: TeamHealth }) {
   );
 }
 
-async function parseApiErrorMessage(res: Response): Promise<string> {
-  try {
-    const j = (await res.json()) as { message?: unknown; error?: string };
-    if (typeof j.message === 'string') return j.message;
-    if (typeof j.error === 'string') return j.error;
-    if (j.message != null && typeof j.message === 'object') return JSON.stringify(j.message);
-  } catch {
-    /* non-JSON body */
-  }
-  return `Request failed (${res.status})`;
-}
-
 export default function DashboardPage() {
   const router = useRouter();
   const { me, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
@@ -169,6 +159,39 @@ export default function DashboardPage() {
   const [deletingTeamAlertId, setDeletingTeamAlertId] = useState<string | null>(null);
   const [teamAlerts, setTeamAlerts] = useState<{ items: TeamAlertItem[]; unread_count: number } | null>(null);
   const [replyModalParent, setReplyModalParent] = useState<TeamAlertItem | null>(null);
+  const [authFlash, setAuthFlash] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = sessionStorage.getItem('ai_et_auth_notice_v1');
+      if (!raw) return;
+      sessionStorage.removeItem('ai_et_auth_notice_v1');
+      const parsed = JSON.parse(raw) as { message?: string };
+      if (typeof parsed.message === 'string' && parsed.message.trim()) {
+        setAuthFlash(parsed.message.trim());
+      }
+    } catch {
+      sessionStorage.removeItem('ai_et_auth_notice_v1');
+    }
+  }, []);
+
+  const authFlashBanner =
+    authFlash ? (
+      <div
+        role="status"
+        className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-sm"
+      >
+        <p className="min-w-0 flex-1 leading-relaxed">{authFlash}</p>
+        <button
+          type="button"
+          onClick={() => setAuthFlash(null)}
+          className="shrink-0 rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+        >
+          Dismiss
+        </button>
+      </div>
+    ) : null;
 
   const buildDashboardPath = useCallback(() => {
     if (me?.role === 'CEO') return '/dashboard';
@@ -200,7 +223,7 @@ export default function DashboardPage() {
         void ctxSignOut();
         return;
       }
-      setError(await parseApiErrorMessage(dRes));
+      setError(await readApiErrorMessage(dRes, 'Could not load your dashboard.'));
     }
     if (sRes.ok) {
       const nextStatus = (await sRes.json()) as SystemStatus;
@@ -226,6 +249,10 @@ export default function DashboardPage() {
       router.replace('/auth');
       return;
     }
+    if (me.role === 'PLATFORM_ADMIN') {
+      router.replace('/admin');
+      return;
+    }
     let cancelled = false;
     (async () => {
       const statusRes = await apiFetch('/auth/status', token);
@@ -241,9 +268,8 @@ export default function DashboardPage() {
           return;
         }
       } else if (!cancelled) {
-        setError(await parseApiErrorMessage(statusRes));
+        setError(await readApiErrorMessage(statusRes, 'Could not verify your session.'));
       }
-      void refresh();
     })();
     return () => {
       cancelled = true;
@@ -253,12 +279,16 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!me || !token) return;
-    void refresh();
+    const id = window.setTimeout(() => void refresh(), 180);
+    return () => clearTimeout(id);
   }, [me, token, refresh, filterStatus, filterPriority, filterEmployee]);
 
   useEffect(() => {
     if (!me || !token) return;
-    const id = window.setInterval(() => void refresh(), 30_000);
+    const id = window.setInterval(() => {
+      if (document.hidden) return;
+      void refresh();
+    }, 30_000);
     return () => clearInterval(id);
   }, [me, token, refresh]);
 
@@ -310,7 +340,7 @@ export default function DashboardPage() {
         method: 'DELETE',
       });
       if (!res.ok) {
-        setError(await parseApiErrorMessage(res));
+        setError(await readApiErrorMessage(res, 'Could not delete this thread.'));
         return;
       }
       setModal(null);
@@ -335,7 +365,7 @@ export default function DashboardPage() {
         method: 'DELETE',
       });
       if (!res.ok) {
-        setError(await parseApiErrorMessage(res));
+        setError(await readApiErrorMessage(res, 'Could not delete this message.'));
         return;
       }
       await refresh();
@@ -450,11 +480,15 @@ export default function DashboardPage() {
   /** Live next-sync countdown: useful for managers/employees; hidden on CEO overview. */
   const nextSyncLabelForRole = isCeo ? null : syncCountdownLabel;
 
+  const titleEyebrow = <TimeGreeting fullName={me.full_name} email={me.email} />;
+
   if (!dash) {
     return (
       <AppShell
         role={me.role}
         companyName={me.company_name ?? null}
+        userDisplayName={me.full_name?.trim() || me.email}
+        titleEyebrow={titleEyebrow}
         title={isEmployee ? 'My follow-ups' : isHead ? 'Workspace' : 'Command center'}
         subtitle={dashboardSubtitle}
         lastSyncLabel={lastSyncLabel}
@@ -465,6 +499,7 @@ export default function DashboardPage() {
         onRefresh={() => void refresh()}
         onSignOut={() => void ctxSignOut()}
       >
+        {authFlashBanner}
         {error ? (
           <div
             role="alert"
@@ -482,11 +517,7 @@ export default function DashboardPage() {
             >
               Retry
             </button>
-            <p className="mt-3 text-xs text-red-700/90">
-              If this keeps happening, confirm Vercel has{' '}
-              <code className="rounded bg-red-100/80 px-1 py-0.5">NEXT_PUBLIC_API_URL</code> set to your Railway
-              API URL (with <code className="rounded bg-red-100/80 px-1 py-0.5">https://</code>) and redeploy.
-            </p>
+            <p className="mt-3 text-xs text-red-700/90">Please retry in a moment. If this keeps happening, contact your admin.</p>
           </div>
         ) : (
           <PageSkeleton />
@@ -643,6 +674,8 @@ export default function DashboardPage() {
       <AppShell
         role={me.role}
         companyName={me.company_name ?? null}
+        userDisplayName={me.full_name?.trim() || me.email}
+        titleEyebrow={titleEyebrow}
         title={isEmployee ? 'My follow-ups' : isHead ? 'Workspace' : 'Command center'}
         subtitle={dashboardSubtitle}
         lastSyncLabel={lastSyncLabel}
@@ -653,6 +686,7 @@ export default function DashboardPage() {
         onRefresh={() => void refresh()}
         onSignOut={() => void ctxSignOut()}
       >
+        {authFlashBanner}
         {isCeo ? (
           <>
             <section className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:gap-4" aria-label="Executive KPIs">

@@ -13,6 +13,10 @@ import { ALLOW_PENDING_ONBOARDING } from '../common/allow-pending-onboarding.dec
 import { IS_PUBLIC_ROUTE } from '../common/public-route.decorator';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { SaasAuthService } from './saas-auth.service';
+import { isPlatformAdminEmail } from '../platform-admin/platform-admin.guard';
+
+/** No real tenant; blocks tenant APIs via getRequestContext. */
+const PLATFORM_OPERATOR_SENTINEL_COMPANY_ID = '00000000-0000-0000-0000-000000000000';
 
 function readBearer(req: Request): string | undefined {
   const authHeader = req.headers.authorization;
@@ -71,6 +75,20 @@ export class AppAuthGuard implements CanActivate {
     const profile = await this.saasAuthService.findProfileByAuthId(authUser.id);
     if (profile) {
       req.user = profile;
+      return true;
+    }
+
+    if (isPlatformAdminEmail(email)) {
+      req.user = {
+        id: authUser.id,
+        email,
+        fullName: null,
+        companyId: PLATFORM_OPERATOR_SENTINEL_COMPANY_ID,
+        companyName: null,
+        role: 'PLATFORM_ADMIN',
+        departmentId: null,
+        linkedEmployeeId: null,
+      };
       return true;
     }
 

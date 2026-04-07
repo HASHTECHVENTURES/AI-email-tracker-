@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "concurrently -n backend,frontend -c blue,magenta \"npm run start:dev --prefix backend\" \"npm run dev --prefix frontend\"",
+    "dev:clean": "rm -rf frontend/.next frontend/node_modules/.cache && npm run dev",
     "install:all": "npm install --prefix backend && npm install --prefix frontend",
     "dev:frontend": "npm run dev --prefix frontend",
     "build": "npm run build --prefix backend",

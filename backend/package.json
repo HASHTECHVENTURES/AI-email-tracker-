@@ -6,7 +6,8 @@
     "start": "node dist/main.js",
     "start:dev": "ts-node --transpile-only src/main.ts",
     "build": "tsc -p tsconfig.json",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "ensure-dev-user": "ts-node --transpile-only scripts/ensure-dev-auth-user.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

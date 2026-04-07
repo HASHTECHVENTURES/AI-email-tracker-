@@ -13,6 +13,8 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { DepartmentsModule } from './modules/departments/departments.module';
 import { SystemModule } from './modules/system/system.module';
 import { TeamAlertsModule } from './modules/team-alerts/team-alerts.module';
+import { SelfTrackingModule } from './modules/self-tracking/self-tracking.module';
+import { PlatformAdminModule } from './modules/platform-admin/platform-admin.module';
 
 @Module({
   imports: [
@@ -30,6 +32,8 @@ import { TeamAlertsModule } from './modules/team-alerts/team-alerts.module';
     DepartmentsModule,
     SystemModule,
     TeamAlertsModule,
+    SelfTrackingModule,
+    PlatformAdminModule,
   ],
 })
 export class AppModule {}

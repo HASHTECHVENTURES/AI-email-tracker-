@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -77,6 +78,7 @@ export default function SettingsPage() {
   const [diag, setDiag] = useState<DiagnosticsPayload | null>(null);
   const [diagError, setDiagError] = useState<string | null>(null);
   const [syncLoading, setSyncLoading] = useState(false);
+  const [platformAdmin, setPlatformAdmin] = useState(false);
 
   const load = useCallback(async (token: string) => {
     const [sRes, rRes, sysRes] = await Promise.all([
@@ -115,9 +117,26 @@ export default function SettingsPage() {
       router.replace('/auth');
       return;
     }
+    if (authMe.role === 'PLATFORM_ADMIN') {
+      router.replace('/admin');
+      return;
+    }
     setMe(authMe as Me);
     void load(token);
   }, [authLoading, authMe, token, router, load]);
+
+  useEffect(() => {
+    if (!token) return;
+    void (async () => {
+      const res = await apiFetch('/platform-admin/me', token);
+      if (res.ok) {
+        const b = (await res.json()) as { allowed?: boolean };
+        setPlatformAdmin(b.allowed === true);
+      } else {
+        setPlatformAdmin(false);
+      }
+    })();
+  }, [token]);
 
   const masterEmailOn = useMemo(() => {
     if (!settings) return false;
@@ -182,8 +201,8 @@ export default function SettingsPage() {
       }
       setNotice(
         next
-          ? 'Email (Gmail fetch) on for the whole company — all connected mailboxes can sync.'
-          : 'Email (Gmail fetch) paused company-wide. Managers can still pause individual mailboxes on the Employees page.',
+          ? 'Email sync is now on for the company.'
+          : 'Email sync is now paused for the company.',
       );
       await load(token);
     } finally {
@@ -206,11 +225,7 @@ export default function SettingsPage() {
         setError((b.message as string) || 'Could not update AI master');
         return;
       }
-      setNotice(
-        next
-          ? 'AI on — Inbox classification, thread enrichment, and manager/employee AI paths are enabled (per company defaults).'
-          : 'AI off company-wide — no Gemini for inbox, enrichment, or reports. Rules-only tracking where mail still syncs.',
-      );
+      setNotice(next ? 'AI features are now on for the company.' : 'AI features are now paused for the company.');
       await load(token);
     } finally {
       setSavingMasterAi(false);
@@ -259,7 +274,7 @@ export default function SettingsPage() {
         const msgs = r.reduce((s, x) => s + (x.newMessages ?? 0), 0);
         const errs = r.filter((x) => x.error).length;
         setNotice(
-          `Sync finished: ${r.length} mailbox(es), ${msgs} new message row(s) stored${errs ? `, ${errs} with errors` : ''}.`,
+          `Sync finished: ${r.length} mailbox(es), ${msgs} new message(s) processed${errs ? `, ${errs} with issues` : ''}.`,
         );
       }
       await load(token);
@@ -282,6 +297,7 @@ export default function SettingsPage() {
     <AppShell
       role={me.role}
       companyName={me.company_name ?? null}
+      userDisplayName={authMe?.full_name?.trim() || authMe?.email}
       title="Settings"
       subtitle={isHead ? 'View system status. Company defaults are CEO-only.' : 'Company defaults and system status.'}
       lastSyncLabel={sysStatus?.last_sync_at ? new Date(sysStatus.last_sync_at).toLocaleString() : null}
@@ -295,6 +311,20 @@ export default function SettingsPage() {
     >
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
       {notice ? <p className="text-sm text-emerald-700">{notice}</p> : null}
+
+      {platformAdmin ? (
+        <section className="rounded-xl border border-violet-200/80 bg-gradient-to-r from-violet-50 to-indigo-50/90 p-5 shadow-sm">
+          <Link
+            href="/admin"
+            className="text-base font-semibold text-violet-900 underline-offset-2 hover:underline"
+          >
+            Platform administration
+          </Link>
+          <p className="mt-1 text-sm text-violet-800/90">
+            All companies, registration KPIs, add/delete tenants, and per-company AI / email kill switches.
+          </p>
+        </section>
+      ) : null}
 
       <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
         <h2 className="text-base font-semibold text-slate-900">Email (Gmail fetch)</h2>

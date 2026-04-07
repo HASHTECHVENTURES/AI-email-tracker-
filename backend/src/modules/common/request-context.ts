@@ -19,6 +19,12 @@ export function getRequestContext(req: Request): RequestContext {
     throw new UnauthorizedException('Authenticated user profile is required');
   }
 
+  if (user.role === 'PLATFORM_ADMIN') {
+    throw new ForbiddenException(
+      'Platform operators manage tenants at /admin, not inside a company workspace.',
+    );
+  }
+
   return {
     companyId: user.companyId,
     role: user.role,

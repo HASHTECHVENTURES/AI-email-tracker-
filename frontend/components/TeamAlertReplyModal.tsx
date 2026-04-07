@@ -94,9 +94,15 @@ export function TeamAlertReplyModal({ open, parent, token, onClose, onSent }: Pr
           id="team-alert-reply-text"
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return;
+            if (e.shiftKey) return;
+            e.preventDefault();
+            if (!sending) void send();
+          }}
           rows={4}
           className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-          placeholder="Type your reply…"
+          placeholder="Type your reply… (Enter to send, Shift+Enter for new line)"
           disabled={sending}
         />
 

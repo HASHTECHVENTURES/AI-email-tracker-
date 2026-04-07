@@ -47,6 +47,7 @@ export class DashboardController {
       u.role === 'EMPLOYEE'
         ? { status, priority }
         : { status, employeeId: filterEmployeeId, priority },
+      u.email,
     );
   }
 

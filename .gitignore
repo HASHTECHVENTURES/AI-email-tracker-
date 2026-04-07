@@ -4,4 +4,5 @@ dist/
 .env.local
 .DS_Store
 .next/
+frontend/.next-dev/
 *.tsbuildinfo

@@ -14,5 +14,83 @@ body {
 }
 
 body {
-  @apply bg-surface text-slate-900 antialiased;
+  /* Plain CSS so base readability survives if Tailwind/PostCSS output fails to load (e.g. corrupt .next). */
+  background-color: #f8fafc;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/*
+  App shell uses two nav UIs (desktop sidebar + mobile strip), switched with Tailwind
+  (hidden / lg:flex / lg:hidden). If the Tailwind bundle fails to load, both would
+  render and look like a “duplicated” header. These plain-CSS rules mirror that split
+  so layout stays sane until you run `npm run dev:clean`.
+*/
+@media (max-width: 1023px) {
+  .app-shell-sidebar {
+    display: none !important;
+  }
+}
+
+@media (min-width: 1024px) {
+  .app-shell-mobile-nav {
+    display: none !important;
+  }
+
+  .app-shell-body {
+    display: flex !important;
+    flex-direction: row;
+  }
+
+  .app-shell-sidebar {
+    display: flex !important;
+    flex-direction: column;
+    box-sizing: border-box;
+    padding: 1.5rem 1rem;
+    background-color: #ffffff;
+  }
+}
+
+/* Micro-interactions: consistent motion and focus affordances */
+button,
+[role='button'],
+a,
+input,
+select,
+textarea {
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    box-shadow 180ms ease,
+    transform 120ms ease,
+    opacity 160ms ease;
+}
+
+button:not(:disabled):active,
+[role='button']:not(:disabled):active {
+  transform: translateY(1px) scale(0.995);
+}
+
+button:focus-visible,
+[role='button']:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px rgba(99, 102, 241, 0.24),
+    0 0 0 4px rgba(99, 102, 241, 0.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

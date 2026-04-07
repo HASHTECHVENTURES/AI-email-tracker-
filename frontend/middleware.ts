@@ -12,6 +12,22 @@ export async function middleware(request: NextRequest) {
   try {
     const pathname = request.nextUrl.pathname;
 
+    // Framework & static assets — skip Supabase session work (defense in depth).
+    if (
+      pathname.startsWith('/_next') ||
+      pathname.startsWith('/_vercel') ||
+      pathname.startsWith('/favicon')
+    ) {
+      return NextResponse.next();
+    }
+
+    // Remove legacy `?__reload=` from URLs (old client recovery script); stable URLs avoid stale HTML confusion.
+    if (request.nextUrl.searchParams.has('__reload')) {
+      const clean = request.nextUrl.clone();
+      clean.searchParams.delete('__reload');
+      return NextResponse.redirect(clean);
+    }
+
     if (pathname === '/portal' || pathname.startsWith('/portal/')) {
       const url = request.nextUrl.clone();
       url.pathname = '/auth';
@@ -65,6 +81,7 @@ export async function middleware(request: NextRequest) {
     }
 
     const protectedPaths = [
+      '/admin',
       '/dashboard',
       '/departments',
       '/employees',
@@ -72,6 +89,8 @@ export async function middleware(request: NextRequest) {
       '/settings',
       '/messages',
       '/manager-messages',
+      '/my-email',
+      '/my-mail',
     ];
     const isProtected = protectedPaths.some((p) => pathname.startsWith(p));
     if (!user && isProtected) {
@@ -96,6 +115,8 @@ export const config = {
     '/auth/:path*',
     '/portal',
     '/portal/:path*',
+    '/admin',
+    '/admin/:path*',
     '/dashboard',
     '/dashboard/:path*',
     '/departments/:path*',
@@ -106,5 +127,9 @@ export const config = {
     '/messages/:path*',
     '/manager-messages',
     '/manager-messages/:path*',
+    '/my-email',
+    '/my-email/:path*',
+    '/my-mail',
+    '/my-mail/:path*',
   ],
 };
