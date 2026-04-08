@@ -122,13 +122,13 @@ export default function PlatformAdminPage() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!me || !token) {
-      router.replace('/auth');
+    if (!token) {
+      router.replace('/auth?next=/admin');
       return;
     }
     setLoading(true);
     void load();
-  }, [authLoading, me, token, router, load]);
+  }, [authLoading, token, router, load]);
 
   async function createCompany(e: React.FormEvent) {
     e.preventDefault();
@@ -223,7 +223,7 @@ export default function PlatformAdminPage() {
     }
   }
 
-  if (!me || authLoading || loading) {
+  if (authLoading || loading) {
     return (
       <AppShell role={me?.role ?? 'CEO'} title="Platform admin" subtitle="Loading…" onSignOut={() => void signOut()}>
         <PageSkeleton />
@@ -234,9 +234,9 @@ export default function PlatformAdminPage() {
   if (allowed === false) {
     return (
       <AppShell
-        role={me.role}
-        companyName={me.company_name ?? null}
-        userDisplayName={me.full_name?.trim() || me.email}
+        role={me?.role ?? 'CEO'}
+        companyName={me?.company_name ?? null}
+        userDisplayName={me?.full_name?.trim() || me?.email}
         title="Access denied"
         subtitle="You do not have platform administrator access."
         onSignOut={() => void signOut()}
