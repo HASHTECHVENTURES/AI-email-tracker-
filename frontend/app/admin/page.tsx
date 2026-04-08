@@ -225,7 +225,12 @@ export default function PlatformAdminPage() {
 
   if (authLoading || loading) {
     return (
-      <AppShell role={me?.role ?? 'CEO'} title="Platform admin" subtitle="Loading…" onSignOut={() => void signOut()}>
+      <AppShell
+        role="PLATFORM_ADMIN"
+        title="Platform admin"
+        subtitle="Loading…"
+        onSignOut={() => void signOut()}
+      >
         <PageSkeleton />
       </AppShell>
     );
@@ -234,7 +239,7 @@ export default function PlatformAdminPage() {
   if (allowed === false) {
     return (
       <AppShell
-        role={me?.role ?? 'CEO'}
+        role="PLATFORM_ADMIN"
         companyName={me?.company_name ?? null}
         userDisplayName={me?.full_name?.trim() || me?.email}
         title="Access denied"
@@ -254,7 +259,7 @@ export default function PlatformAdminPage() {
 
   return (
     <AppShell
-      role={me?.role ?? 'CEO'}
+      role="PLATFORM_ADMIN"
       companyName={me?.company_name ?? null}
       userDisplayName={me?.full_name?.trim() || me?.email}
       title="Platform admin"
