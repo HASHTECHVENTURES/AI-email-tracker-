@@ -204,6 +204,21 @@ function AuthPageInner() {
     sessionStorage.removeItem(PENDING_KEY);
   }, []);
 
+  /** Platform operators must never enter tenant onboarding; send them directly to /admin. */
+  const redirectIfPlatformAdmin = useCallback(
+    async (accessToken: string): Promise<boolean> => {
+      const res = await apiFetch('/platform-admin/me', accessToken);
+      if (!res.ok) return false;
+      const body = (await res.json().catch(() => ({}))) as { allowed?: boolean };
+      if (body.allowed) {
+        router.replace('/admin');
+        return true;
+      }
+      return false;
+    },
+    [router],
+  );
+
   const finalizeOnboarding = useCallback(
     async (session: Session, res: Response, opts?: { quiet?: boolean }) => {
       const data = (await res.json().catch(() => ({}))) as {
@@ -274,6 +289,10 @@ function AuthPageInner() {
       const status = await statusRes.json();
       if (cancelled) return;
 
+      if (await redirectIfPlatformAdmin(token)) {
+        return;
+      }
+
       if (!status.needs_onboarding && status.user) {
         if (!me) {
           return;
@@ -316,7 +335,17 @@ function AuthPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [authCtxLoading, authCtxError, me, router, safeNext, hasExplicitNext, completeFromEmail, finalizeOnboarding]);
+  }, [
+    authCtxLoading,
+    authCtxError,
+    me,
+    router,
+    safeNext,
+    hasExplicitNext,
+    completeFromEmail,
+    finalizeOnboarding,
+    redirectIfPlatformAdmin,
+  ]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -349,6 +378,9 @@ function AuthPageInner() {
         needs_onboarding?: boolean;
         user?: { role?: string };
       };
+      if (await redirectIfPlatformAdmin(session.access_token)) {
+        return;
+      }
       if (status.needs_onboarding) {
         const pending = readPendingSignup();
         if (pending?.full_name && pending?.company_name) {
