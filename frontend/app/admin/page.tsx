@@ -254,9 +254,9 @@ export default function PlatformAdminPage() {
 
   return (
     <AppShell
-      role={me.role}
-      companyName={me.company_name ?? null}
-      userDisplayName={me.full_name?.trim() || me.email}
+      role={me?.role ?? 'CEO'}
+      companyName={me?.company_name ?? null}
+      userDisplayName={me?.full_name?.trim() || me?.email}
       title="Platform admin"
       subtitle="Companies registered in the system, KPIs, and per-tenant kill switches for AI and email ingestion."
       onSignOut={() => void signOut()}
