@@ -92,10 +92,11 @@ export async function middleware(request: NextRequest) {
       '/my-email',
       '/my-mail',
     ];
-    const isProtected = protectedPaths.some((p) => pathname.startsWith(p));
+    const isAdminLogin = pathname === '/admin/login';
+    const isProtected = !isAdminLogin && protectedPaths.some((p) => pathname.startsWith(p));
     if (!user && isProtected) {
       const redirectUrl = request.nextUrl.clone();
-      redirectUrl.pathname = '/auth';
+      redirectUrl.pathname = pathname.startsWith('/admin') ? '/admin/login' : '/auth';
       redirectUrl.searchParams.set('next', request.nextUrl.pathname);
       const redirectResponse = NextResponse.redirect(redirectUrl);
       copyCookies(response, redirectResponse);

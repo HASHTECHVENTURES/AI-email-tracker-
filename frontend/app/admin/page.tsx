@@ -123,7 +123,7 @@ export default function PlatformAdminPage() {
   useEffect(() => {
     if (authLoading) return;
     if (!token) {
-      router.replace('/auth?next=/admin');
+      router.replace('/admin/login?next=/admin');
       return;
     }
     setLoading(true);
