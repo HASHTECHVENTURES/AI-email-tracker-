@@ -10,7 +10,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Request } from 'express';
-import { PlatformAdminGuard, isPlatformAdminEmail } from './platform-admin.guard';
+import { PlatformAdminGuard, isPlatformAdminUser } from './platform-admin.guard';
 import { PlatformAdminService } from './platform-admin.service';
 
 @Controller('platform-admin')
@@ -20,7 +20,7 @@ export class PlatformAdminController {
   /** Any authenticated user: whether they may use platform admin APIs. */
   @Get('me')
   me(@Req() req: Request) {
-    return { allowed: isPlatformAdminEmail(req.user?.email ?? null) };
+    return { allowed: isPlatformAdminUser(req.user) };
   }
 
   @Get('stats')

@@ -14,15 +14,18 @@ export function isPlatformAdminEmail(email: string | undefined | null): boolean 
   return allowed.has(email.trim().toLowerCase());
 }
 
+export function isPlatformAdminUser(user: { email?: string | null; role?: string | null } | null | undefined): boolean {
+  if (!user) return false;
+  if (user.role === 'PLATFORM_ADMIN') return true;
+  return isPlatformAdminEmail(user.email);
+}
+
 @Injectable()
 export class PlatformAdminGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
     const user = req.user;
-    if (!user?.email) {
-      throw new ForbiddenException('Platform admin access required');
-    }
-    if (!isPlatformAdminEmail(user.email)) {
+    if (!isPlatformAdminUser(user)) {
       throw new ForbiddenException('Platform admin access required');
     }
     return true;
