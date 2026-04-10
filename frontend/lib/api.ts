@@ -146,6 +146,12 @@ export async function apiPostSse(
       }
     }
   } catch (err) {
+    if (
+      (err instanceof DOMException && err.name === 'AbortError') ||
+      (err instanceof Error && err.name === 'AbortError')
+    ) {
+      throw err;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     if (msg === 'Failed to fetch' || /network|fetch|load failed/i.test(msg)) {
       throw new Error(formatNetworkFetchFailureMessage());

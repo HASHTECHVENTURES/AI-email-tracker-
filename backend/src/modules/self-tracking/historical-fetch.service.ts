@@ -24,6 +24,16 @@ const MAX_HISTORICAL_MESSAGES = 500;
 const MAX_STORED_EMAIL_BODY_CHARS = 2_000_000;
 const RELEVANCE_PROMPT_PER_MESSAGE_BODY = 1_400;
 
+/** Inbound + mailbox only on Cc (not To) — matches Live “CC’d” chip semantics. */
+function employeeOnlyOnCc(msg: EmailMessage, employeeEmail: string): boolean {
+  if (msg.direction !== 'INBOUND') return false;
+  const n = (e: string) => e.trim().toLowerCase();
+  const em = n(employeeEmail);
+  const inTo = (msg.toEmails ?? []).some((t) => n(t) === em);
+  const inCc = (msg.ccEmails ?? []).some((c) => n(c) === em);
+  return !inTo && inCc;
+}
+
 function clipStoredBody(bodyText: string | undefined): string {
   const t = bodyText ?? '';
   if (t.length <= MAX_STORED_EMAIL_BODY_CHARS) return t;
@@ -36,6 +46,8 @@ export interface HistoricalFetchResult {
   skipped_irrelevant: number;
   conversations_created: number;
   conversations: ConversationListItem[];
+  /** True when the client disconnected or aborted mid-run; partial data was still saved. */
+  stopped?: boolean;
 }
 
 /** Streamed to the client for live progress (Historical Search UI). */
@@ -50,6 +62,13 @@ export type HistoricalProgressEvent =
       reason: string | null;
       subject: string;
       from: string;
+      /** Present when the full message was loaded (helps the UI mirror Live Mails). */
+      from_name?: string | null;
+      message_id?: string;
+      thread_id?: string;
+      direction?: 'INBOUND' | 'OUTBOUND';
+      sent_at_iso?: string;
+      user_cc_only?: boolean;
     }
   | { phase: 'saving'; messageCount: number }
   | { phase: 'recomputing'; threadCount: number }
@@ -91,7 +110,9 @@ export class HistoricalFetchService {
     startIso: string,
     endIso: string,
     onProgress?: HistoricalProgressFn,
+    options?: { abortSignal?: AbortSignal },
   ): Promise<HistoricalFetchResult> {
+    const signal = options?.abortSignal;
     const startMs = Date.parse(startIso);
     const endMs = Date.parse(endIso);
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
@@ -182,8 +203,13 @@ export class HistoricalFetchService {
     let fetchedCount = 0;
 
     const total = messageIds.length;
+    let stoppedEarly = false;
 
     for (let idx = 0; idx < messageIds.length; idx++) {
+      if (signal?.aborted) {
+        stoppedEarly = true;
+        break;
+      }
       const msgId = messageIds[idx];
       const index = idx + 1;
       onProgress?.({
@@ -208,6 +234,10 @@ export class HistoricalFetchService {
       }
 
       try {
+        if (signal?.aborted) {
+          stoppedEarly = true;
+          break;
+        }
         const msg = await this.gmailService.fetchFullMessage(employeeId, employee.email, msgId);
         fetchedCount++;
 
@@ -220,6 +250,11 @@ export class HistoricalFetchService {
           subject: msg.subject ?? '(no subject)',
           from: msg.fromEmail,
         });
+
+        if (signal?.aborted) {
+          stoppedEarly = true;
+          break;
+        }
 
         if (msg.sentAt < startDate || msg.sentAt > endDate) {
           onProgress?.({
@@ -245,6 +280,11 @@ export class HistoricalFetchService {
           );
         }
 
+        if (signal?.aborted) {
+          stoppedEarly = true;
+          break;
+        }
+
         const decision = await this.classifyMessage(
           msg,
           threadSlice,
@@ -262,6 +302,12 @@ export class HistoricalFetchService {
           reason: decision.reason,
           subject: msg.subject ?? '(no subject)',
           from: msg.fromEmail,
+          from_name: msg.fromName?.trim() ? msg.fromName.trim() : null,
+          message_id: msg.providerMessageId,
+          thread_id: msg.providerThreadId,
+          direction: msg.direction,
+          sent_at_iso: msg.sentAt.toISOString(),
+          user_cc_only: employeeOnlyOnCc(msg, employee.email),
         });
 
         if (!decision.relevant) {
@@ -317,12 +363,14 @@ export class HistoricalFetchService {
       `Historical fetch done: ${fetchedCount} fetched, ${messages.length} stored, ${skippedIrrelevant} skipped, ${conversationsCreated} conversations`,
     );
 
+    const wasStopped = stoppedEarly || Boolean(signal?.aborted);
     const result: HistoricalFetchResult = {
       fetched_from_gmail: fetchedCount,
       stored_relevant: messages.length,
       skipped_irrelevant: skippedIrrelevant,
       conversations_created: conversationsCreated,
       conversations,
+      stopped: wasStopped || undefined,
     };
     onProgress?.({ phase: 'complete', result });
     return result;

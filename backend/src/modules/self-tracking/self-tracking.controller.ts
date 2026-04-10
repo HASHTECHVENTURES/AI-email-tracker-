@@ -17,7 +17,7 @@ import { Request, Response } from 'express';
 import { getRequestContext } from '../common/request-context';
 import { EmployeesService } from '../employees/employees.service';
 import { SelfTrackingService } from './self-tracking.service';
-import { HistoricalFetchService } from './historical-fetch.service';
+import { HistoricalFetchService, type HistoricalProgressFn } from './historical-fetch.service';
 
 @Controller('self-tracking')
 export class SelfTrackingController {
@@ -163,6 +163,45 @@ export class SelfTrackingController {
   }
 
   /**
+   * Threads already in the DB for one mailbox whose last client message falls in [start, end] (ISO).
+   * Refreshes the Historical Search table after a client-side stop without re-listing Gmail.
+   */
+  @Get('historical-window-results')
+  async historicalWindowResults(
+    @Req() req: Request,
+    @Query('start') start?: string,
+    @Query('end') end?: string,
+    @Query('employee_id') employeeId?: string,
+  ) {
+    const user = req.user;
+    if (!user) throw new UnauthorizedException();
+    const ctx = getRequestContext(req);
+    if (ctx.role !== 'CEO') {
+      throw new ForbiddenException('Only CEOs can access self-tracking');
+    }
+    const s = start?.trim();
+    const e = end?.trim();
+    const id = employeeId?.trim();
+    if (!s || !e || !id) {
+      throw new BadRequestException('start, end, and employee_id query parameters are required');
+    }
+    const mailboxes = await this.selfTrackingService.getVisibleMailboxes(ctx, user.email);
+    const allowed = new Set(mailboxes.map((m) => m.id));
+    if (!allowed.has(id)) {
+      throw new ForbiddenException('Mailbox not in your scope');
+    }
+    const name = mailboxes.find((m) => m.id === id)?.name ?? 'Mailbox';
+    const conversations = await this.selfTrackingService.listConversationsByLastClientMsgWindow(
+      ctx,
+      id,
+      name,
+      s,
+      e,
+    );
+    return { conversations };
+  }
+
+  /**
    * Read-only: call Gmail `messages.list` with the same query/cursor as live ingestion, and optionally
    * for a historical date window — does not store mail. Use to verify IDs are returned vs DB row counts.
    */
@@ -280,9 +319,19 @@ export class SelfTrackingController {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
-    const write = (payload: object) => {
-      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    const emit: HistoricalProgressFn = (e) => {
+      try {
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify(e)}\n\n`);
+        }
+      } catch {
+        // Client may have closed the socket (e.g. Stop).
+      }
     };
+
+    const ac = new AbortController();
+    const onClientClose = () => ac.abort();
+    req.on('close', onClientClose);
 
     try {
       await this.historicalFetchService.fetchHistorical(
@@ -290,14 +339,17 @@ export class SelfTrackingController {
         body.employee_id.trim(),
         body.start.trim(),
         body.end.trim(),
-        write,
+        emit,
+        { abortSignal: ac.signal },
       );
     } catch (err) {
       const message =
         err instanceof BadRequestException
           ? String(err.message)
           : (err as Error)?.message ?? 'Historical fetch failed';
-      write({ phase: 'error', message });
+      emit({ phase: 'error', message });
+    } finally {
+      req.off('close', onClientClose);
     }
     res.end();
   }

@@ -151,8 +151,10 @@ function needsMyReply(c: ConversationRow): boolean {
   return lc > lr;
 }
 
-/** Optional “focus recent” filter: last inbound client message older than N calendar days. */
+/** Last inbound client message older than N calendar days → treated as “stale” for Need your reply. */
 const STALE_NEED_REPLY_DAYS = 30;
+/** Always on: Need your reply lists only threads with a client message in the last STALE_NEED_REPLY_DAYS days; older overdue items remain in All threads. */
+const HIDE_STALE_NEED_REPLY = true;
 
 function isStaleNeedReplyByClientMessage(c: ConversationRow, staleDays: number): boolean {
   if (!needsMyReply(c)) return false;
@@ -327,6 +329,113 @@ function conversationSenderLabel(c: ConversationRow): string {
   return '';
 }
 
+/** One Gmail message the historical fetch AI marked relevant (streamed before DB row exists). */
+type HistoricalStreamPick = {
+  subject: string;
+  reason: string | null;
+  index: number;
+  messageId?: string;
+  threadId?: string;
+  direction?: 'INBOUND' | 'OUTBOUND';
+  sentAtIso?: string;
+  fromName?: string | null;
+  fromEmail?: string;
+  userCcOnly?: boolean;
+};
+
+function HistoricalStreamPickCard({ p, isLatest }: { p: HistoricalStreamPick; isLatest?: boolean }) {
+  const isOut = p.direction === 'OUTBOUND';
+  const senderLine =
+    isOut && p.fromEmail
+      ? `From your mailbox · ${p.fromEmail}`
+      : p.fromName && p.fromEmail && p.fromName !== p.fromEmail
+        ? `${p.fromName} · ${p.fromEmail}`
+        : p.fromEmail || p.fromName || '—';
+
+  const gmailThreadUrl =
+    p.threadId != null && p.threadId.length > 0
+      ? `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(p.threadId)}`
+      : null;
+
+  const msgTail =
+    p.messageId && p.messageId.length > 14 ? `…${p.messageId.slice(-12)}` : (p.messageId ?? '');
+  const threadTail =
+    p.threadId && p.threadId.length > 12 ? `…${p.threadId.slice(-10)}` : (p.threadId ?? '');
+
+  return (
+    <li
+      className={`historical-pick-row-enter rounded-lg border border-white/80 bg-white/90 px-2.5 py-2.5 text-xs shadow-sm ${
+        isLatest ? 'ring-1 ring-emerald-200/80' : ''
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-900">
+          AI kept
+        </span>
+        {isOut ? (
+          <span className="rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-900">
+            Your send
+          </span>
+        ) : (
+          <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">
+            Client mail
+          </span>
+        )}
+        {p.userCcOnly ? (
+          <span
+            className="rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-800"
+            title="You were only on Cc on this inbound (not To) — same as Live CC’d tab"
+          >
+            CC
+          </span>
+        ) : null}
+        <span className="ml-auto shrink-0 tabular-nums text-[10px] font-semibold text-slate-400">
+          #{p.index} of batch
+        </span>
+      </div>
+      <p className="mt-1.5 line-clamp-2 font-semibold leading-snug text-slate-900" title={p.subject}>
+        {p.subject}
+      </p>
+      <p className="mt-0.5 text-[11px] leading-snug text-slate-600 line-clamp-2" title={senderLine}>
+        {senderLine}
+      </p>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-500">
+        {p.messageId ? (
+          <span className="font-mono" title={p.messageId}>
+            Msg id {msgTail}
+          </span>
+        ) : null}
+        {p.threadId ? (
+          <span className="font-mono" title={p.threadId}>
+            Thread {threadTail}
+          </span>
+        ) : null}
+        {p.sentAtIso ? (
+          <span className="text-slate-600">
+            <RelWithAbsoluteDate iso={p.sentAtIso} />
+          </span>
+        ) : null}
+        {gmailThreadUrl ? (
+          <a
+            href={gmailThreadUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-semibold text-brand-600 hover:underline"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Open in Gmail
+          </a>
+        ) : null}
+      </div>
+      {p.reason ? (
+        <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-snug text-slate-600 line-clamp-4">
+          {p.reason}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
 function ConversationSubjectCell({ c }: { c: ConversationRow }) {
   const title = conversationDisplayTitle(c);
   const sender = conversationSenderLabel(c);
@@ -464,7 +573,7 @@ function MyEmailPageInner() {
     listedTotal: number;
     currentIndex: number;
     total: number;
-    picks: { subject: string; reason: string | null; index: number }[];
+    picks: HistoricalStreamPick[];
     relevantSoFar: number;
   }>({
     phase: 'idle',
@@ -478,6 +587,11 @@ function MyEmailPageInner() {
 
   /** Wall-clock seconds while Historical Search is running (drives live timer in UI). */
   const [histElapsedSec, setHistElapsedSec] = useState(0);
+
+  /** Abort in-flight `historical-fetch-stream` (Stop button). */
+  const historicalFetchAbortRef = useRef<AbortController | null>(null);
+  const [histDeletingAll, setHistDeletingAll] = useState(false);
+  const [histRowDeletingId, setHistRowDeletingId] = useState<string | null>(null);
 
   const [filterMailbox, setFilterMailbox] = useState('');
   /** Extra filters only for the “All threads” tab. */
@@ -523,9 +637,6 @@ function MyEmailPageInner() {
 
   /** Hide LOW-priority threads from primary tabs (still visible under Low / noise). */
   const [hideLowPriority, setHideLowPriority] = useState(true);
-  /** When on, “Need your reply” hides threads whose last client message is older than STALE_NEED_REPLY_DAYS. */
-  const [hideStaleNeedReply, setHideStaleNeedReply] = useState(false);
-
   /** Bulk delete selection for the active mail tab list. */
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(() => new Set());
   const [resolvingId, setResolvingId] = useState<string | null>(null);
@@ -543,7 +654,7 @@ function MyEmailPageInner() {
         ? 'Refreshing…'
         : 'Deleting…';
 
-  /** Latest mailbox filter for stable `loadDashboard` — load full conversation list; tab filters are client-side. */
+  /** Latest mailbox filter for stable `loadDashboard`. Person scope hits the API (`mailbox_id` / `sync_employee_ids`); tab + search compose on the client against that payload. */
   const filterRef = useRef({ mailbox: filterMailbox });
   filterRef.current = { mailbox: filterMailbox };
 
@@ -1197,6 +1308,27 @@ function MyEmailPageInner() {
     [mailboxes, ceoEmailNorm],
   );
 
+  const refreshHistoricalWindowTable = useCallback(async (): Promise<ConversationRow[]> => {
+    if (!token) return [];
+    const bounds = localYmdRangeToIsoBounds(histStartDate, histEndDate);
+    if (!bounds) return [];
+    const targetMailboxId = ownMailboxes.length > 0 ? ownMailboxes[0].id : '';
+    if (!targetMailboxId) return [];
+    const params = new URLSearchParams({
+      start: bounds.startIso,
+      end: bounds.endIso,
+      employee_id: targetMailboxId,
+    });
+    const res = await apiFetch(`/self-tracking/historical-window-results?${params}`, token);
+    if (!res.ok) {
+      throw new Error(await readApiErrorMessage(res, 'Could not refresh historical results.'));
+    }
+    const data = (await res.json()) as { conversations?: ConversationRow[] };
+    const conv = data.conversations ?? [];
+    setHistoricalRows(conv);
+    return conv;
+  }, [token, histStartDate, histEndDate, ownMailboxes]);
+
   const searchHistoricalFetch = useCallback(async () => {
     if (!token) return;
     const bounds = localYmdRangeToIsoBounds(histStartDate, histEndDate);
@@ -1226,6 +1358,10 @@ function MyEmailPageInner() {
       picks: [],
       relevantSoFar: 0,
     });
+
+    historicalFetchAbortRef.current?.abort();
+    const ac = new AbortController();
+    historicalFetchAbortRef.current = ac;
 
     try {
       await apiPostSse(
@@ -1266,10 +1402,42 @@ function MyEmailPageInner() {
             const relevant = Boolean(ev.relevant);
             const subject = String(ev.subject ?? '');
             const reason = ev.reason != null ? String(ev.reason) : null;
+            const messageId =
+              typeof ev.message_id === 'string' && ev.message_id.trim() ? ev.message_id.trim() : undefined;
+            const threadId =
+              typeof ev.thread_id === 'string' && ev.thread_id.trim() ? ev.thread_id.trim() : undefined;
+            const direction: 'INBOUND' | 'OUTBOUND' | undefined =
+              ev.direction === 'OUTBOUND'
+                ? 'OUTBOUND'
+                : ev.direction === 'INBOUND'
+                  ? 'INBOUND'
+                  : undefined;
+            const sentAtIso =
+              typeof ev.sent_at_iso === 'string' && ev.sent_at_iso.trim()
+                ? ev.sent_at_iso.trim()
+                : undefined;
+            const fromName =
+              ev.from_name != null && String(ev.from_name).trim() ? String(ev.from_name).trim() : null;
+            const fromEmail = typeof ev.from === 'string' && ev.from.trim() ? ev.from.trim() : undefined;
+            const userCcOnly = ev.user_cc_only === true;
             setHistLive((prev) => {
               const picks =
                 relevant && subject
-                  ? [...prev.picks, { subject, reason, index }].slice(-400)
+                  ? [
+                      ...prev.picks,
+                      {
+                        subject,
+                        reason,
+                        index,
+                        messageId,
+                        threadId,
+                        direction,
+                        sentAtIso,
+                        fromName,
+                        fromEmail,
+                        userCcOnly,
+                      },
+                    ].slice(-400)
                   : prev.picks;
               return {
                 ...prev,
@@ -1298,6 +1466,7 @@ function MyEmailPageInner() {
                   stored_relevant?: number;
                   skipped_irrelevant?: number;
                   conversations_created?: number;
+                  stopped?: boolean;
                 }
               | undefined;
             const conv = result?.conversations ?? [];
@@ -1310,7 +1479,13 @@ function MyEmailPageInner() {
             });
             setHistoricalSearched(true);
             setHistLive((prev) => ({ ...prev, phase: 'done' }));
-            if (conv.length > 0) {
+            if (result?.stopped) {
+              setSuccess(
+                conv.length > 0
+                  ? `Stopped — saved ${result.stored_relevant ?? 0} relevant message(s). Showing ${conv.length} thread(s) in this date range.`
+                  : 'Stopped — any messages already classified were saved.',
+              );
+            } else if (conv.length > 0) {
               setSuccess(`Found ${conv.length} relevant conversation(s) from Gmail.`);
             }
             return;
@@ -1321,17 +1496,100 @@ function MyEmailPageInner() {
             setHistoricalSearched(true);
           }
         },
+        ac.signal,
       );
     } catch (e) {
-      const fallback = formatNetworkFetchFailureMessage();
-      setError(e instanceof Error && e.message.trim() ? e.message : fallback);
-      setHistoricalRows([]);
-      setHistoricalSearched(true);
-      setHistLive((prev) => ({ ...prev, phase: 'error' }));
+      if (e instanceof Error && e.name === 'AbortError') {
+        try {
+          const conv = await refreshHistoricalWindowTable();
+          setHistoricalSearched(true);
+          setHistoricalStats(null);
+          setHistLive((prev) => ({ ...prev, phase: 'done' }));
+          setSuccess(
+            conv.length > 0
+              ? `Stopped. Partial results were saved — ${conv.length} thread(s) in this date range. You can remove any row below if you don’t want to keep it.`
+              : 'Stopped. Any messages already classified were saved. Run fetch again to continue, or change the date range.',
+          );
+        } catch (refreshErr) {
+          setError(
+            refreshErr instanceof Error && refreshErr.message.trim()
+              ? refreshErr.message
+              : 'Stopped, but the list could not be refreshed.',
+          );
+          setHistLive((prev) => ({ ...prev, phase: 'error' }));
+        }
+      } else {
+        const fallback = formatNetworkFetchFailureMessage();
+        setError(e instanceof Error && e.message.trim() ? e.message : fallback);
+        setHistoricalRows([]);
+        setHistoricalSearched(true);
+        setHistLive((prev) => ({ ...prev, phase: 'error' }));
+      }
     } finally {
+      historicalFetchAbortRef.current = null;
       setHistoricalLoading(false);
     }
-  }, [token, histStartDate, histEndDate, ownMailboxes]);
+  }, [token, histStartDate, histEndDate, ownMailboxes, refreshHistoricalWindowTable]);
+
+  const deleteHistoricalRow = useCallback(
+    async (conversationId: string) => {
+      if (!token) return;
+      if (
+        !window.confirm(
+          'Remove this thread from the tracker? Stored messages in this thread will be deleted from the app.',
+        )
+      ) {
+        return;
+      }
+      setHistRowDeletingId(conversationId);
+      setError(null);
+      try {
+        const res = await apiFetch(
+          `/conversations/${encodeURIComponent(conversationId)}`,
+          token,
+          { method: 'DELETE' },
+        );
+        if (!res.ok) {
+          setError(await readApiErrorMessage(res, 'Could not remove thread.'));
+          return;
+        }
+        setHistoricalRows((rows) => rows.filter((c) => c.conversation_id !== conversationId));
+        setSuccess('Thread removed from the tracker.');
+      } finally {
+        setHistRowDeletingId(null);
+      }
+    },
+    [token],
+  );
+
+  const deleteAllHistoricalResults = useCallback(async () => {
+    if (!token || historicalRows.length === 0) return;
+    if (
+      !window.confirm(
+        `Remove all ${historicalRows.length} threads shown from this search from the tracker? Stored email for those threads will be deleted.`,
+      )
+    ) {
+      return;
+    }
+    setHistDeletingAll(true);
+    setError(null);
+    try {
+      const ids = historicalRows.map((c) => c.conversation_id);
+      const { ok, fail } = await bulkDeleteConversationsById(ids, token, () => {});
+      if (fail > 0) {
+        setError(`${fail} thread(s) could not be removed (${ok} removed).`);
+        await refreshHistoricalWindowTable().catch(() => {});
+      } else {
+        setHistoricalRows([]);
+        setHistoricalStats(null);
+        setSuccess('All listed threads were removed from the tracker.');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Bulk delete failed.');
+    } finally {
+      setHistDeletingAll(false);
+    }
+  }, [token, historicalRows, refreshHistoricalWindowTable]);
 
   /** Department managers only — matches HEAD user in org (not every IC). */
   const managerMailboxes = useMemo(
@@ -1402,9 +1660,9 @@ function MyEmailPageInner() {
       withoutLowScoped.filter(
         (c) =>
           needsMyReply(c) &&
-          (!hideStaleNeedReply || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)),
+          (!HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)),
       ).length,
-    [withoutLowScoped, hideStaleNeedReply],
+    [withoutLowScoped],
   );
   const kpiWaitingCount = useMemo(
     () => withoutLowScoped.filter((c) => isWaitingOnThem(c)).length,
@@ -1428,7 +1686,7 @@ function MyEmailPageInner() {
         return withoutLowScoped.filter(
           (c) =>
             needsMyReply(c) &&
-            (!hideStaleNeedReply || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)),
+            (!HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)),
         );
       case 'waiting':
         return withoutLowScoped.filter((c) => isWaitingOnThem(c));
@@ -1455,7 +1713,6 @@ function MyEmailPageInner() {
     hideLowPriority,
     allTabStatus,
     allTabPriority,
-    hideStaleNeedReply,
   ]);
 
   const searchFilteredTabRows = useMemo(() => {
@@ -1469,6 +1726,8 @@ function MyEmailPageInner() {
       const summary = (c.summary ?? '').toLowerCase();
       const shortReason = (c.short_reason ?? '').toLowerCase();
       const reason = (c.reason ?? '').toLowerCase();
+      const threadId = (c.provider_thread_id ?? '').toLowerCase();
+      const convId = (c.conversation_id ?? '').toLowerCase();
       return (
         title.includes(q) ||
         client.includes(q) ||
@@ -1476,7 +1735,9 @@ function MyEmailPageInner() {
         person.includes(q) ||
         summary.includes(q) ||
         shortReason.includes(q) ||
-        reason.includes(q)
+        reason.includes(q) ||
+        threadId.includes(q) ||
+        convId.includes(q)
       );
     });
   }, [tabSourceRows, threadSearch]);
@@ -1566,7 +1827,6 @@ function MyEmailPageInner() {
     myEmailTab,
     filterMailbox,
     scopeMailboxIds,
-    hideStaleNeedReply,
   ]);
 
   const mailboxesForInboxShortcuts = useMemo(() => {
@@ -2049,33 +2309,44 @@ function MyEmailPageInner() {
                     className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
                   />
                 </label>
-                <button
-                  type="button"
-                  onClick={() => void searchHistoricalFetch()}
-                  disabled={historicalLoading}
-                  className={`min-w-[12rem] rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95 disabled:opacity-60 ${
-                    historicalLoading ? 'motion-safe:animate-pulse motion-safe:ring-2 motion-safe:ring-white/40' : ''
-                  }`}
-                >
-                  {historicalLoading ? (
-                    <span className="flex flex-col items-center gap-0.5 leading-tight">
-                      <span>
-                        {histLive.total > 0
-                          ? `AI: ${histLive.currentIndex} / ${histLive.total}`
-                          : histLive.gmailListDone
-                            ? 'Starting AI…'
-                            : 'Listing Gmail…'}
-                      </span>
-                      {histLive.total > 0 ? (
-                        <span className="text-[11px] font-medium opacity-90">
-                          {Math.max(0, histLive.total - histLive.currentIndex)} left · kept {histLive.relevantSoFar}
+                <div className="flex flex-wrap items-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void searchHistoricalFetch()}
+                    disabled={historicalLoading}
+                    className={`min-w-[12rem] rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95 disabled:opacity-60 ${
+                      historicalLoading ? 'motion-safe:animate-pulse motion-safe:ring-2 motion-safe:ring-white/40' : ''
+                    }`}
+                  >
+                    {historicalLoading ? (
+                      <span className="flex flex-col items-center gap-0.5 leading-tight">
+                        <span>
+                          {histLive.total > 0
+                            ? `AI: ${histLive.currentIndex} / ${histLive.total}`
+                            : histLive.gmailListDone
+                              ? 'Starting AI…'
+                              : 'Listing Gmail…'}
                         </span>
-                      ) : null}
-                    </span>
-                  ) : (
-                    'Fetch from Gmail'
-                  )}
-                </button>
+                        {histLive.total > 0 ? (
+                          <span className="text-[11px] font-medium opacity-90">
+                            {Math.max(0, histLive.total - histLive.currentIndex)} left · kept {histLive.relevantSoFar}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : (
+                      'Fetch from Gmail'
+                    )}
+                  </button>
+                  {historicalLoading ? (
+                    <button
+                      type="button"
+                      onClick={() => historicalFetchAbortRef.current?.abort()}
+                      className="rounded-xl border-2 border-red-300 bg-white px-4 py-2.5 text-sm font-semibold text-red-800 shadow-sm hover:bg-red-50"
+                    >
+                      Stop
+                    </button>
+                  ) : null}
+                </div>
               </div>
 
               {historicalLoading ? (
@@ -2117,104 +2388,119 @@ function MyEmailPageInner() {
                         </div>
                       )}
                     </div>
-                    <ol className="relative mt-4 flex flex-col gap-0 border-l-2 border-slate-200 pl-5">
-                      <li className="relative pb-4">
-                        <span
-                          className={`absolute -left-[calc(0.5rem+2px)] top-1 flex h-4 w-4 items-center justify-center rounded-full border-2 text-[10px] font-bold ${
-                            histLive.gmailListDone
-                              ? 'border-emerald-500 bg-emerald-500 text-white'
-                              : 'border-brand-400 bg-white text-brand-500 motion-safe:animate-pulse'
-                          }`}
-                        >
-                          {histLive.gmailListDone ? '✓' : '1'}
-                        </span>
-                        <p className="text-sm font-semibold text-slate-900">Gmail list</p>
-                        <p className="text-xs text-slate-600">
-                          {histLive.total > 0
-                            ? `${histLive.listedTotal} message id(s) in range`
-                            : 'Contacting Gmail and building the list…'}
-                        </p>
+                    <ol className="mt-5 flex list-none flex-col gap-6 p-0">
+                      <li className="flex items-start gap-4">
+                        <div className="flex w-10 shrink-0 justify-center pt-0.5">
+                          <span
+                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 text-xs font-bold ${
+                              histLive.gmailListDone
+                                ? 'border-emerald-500 bg-emerald-500 text-white'
+                                : 'border-brand-400 bg-white text-brand-600 motion-safe:animate-pulse'
+                            }`}
+                            aria-hidden
+                          >
+                            {histLive.gmailListDone ? '✓' : '1'}
+                          </span>
+                        </div>
+                        <div className="min-w-0 flex-1 pt-0.5">
+                          <p className="text-sm font-semibold text-slate-900">Gmail list</p>
+                          <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                            {histLive.total > 0
+                              ? `${histLive.listedTotal} message id(s) in range`
+                              : 'Contacting Gmail and building the list…'}
+                          </p>
+                        </div>
                       </li>
-                      <li
-                        className={`relative pb-4 ${
-                          histLive.total > 0 &&
-                          histLive.phase !== 'saving' &&
-                          histLive.phase !== 'recomputing' &&
-                          histLive.phase !== 'done'
-                            ? 'motion-safe:rounded-r-lg motion-safe:bg-brand-50/50 motion-safe:ring-1 motion-safe:ring-brand-200/60 -ml-1 pl-6 py-1 pr-2'
-                            : ''
-                        }`}
-                      >
-                        <span
-                          className={`absolute -left-[calc(0.5rem+2px)] top-1 flex h-4 w-4 items-center justify-center rounded-full border-2 text-[10px] font-bold ${
-                            histLive.phase === 'saving' ||
+                      <li className="flex items-start gap-4">
+                        <div className="flex w-10 shrink-0 justify-center pt-0.5">
+                          <span
+                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 text-xs font-bold ${
+                              histLive.phase === 'saving' ||
+                              histLive.phase === 'recomputing' ||
+                              histLive.phase === 'done'
+                                ? 'border-emerald-500 bg-emerald-500 text-white'
+                                : histLive.total > 0
+                                  ? 'border-brand-500 bg-brand-500 text-white motion-safe:animate-pulse'
+                                  : 'border-slate-300 bg-white text-slate-400'
+                            }`}
+                            aria-hidden
+                          >
+                            {histLive.phase === 'saving' ||
                             histLive.phase === 'recomputing' ||
                             histLive.phase === 'done'
-                              ? 'border-emerald-500 bg-emerald-500 text-white'
-                              : histLive.total > 0
-                                ? 'border-brand-500 bg-brand-500 text-white motion-safe:animate-pulse'
-                                : 'border-slate-300 bg-white text-slate-400'
-                          }`}
-                        >
-                          {histLive.phase === 'saving' ||
-                          histLive.phase === 'recomputing' ||
-                          histLive.phase === 'done'
-                            ? '✓'
-                            : '2'}
-                        </span>
-                        <p className="text-sm font-semibold text-slate-900">Inbox AI (Gemini)</p>
-                        <div className="mt-2 flex flex-wrap items-baseline gap-2 tabular-nums">
-                          <span
-                            key={histLive.currentIndex}
-                            className="text-3xl font-bold text-brand-700 motion-safe:transition-transform motion-safe:duration-200"
-                          >
-                            {histLive.currentIndex}
+                              ? '✓'
+                              : '2'}
                           </span>
-                          <span className="text-sm font-medium text-slate-500">/</span>
-                          <span className="text-xl font-semibold text-slate-700">{histLive.total || '—'}</span>
-                          <span className="text-xs text-slate-500">processed</span>
                         </div>
-                        <p className="mt-1 text-xs text-slate-600">
-                          {histLive.total > 0 ? (
-                            <>
-                              <strong className="font-semibold text-slate-800">
-                                {Math.max(0, histLive.total - histLive.currentIndex)}
-                              </strong>{' '}
-                              left · Kept:{' '}
-                              <strong className="font-semibold text-emerald-700">{histLive.relevantSoFar}</strong>
-                            </>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5">
-                              <span className="motion-safe:animate-pulse">Waiting for message count</span>
-                            </span>
-                          )}
-                        </p>
-                      </li>
-                      <li className="relative pb-4">
-                        <span
-                          className={`absolute -left-[calc(0.5rem+2px)] top-1 flex h-4 w-4 items-center justify-center rounded-full border-2 text-[10px] font-bold ${
-                            histLive.phase === 'recomputing' || histLive.phase === 'done'
-                              ? 'border-emerald-500 bg-emerald-500 text-white'
-                              : histLive.phase === 'saving'
-                                ? 'border-brand-400 bg-white text-brand-500 motion-safe:animate-pulse'
-                                : 'border-slate-300 bg-white text-slate-400'
+                        <div
+                          className={`min-w-0 flex-1 ${
+                            histLive.total > 0 &&
+                            histLive.phase !== 'saving' &&
+                            histLive.phase !== 'recomputing' &&
+                            histLive.phase !== 'done'
+                              ? 'rounded-xl border border-brand-200/80 bg-brand-50/60 p-3 shadow-sm'
+                              : 'pt-0.5'
                           }`}
                         >
-                          {histLive.phase === 'recomputing' || histLive.phase === 'done' ? '✓' : '3'}
-                        </span>
-                        <p className="text-sm font-semibold text-slate-900">Save &amp; summarize</p>
-                        <p className="text-xs text-slate-600">
-                          {histLive.phase === 'saving'
-                            ? 'Writing to database…'
-                            : histLive.phase === 'recomputing'
-                              ? 'Building threads…'
-                              : histLive.phase === 'done'
-                                ? 'Done.'
-                                : 'Queued after AI…'}
-                        </p>
+                          <p className="text-sm font-semibold text-slate-900">Inbox AI (Gemini)</p>
+                          <div className="mt-2 flex flex-wrap items-baseline gap-2 tabular-nums">
+                            <span
+                              key={histLive.currentIndex}
+                              className="text-3xl font-bold text-brand-700 motion-safe:transition-transform motion-safe:duration-200"
+                            >
+                              {histLive.currentIndex}
+                            </span>
+                            <span className="text-sm font-medium text-slate-500">/</span>
+                            <span className="text-xl font-semibold text-slate-700">{histLive.total || '—'}</span>
+                            <span className="text-xs text-slate-500">processed</span>
+                          </div>
+                          <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                            {histLive.total > 0 ? (
+                              <>
+                                <strong className="font-semibold text-slate-800">
+                                  {Math.max(0, histLive.total - histLive.currentIndex)}
+                                </strong>{' '}
+                                left · Kept:{' '}
+                                <strong className="font-semibold text-emerald-700">{histLive.relevantSoFar}</strong>
+                              </>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5">
+                                <span className="motion-safe:animate-pulse">Waiting for message count</span>
+                              </span>
+                            )}
+                          </p>
+                        </div>
+                      </li>
+                      <li className="flex items-start gap-4">
+                        <div className="flex w-10 shrink-0 justify-center pt-0.5">
+                          <span
+                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 text-xs font-bold ${
+                              histLive.phase === 'recomputing' || histLive.phase === 'done'
+                                ? 'border-emerald-500 bg-emerald-500 text-white'
+                                : histLive.phase === 'saving'
+                                  ? 'border-brand-400 bg-white text-brand-600 motion-safe:animate-pulse'
+                                  : 'border-slate-300 bg-white text-slate-400'
+                            }`}
+                            aria-hidden
+                          >
+                            {histLive.phase === 'recomputing' || histLive.phase === 'done' ? '✓' : '3'}
+                          </span>
+                        </div>
+                        <div className="min-w-0 flex-1 pt-0.5">
+                          <p className="text-sm font-semibold text-slate-900">Save &amp; summarize</p>
+                          <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                            {histLive.phase === 'saving'
+                              ? 'Writing to database…'
+                              : histLive.phase === 'recomputing'
+                                ? 'Building threads…'
+                                : histLive.phase === 'done'
+                                  ? 'Done.'
+                                  : 'Queued after AI…'}
+                          </p>
+                        </div>
                       </li>
                     </ol>
-                    <p className="mt-1 text-[11px] text-slate-400">
+                    <p className="mt-4 text-[11px] leading-relaxed text-slate-400">
                       Streamed from the server — numbers move as each message is handled. Keep this tab open.
                     </p>
                   </div>
@@ -2224,7 +2510,8 @@ function MyEmailPageInner() {
                         AI kept (streams in)
                       </p>
                       <p className="text-[10px] text-emerald-800/80">
-                        New rows slide in as Gemini marks each message relevant.
+                        Each card is the exact Gmail message AI chose to track — same style tags as Live (client vs
+                        your send, CC). Open in Gmail to verify the message.
                       </p>
                     </div>
                     <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
@@ -2240,20 +2527,11 @@ function MyEmailPageInner() {
                       ) : (
                         <ul className="flex flex-col gap-2">
                           {histLive.picks.map((p, i) => (
-                            <li
-                              key={`${p.index}-${i}`}
-                              className={`historical-pick-row-enter rounded-lg border border-white/80 bg-white/90 px-2.5 py-2 text-xs shadow-sm ${
-                                i === histLive.picks.length - 1 ? 'ring-1 ring-emerald-200/80' : ''
-                              }`}
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <span className="line-clamp-2 font-semibold text-slate-900">{p.subject}</span>
-                                <span className="shrink-0 tabular-nums text-[10px] text-slate-400">#{p.index}</span>
-                              </div>
-                              {p.reason ? (
-                                <p className="mt-1 line-clamp-3 text-[11px] leading-snug text-slate-600">{p.reason}</p>
-                              ) : null}
-                            </li>
+                            <HistoricalStreamPickCard
+                              key={`${p.messageId ?? `idx-${p.index}`}-${i}`}
+                              p={p}
+                              isLatest={i === histLive.picks.length - 1}
+                            />
                           ))}
                         </ul>
                       )}
@@ -2284,7 +2562,7 @@ function MyEmailPageInner() {
               ) : null}
 
               {!historicalLoading && historicalSearched ? (
-                <div className="mt-4">
+                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                   <input
                     type="search"
                     placeholder="Filter results by subject, client…"
@@ -2292,6 +2570,16 @@ function MyEmailPageInner() {
                     onChange={(e) => setThreadSearch(e.target.value)}
                     className="w-full min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:max-w-md"
                   />
+                  {historicalRows.length > 0 ? (
+                    <button
+                      type="button"
+                      disabled={histDeletingAll}
+                      onClick={() => void deleteAllHistoricalResults()}
+                      className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-900 hover:bg-red-100 disabled:opacity-50"
+                    >
+                      {histDeletingAll ? 'Removing…' : `Delete all ${historicalRows.length} from tracker`}
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -2318,11 +2606,11 @@ function MyEmailPageInner() {
                         <th className="px-3 py-3">Priority</th>
                         <th className="min-w-[8rem] px-3 py-3">Client sent</th>
                         <th className="px-3 py-3">Gmail</th>
+                        <th className="w-24 px-3 py-3 text-right">Remove</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
                       {historicalFilteredRows.map((c) => {
-                        const sla = slaChipLabel(c);
                         return (
                           <tr
                             key={c.conversation_id}
@@ -2351,6 +2639,19 @@ function MyEmailPageInner() {
                               >
                                 Open
                               </a>
+                            </td>
+                            <td
+                              className="px-3 py-3 text-right"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                type="button"
+                                disabled={histRowDeletingId === c.conversation_id || histDeletingAll}
+                                onClick={() => void deleteHistoricalRow(c.conversation_id)}
+                                className="text-xs font-semibold text-red-700 hover:underline disabled:opacity-40"
+                              >
+                                {histRowDeletingId === c.conversation_id ? '…' : 'Delete'}
+                              </button>
                             </td>
                           </tr>
                         );
@@ -2416,10 +2717,11 @@ function MyEmailPageInner() {
               </div>
               <input
                 type="search"
-                placeholder="Search subject, client, person…"
+                placeholder="Search subject, client, person, thread id…"
                 value={threadSearch}
                 onChange={(e) => setThreadSearch(e.target.value)}
                 className="w-full min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:max-w-xs"
+                title="Filters the current tab only; combine with tabs (Need your reply, All threads, etc.)."
               />
             </div>
 
@@ -2459,21 +2761,6 @@ function MyEmailPageInner() {
                 </button>
               ))}
             </div>
-
-            <label className="mt-3 flex max-w-2xl cursor-pointer items-start gap-2 text-[11px] leading-snug text-slate-600">
-              <input
-                type="checkbox"
-                checked={hideStaleNeedReply}
-                onChange={(e) => setHideStaleNeedReply(e.target.checked)}
-                className="mt-0.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-              />
-              <span>
-                <strong className="font-medium text-slate-800">Focus recent:</strong> in &quot;Need your reply&quot;, hide
-                threads whose last client message is older than {STALE_NEED_REPLY_DAYS} days (e.g. old March outreach
-                still marked overdue). They stay in{' '}
-                <strong className="font-medium text-slate-700">All threads</strong>.
-              </span>
-            </label>
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               {scopedPersonOptions.length > 1 ? (
@@ -2559,11 +2846,14 @@ function MyEmailPageInner() {
                   </>
                 ) : null}{' '}
                 Try another tab
-                {mailTab === 'action' && hideStaleNeedReply
-                  ? ' — turn off Focus recent or open All threads for older need-reply items.'
-                  : mailTab === 'action' && hideLowPriority
-                    ? ', turn off hide LOW, or check Low / noise.'
-                    : '.'}
+                {mailTab === 'action'
+                  ? ` — older “need reply” threads (last client message over ${STALE_NEED_REPLY_DAYS} days ago) appear under All threads.`
+                  : ''}
+                {mailTab === 'action' && hideLowPriority
+                  ? ' LOW priority appears under Low / noise.'
+                  : mailTab !== 'action' && hideLowPriority
+                    ? ' LOW priority may be under Low / noise.'
+                    : ''}
               </p>
             ) : (
               <>
