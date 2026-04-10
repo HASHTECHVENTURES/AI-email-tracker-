@@ -504,10 +504,14 @@ export class DashboardService {
     }
     const rows = (data ?? []) as ConversationDbRow[];
     const ids = [...new Set(rows.map((r) => r.employee_id))];
+    /** Include canonical mailbox ids after alias merge, or name lookup uses UUID fallback (see targetId below). */
+    const fetchEmployeeIds = [
+      ...new Set(ids.flatMap((id) => [id, aliasToTargetMap.get(id) ?? id])),
+    ];
     const { data: employees } = await this.supabase
       .from('employees')
       .select('id, name, sla_hours_default')
-      .in('id', ids);
+      .in('id', fetchEmployeeIds);
     const employeeById = new Map(
       (employees ?? []).map(
         (e: { id: string; name: string; sla_hours_default: number | null }) => [e.id, e],
@@ -521,7 +525,7 @@ export class DashboardService {
       return {
         conversation_id: r.conversation_id,
         employee_id: targetId,
-        employee_name: emp?.name ?? targetId,
+        employee_name: emp?.name?.trim() || 'Teammate',
         provider_thread_id: r.provider_thread_id,
         client_name: r.client_name,
         client_email: r.client_email,
