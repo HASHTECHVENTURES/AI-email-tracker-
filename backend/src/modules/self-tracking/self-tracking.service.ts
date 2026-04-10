@@ -899,4 +899,86 @@ export class SelfTrackingService {
       items: rows.map(mapRow),
     };
   }
+
+  /**
+   * Historical Search table + stat cards from current DB state (stays in sync after thread deletes / skip clears).
+   */
+  async getHistoricalWindowResultsWithLiveStats(
+    ctx: RequestContext,
+    callerEmail: string,
+    employeeId: string,
+    startIso: string,
+    endIso: string,
+  ): Promise<{
+    conversations: ConversationListItem[];
+    stats: {
+      fetched_from_gmail: number;
+      stored_relevant: number;
+      skipped_irrelevant: number;
+      conversations_created: number;
+    };
+  }> {
+    const s = startIso.trim();
+    const e = endIso.trim();
+    const mailboxes = await this.getVisibleMailboxes(ctx, callerEmail);
+    const name = mailboxes.find((m) => m.id === employeeId)?.name ?? 'Mailbox';
+    const conversations = await this.listConversationsByLastClientMsgWindow(ctx, employeeId, name, s, e);
+    const skipRes = await this.listAiSkippedMails(ctx, callerEmail, employeeId, 1, 0, {
+      startIso: s,
+      endIso: e,
+    });
+    const empty = conversations.length === 0 && skipRes.total === 0;
+    if (empty) {
+      return {
+        conversations,
+        stats: {
+          fetched_from_gmail: 0,
+          stored_relevant: 0,
+          skipped_irrelevant: 0,
+          conversations_created: 0,
+        },
+      };
+    }
+    const runStats = await this.getLatestHistoricalRunStatsForWindow(ctx.companyId, employeeId, s, e);
+    const rawFetched = runStats['fetched_from_gmail'];
+    const fetched =
+      typeof rawFetched === 'number'
+        ? rawFetched
+        : typeof rawFetched === 'string'
+          ? Number(rawFetched) || 0
+          : 0;
+    return {
+      conversations,
+      stats: {
+        fetched_from_gmail: fetched,
+        stored_relevant: conversations.length,
+        skipped_irrelevant: skipRes.total,
+        conversations_created: conversations.length,
+      },
+    };
+  }
+
+  private async getLatestHistoricalRunStatsForWindow(
+    companyId: string,
+    employeeId: string,
+    startIso: string,
+    endIso: string,
+  ): Promise<Record<string, unknown>> {
+    const { data, error } = await this.supabase
+      .from('historical_search_runs')
+      .select('stats')
+      .eq('company_id', companyId)
+      .eq('employee_id', employeeId)
+      .eq('window_start', startIso)
+      .eq('window_end', endIso)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      this.logger.warn(`getLatestHistoricalRunStatsForWindow: ${error.message}`);
+      return {};
+    }
+    const row = data as { stats?: Record<string, unknown> } | null;
+    return (row?.stats ?? {}) as Record<string, unknown>;
+  }
 }

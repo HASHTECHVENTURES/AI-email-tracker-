@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -757,6 +758,82 @@ export class EmailIngestionService {
   /** Remove skip ledger entry so the next Gmail sync can fetch and re-classify this message. */
   async clearIngestionSkipEntry(employeeId: string, providerMessageId: string): Promise<void> {
     await this.clearIngestionSkip(employeeId, providerMessageId);
+  }
+
+  /**
+   * CEO / user override: import one Gmail message into the portal immediately, bypassing Inbox AI relevance.
+   * Clears any skip row, fetches the message, stores it, and recomputes the thread conversation.
+   */
+  async forceImportSkippedMessage(
+    companyId: string,
+    employeeId: string,
+    providerMessageId: string,
+  ): Promise<{ outcome: 'imported' | 'already_in_portal'; conversationsUpdated: number }> {
+    const employee = await this.employeesService.getById(companyId, employeeId);
+    if (!employee) {
+      throw new NotFoundException('Mailbox not found');
+    }
+    if (!(await this.oauthTokenService.hasToken(employeeId))) {
+      throw new BadRequestException('Gmail is not connected for this mailbox');
+    }
+
+    const tracking = await this.employeesService.getTrackingState(companyId, employeeId);
+    if (!tracking?.trackingStartAt?.trim()) {
+      throw new BadRequestException('Set a tracking start time on Live mail before importing');
+    }
+    if (tracking.trackingPaused) {
+      throw new BadRequestException('Mailbox tracking is paused');
+    }
+
+    if (await this.messageInDatabase(employeeId, providerMessageId)) {
+      await this.clearIngestionSkip(employeeId, providerMessageId);
+      return { outcome: 'already_in_portal', conversationsUpdated: 0 };
+    }
+
+    await this.clearIngestionSkip(employeeId, providerMessageId);
+
+    let msg: EmailMessage;
+    try {
+      msg = await this.gmailService.fetchFullMessage(employee.id, employee.email, providerMessageId);
+    } catch (e) {
+      throw new BadRequestException(
+        `Could not load this message from Gmail: ${(e as Error).message}`,
+      );
+    }
+
+    const startAt = new Date(tracking.trackingStartAt);
+    if (msg.sentAt < startAt) {
+      throw new BadRequestException(
+        'This message is before your tracking start — move “Track live mail from” earlier, or pick a different message.',
+      );
+    }
+
+    msg.relevanceReason =
+      'Marked important by you — imported from the AI-skipped list (Inbox AI override).';
+
+    await this.storeMessages(companyId, employeeId, [msg]);
+
+    const recompute = await this.conversationsService.recomputeForThreads([
+      { companyId, employeeId, threadId: msg.providerThreadId },
+    ]);
+
+    await this.supabase
+      .from('employees')
+      .update({
+        last_synced_at: new Date().toISOString(),
+        gmail_status: 'CONNECTED',
+      })
+      .eq('id', employee.id)
+      .eq('company_id', companyId);
+
+    this.logger.log(
+      `forceImportSkippedMessage: imported ${providerMessageId} for ${employee.email} (override), threads=${recompute.threadsProcessed}`,
+    );
+
+    return {
+      outcome: 'imported',
+      conversationsUpdated: recompute.threadsProcessed,
+    };
   }
 
   private async storeMessages(companyId: string, employeeId: string, messages: EmailMessage[]): Promise<void> {

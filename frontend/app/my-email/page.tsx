@@ -230,6 +230,8 @@ type RuntimeStatus = {
   lastIngestionEmployees: number;
   lastIngestionMessages: number;
   lastIngestionError: string | null;
+  nextIngestionAt?: string | null;
+  secondsUntilNextIngestion?: number | null;
 };
 
 /** Parallel DELETEs (bounded) — faster than strict sequential; progress still updates per completion. */
@@ -552,6 +554,14 @@ function clipStr(s: string | null | undefined, max: number): string {
   return `${t.slice(0, max - 1)}…`;
 }
 
+/** Default mail client reply to sender (Re: subject). */
+function mailtoReplyHref(toRaw: string | null | undefined, subjectRaw: string | null | undefined): string | null {
+  const to = (toRaw ?? '').trim();
+  if (!to) return null;
+  const sub = subjectRaw?.trim() ? `Re: ${subjectRaw.trim()}` : 'Re: (no subject)';
+  return `mailto:${to}?subject=${encodeURIComponent(sub)}`;
+}
+
 const AI_SKIPPED_PAGE = 25;
 
 /** Inbox AI / tracking skips — rendered inside Follow-ups → Skipped tab (same table chrome as other tabs). */
@@ -567,6 +577,8 @@ function SkippedMailsTabTable({
   setAiSkippedOffset,
   onClearSkip,
   aiSkippedClearingId,
+  onImportToInbox,
+  aiSkippedImportingId,
   unfilteredPageCount,
 }: {
   mailboxes: Mailbox[];
@@ -582,6 +594,9 @@ function SkippedMailsTabTable({
   setAiSkippedOffset: Dispatch<SetStateAction<number>>;
   onClearSkip: (providerMessageId: string) => void;
   aiSkippedClearingId: string | null;
+  /** Fetch from Gmail and store immediately (bypasses Inbox AI). */
+  onImportToInbox: (providerMessageId: string) => void;
+  aiSkippedImportingId: string | null;
 }) {
   return (
     <div className="space-y-3">
@@ -617,8 +632,8 @@ function SkippedMailsTabTable({
         </div>
       </div>
       <p className="text-[11px] leading-relaxed text-slate-500">
-        These messages were not stored in your tracker. <strong className="font-medium text-slate-700">Re-try on next sync</strong>{' '}
-        removes the skip so the next Gmail run can import them if Inbox AI agrees.
+        <strong className="font-medium text-slate-700">Add to inbox</strong> imports the message into your tracker now (bypasses Inbox AI).{' '}
+        <strong className="font-medium text-slate-700">Re-try on next sync</strong> only removes the skip so a future run can try again.
       </p>
       {rows.length === 0 && !aiSkippedLoading ? (
         <p className="rounded-lg border border-slate-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
@@ -637,9 +652,8 @@ function SkippedMailsTabTable({
                 <th className="px-3 py-2">When skipped</th>
                 <th className="px-3 py-2">Kind</th>
                 <th className="px-3 py-2">From / subject</th>
-                <th className="px-3 py-2">Why</th>
-                <th className="px-3 py-2">Gmail</th>
-                <th className="px-3 py-2 text-right">Action</th>
+                <th className="px-3 py-2">Reply</th>
+                <th className="px-3 py-2 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-800">
@@ -648,6 +662,7 @@ function SkippedMailsTabTable({
                   row.provider_thread_id && row.provider_thread_id.length > 0
                     ? `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(row.provider_thread_id)}`
                     : null;
+                const replyMailto = mailtoReplyHref(row.from_email, row.subject);
                 return (
                   <tr key={`${row.employee_id}:${row.provider_message_id}`} className="align-top">
                     <td className="px-3 py-2.5 whitespace-nowrap">
@@ -671,32 +686,54 @@ function SkippedMailsTabTable({
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-[11px] leading-snug text-slate-600">
-                      {clipStr(row.skip_reason, 220) || '—'}
-                    </td>
-                    <td className="px-3 py-2.5 whitespace-nowrap">
-                      {gmailUrl ? (
-                        <a
-                          href={gmailUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-semibold text-brand-600 hover:underline"
-                        >
-                          Open
-                        </a>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
+                    <td className="px-3 py-2.5">
+                      <div className="flex flex-col gap-1.5">
+                        {replyMailto ? (
+                          <a
+                            href={replyMailto}
+                            className="inline-flex w-fit font-semibold text-brand-600 hover:underline"
+                          >
+                            Reply
+                          </a>
+                        ) : null}
+                        {gmailUrl ? (
+                          <a
+                            href={gmailUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex w-fit text-[11px] font-semibold text-slate-600 hover:underline"
+                          >
+                            Open in Gmail
+                          </a>
+                        ) : null}
+                        {!replyMailto && !gmailUrl ? <span className="text-slate-400">—</span> : null}
+                      </div>
                     </td>
                     <td className="px-3 py-2.5 text-right">
-                      <button
-                        type="button"
-                        disabled={aiSkippedClearingId === row.provider_message_id}
-                        onClick={() => onClearSkip(row.provider_message_id)}
-                        className="text-[11px] font-semibold text-brand-700 hover:underline disabled:opacity-40"
-                      >
-                        {aiSkippedClearingId === row.provider_message_id ? '…' : 'Re-try on next sync'}
-                      </button>
+                      <div className="flex flex-col items-end gap-2">
+                        <button
+                          type="button"
+                          disabled={
+                            aiSkippedImportingId === row.provider_message_id ||
+                            aiSkippedClearingId === row.provider_message_id
+                          }
+                          onClick={() => onImportToInbox(row.provider_message_id)}
+                          className="rounded-lg bg-brand-600 px-2.5 py-1.5 text-[11px] font-bold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {aiSkippedImportingId === row.provider_message_id ? 'Adding…' : 'Add to inbox'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={
+                            aiSkippedClearingId === row.provider_message_id ||
+                            aiSkippedImportingId === row.provider_message_id
+                          }
+                          onClick={() => onClearSkip(row.provider_message_id)}
+                          className="text-[11px] font-semibold text-slate-600 hover:underline disabled:opacity-40"
+                        >
+                          {aiSkippedClearingId === row.provider_message_id ? '…' : 'Re-try on next sync'}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -798,11 +835,11 @@ function formatLiveSyncAbsolute(iso: string): string {
   return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-/** Visual cadence ~2 minutes (matches server scheduled ingest interval); wall-clock aligned for UX countdown. */
-const LIVE_INGEST_INTERVAL_MS = 120_000;
-
-function msUntilNextTwoMinuteTick(now = Date.now()): number {
-  return LIVE_INGEST_INTERVAL_MS - (now % LIVE_INGEST_INTERVAL_MS);
+/** Next crawl time from ISO (UTC from API), shown in the user’s local timezone. */
+function formatNextCrawlLocal(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
 }
 
 function formatCountdownMmSs(ms: number): string {
@@ -821,6 +858,9 @@ function CeoLiveSyncStrip({
   onLiveTrackTimeChange,
   onSyncNow,
   syncBusy,
+  nextIngestionAtIso,
+  ingestionRunning,
+  scheduleReady,
 }: {
   mailboxes: Mailbox[];
   liveTrackDate: string;
@@ -829,6 +869,11 @@ function CeoLiveSyncStrip({
   onLiveTrackTimeChange: (v: string) => void;
   onSyncNow: () => void;
   syncBusy: boolean;
+  /** From GET /settings/runtime — next UTC cron slot, matches server schedule. */
+  nextIngestionAtIso: string | null;
+  ingestionRunning: boolean;
+  /** False until the first `/settings/runtime` response for this view. */
+  scheduleReady: boolean;
 }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -840,7 +885,11 @@ function CeoLiveSyncStrip({
   const nowMs = Date.now();
   const connected = mailboxes.some((m) => m.gmail_connected);
   const latestIso = pickLatestMailboxSyncIso(mailboxes);
-  const nextTickMs = msUntilNextTwoMinuteTick(nowMs);
+  const parsedNext = nextIngestionAtIso ? Date.parse(nextIngestionAtIso) : NaN;
+  const nextTickMs =
+    nextIngestionAtIso && !ingestionRunning && !Number.isNaN(parsedNext)
+      ? Math.max(0, parsedNext - nowMs)
+      : null;
 
   if (!connected) {
     return (
@@ -884,18 +933,9 @@ function CeoLiveSyncStrip({
                 No completed sync yet — use <strong>Run sync now</strong> or wait for the next automatic run.
               </p>
             )}
-            <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-              The server usually checks Gmail about every <strong className="font-medium text-slate-700">2 minutes</strong>
-              . Timer below is a rough countdown to the next slot. If nothing appears in Follow-ups, confirm{' '}
-              <strong className="font-medium text-slate-700">Mailbox crawl</strong> is on in Settings, then run sync.
-            </p>
             <div className="mt-4 flex flex-col gap-2 rounded-xl border border-brand-100 bg-white/80 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-end">
               <p className="w-full text-[11px] font-semibold uppercase tracking-wide text-slate-600">
                 Track live mail from
-              </p>
-              <p className="w-full text-[11px] leading-relaxed text-slate-500">
-                Only messages on or after this moment are ingested for your CEO inbox(es).{' '}
-                <strong className="font-medium text-slate-700">Run sync now</strong> saves this time, then pulls Gmail.
               </p>
               <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
                 Start date
@@ -920,11 +960,32 @@ function CeoLiveSyncStrip({
         </div>
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center lg:flex-col lg:items-stretch xl:flex-row xl:items-center">
-          <div className="rounded-xl border border-white/80 bg-white/90 px-4 py-3 text-center shadow-sm sm:min-w-[10rem]">
-            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Next check (~estimate)</p>
-            <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-900">
-              {formatCountdownMmSs(nextTickMs)}
-            </p>
+          <div className="rounded-xl border border-white/80 bg-white/90 px-4 py-3 text-center shadow-sm sm:min-w-[11rem]">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Next automatic sync</p>
+            {!scheduleReady ? (
+              <>
+                <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-400">…</p>
+                <p className="mt-1 text-[10px] text-slate-500">Loading schedule…</p>
+              </>
+            ) : ingestionRunning || syncBusy ? (
+              <p className="mt-1 text-lg font-bold tabular-nums text-brand-700">Running…</p>
+            ) : nextTickMs != null ? (
+              <>
+                <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-900">
+                  {formatCountdownMmSs(nextTickMs)}
+                </p>
+                {nextIngestionAtIso ? (
+                  <p className="mt-1 text-[10px] leading-snug text-slate-500">
+                    {formatNextCrawlLocal(nextIngestionAtIso)}
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <p className="mt-1 text-lg font-semibold tabular-nums text-slate-500">—</p>
+                <p className="mt-1 text-[10px] leading-snug text-slate-500">Scheduled crawl off</p>
+              </>
+            )}
           </div>
           <button
             type="button"
@@ -1041,6 +1102,7 @@ function MyEmailPageInner() {
   const [histWindowSkippedLoading, setHistWindowSkippedLoading] = useState(false);
   const [histWindowSkippedSelectedIds, setHistWindowSkippedSelectedIds] = useState<string[]>([]);
   const [histWindowSkipClearingId, setHistWindowSkipClearingId] = useState<string | null>(null);
+  const [histWindowSkipImportingId, setHistWindowSkipImportingId] = useState<string | null>(null);
   const [histWindowSkippedBulkClearing, setHistWindowSkippedBulkClearing] = useState(false);
   const [histWindowSkipSearch, setHistWindowSkipSearch] = useState('');
   const HIST_WINDOW_SKIPPED_PAGE = 50;
@@ -1056,6 +1118,7 @@ function MyEmailPageInner() {
   const [aiSkippedLoading, setAiSkippedLoading] = useState(false);
   const [aiSkippedOffset, setAiSkippedOffset] = useState(0);
   const [aiSkippedClearingId, setAiSkippedClearingId] = useState<string | null>(null);
+  const [aiSkippedImportingId, setAiSkippedImportingId] = useState<string | null>(null);
 
   const [filterMailbox, setFilterMailbox] = useState('');
   /** Extra filters only for the “All threads” tab. */
@@ -1075,6 +1138,11 @@ function MyEmailPageInner() {
   const [togglePauseLoadingId, setTogglePauseLoadingId] = useState<string | null>(null);
   /** CEO Live Mails: manual GET /email-ingestion/run */
   const [liveSyncBusy, setLiveSyncBusy] = useState(false);
+  /** CEO Live: next cron from GET /settings/runtime (null = not loaded yet). */
+  const [liveIngestSchedule, setLiveIngestSchedule] = useState<{
+    nextIngestionAt: string | null;
+    ingestionRunning: boolean;
+  } | null>(null);
   /** CEO Live: local date/time → saved as `tracking_start_at` before each manual sync. */
   const [liveTrackDate, setLiveTrackDate] = useState('');
   const [liveTrackTime, setLiveTrackTime] = useState('');
@@ -1158,6 +1226,20 @@ function MyEmailPageInner() {
     });
     setError(null);
   }, []);
+
+  const loadLiveIngestSchedule = useCallback(async () => {
+    if (!token) return;
+    const res = await apiFetch('/settings/runtime', token);
+    if (!res.ok) {
+      setLiveIngestSchedule({ nextIngestionAt: null, ingestionRunning: false });
+      return;
+    }
+    const rt = (await res.json()) as RuntimeStatus;
+    setLiveIngestSchedule({
+      nextIngestionAt: rt.nextIngestionAt ?? null,
+      ingestionRunning: Boolean(rt.ingestionRunning),
+    });
+  }, [token]);
 
   const resolveConversation = useCallback(
     async (conversationId: string) => {
@@ -1803,6 +1885,19 @@ function MyEmailPageInner() {
   }, [showCEOOnlyChrome, ceoInboxMode, ownMailboxes]);
 
   useEffect(() => {
+    if (!token || !showCEOOnlyChrome || myEmailTab !== 'ceo' || ceoInboxMode !== 'live') return;
+    let cancelled = false;
+    void loadLiveIngestSchedule();
+    const id = window.setInterval(() => {
+      if (!cancelled) void loadLiveIngestSchedule();
+    }, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [token, showCEOOnlyChrome, myEmailTab, ceoInboxMode, loadLiveIngestSchedule]);
+
+  useEffect(() => {
     if (ownMailboxes.length === 0) return;
     setAiSkippedMailboxId((prev) => {
       if (prev && ownMailboxes.some((m) => m.id === prev)) return prev;
@@ -1863,9 +1958,25 @@ function MyEmailPageInner() {
       if (!res.ok) {
         throw new Error(await readApiErrorMessage(res, 'Could not refresh historical results.'));
       }
-      const data = (await res.json()) as { conversations?: ConversationRow[] };
+      const data = (await res.json()) as {
+        conversations?: ConversationRow[];
+        stats?: {
+          fetched_from_gmail: number;
+          stored_relevant: number;
+          skipped_irrelevant: number;
+          conversations_created: number;
+        };
+      };
       const conv = data.conversations ?? [];
       setHistoricalRows(conv);
+      if (data.stats) {
+        setHistoricalStats({
+          fetched_from_gmail: data.stats.fetched_from_gmail,
+          stored_relevant: data.stats.stored_relevant,
+          skipped_irrelevant: data.stats.skipped_irrelevant,
+          conversations_created: data.stats.conversations_created,
+        });
+      }
       return conv;
     },
     [token, histStartDate, histEndDate, effectiveHistoricalMailboxId],
@@ -2006,6 +2117,38 @@ function MyEmailPageInner() {
     [token, aiSkippedMailboxId, loadAiSkippedMails],
   );
 
+  const importAiSkippedToInbox = useCallback(
+    async (providerMessageId: string) => {
+      if (!token || !aiSkippedMailboxId) return;
+      setAiSkippedImportingId(providerMessageId);
+      setError(null);
+      try {
+        const params = new URLSearchParams({
+          employee_id: aiSkippedMailboxId,
+          provider_message_id: providerMessageId,
+        });
+        const res = await apiFetch(`/self-tracking/ai-skipped-mails/import?${params}`, token, {
+          method: 'POST',
+        });
+        if (!res.ok) {
+          setError(await readApiErrorMessage(res, 'Could not add to inbox.'));
+          return;
+        }
+        const body = (await res.json()) as { outcome?: string };
+        await loadAiSkippedMails();
+        await loadDashboard(token);
+        setSuccess(
+          body.outcome === 'already_in_portal'
+            ? 'This message was already in your tracker.'
+            : 'Added to your inbox — check Need your reply or All threads.',
+        );
+      } finally {
+        setAiSkippedImportingId(null);
+      }
+    },
+    [token, aiSkippedMailboxId, loadAiSkippedMails, loadDashboard],
+  );
+
   const clearHistWindowSkipEntry = useCallback(
     async (providerMessageId: string) => {
       if (!token || !effectiveHistoricalMailboxId) return;
@@ -2024,12 +2167,46 @@ function MyEmailPageInner() {
           return;
         }
         await loadHistWindowSkippedMails();
+        await refreshHistoricalWindowTable().catch(() => {});
         setSuccess('Skip removed — run Fetch from Gmail again for this range to re-classify.');
       } finally {
         setHistWindowSkipClearingId(null);
       }
     },
-    [token, effectiveHistoricalMailboxId, loadHistWindowSkippedMails],
+    [token, effectiveHistoricalMailboxId, loadHistWindowSkippedMails, refreshHistoricalWindowTable],
+  );
+
+  const importHistSkippedToInbox = useCallback(
+    async (providerMessageId: string) => {
+      if (!token || !effectiveHistoricalMailboxId) return;
+      setHistWindowSkipImportingId(providerMessageId);
+      setError(null);
+      try {
+        const params = new URLSearchParams({
+          employee_id: effectiveHistoricalMailboxId,
+          provider_message_id: providerMessageId,
+        });
+        const res = await apiFetch(`/self-tracking/ai-skipped-mails/import?${params}`, token, {
+          method: 'POST',
+        });
+        if (!res.ok) {
+          setError(await readApiErrorMessage(res, 'Could not add to inbox.'));
+          return;
+        }
+        const body = (await res.json()) as { outcome?: string };
+        await loadHistWindowSkippedMails();
+        await refreshHistoricalWindowTable();
+        await loadDashboard(token);
+        setSuccess(
+          body.outcome === 'already_in_portal'
+            ? 'This message was already in your tracker.'
+            : 'Added to your inbox — check Need your reply or All threads.',
+        );
+      } finally {
+        setHistWindowSkipImportingId(null);
+      }
+    },
+    [token, effectiveHistoricalMailboxId, loadHistWindowSkippedMails, refreshHistoricalWindowTable, loadDashboard],
   );
 
   const clearSelectedHistWindowSkips = useCallback(async () => {
@@ -2065,6 +2242,7 @@ function MyEmailPageInner() {
         setSuccess(`${ok} skip(s) cleared — run Fetch from Gmail again to import if AI agrees.`);
       }
       await loadHistWindowSkippedMails();
+      await refreshHistoricalWindowTable().catch(() => {});
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Bulk clear failed.');
     } finally {
@@ -2075,6 +2253,7 @@ function MyEmailPageInner() {
     effectiveHistoricalMailboxId,
     histWindowSkippedSelectedIds,
     loadHistWindowSkippedMails,
+    refreshHistoricalWindowTable,
   ]);
 
   useEffect(() => {
@@ -2103,13 +2282,6 @@ function MyEmailPageInner() {
       setHistMailboxId(run.employee_id);
       setHistStartDate(isoToLocalYmd(run.window_start));
       setHistEndDate(isoToLocalYmd(run.window_end));
-      const st = run.stats ?? {};
-      setHistoricalStats({
-        fetched_from_gmail: Number(st.fetched_from_gmail ?? 0),
-        stored_relevant: Number(st.stored_relevant ?? 0),
-        skipped_irrelevant: Number(st.skipped_irrelevant ?? 0),
-        conversations_created: Number(st.conversations_created ?? 0),
-      });
       setHistoricalSearched(true);
       setError(null);
       try {
@@ -2392,13 +2564,13 @@ function MyEmailPageInner() {
           setError(await readApiErrorMessage(res, 'Could not remove thread.'));
           return;
         }
-        setHistoricalRows((rows) => rows.filter((c) => c.conversation_id !== conversationId));
         setSuccess('Thread removed from the tracker.');
+        await refreshHistoricalWindowTable().catch(() => {});
       } finally {
         setHistRowDeletingId(null);
       }
     },
-    [token],
+    [token, refreshHistoricalWindowTable],
   );
 
   const deleteSelectedHistoricalThreads = useCallback(async () => {
@@ -2563,16 +2735,9 @@ function MyEmailPageInner() {
     return aiSkippedRows.filter((row) => {
       const sub = (row.subject ?? '').toLowerCase();
       const from = (row.from_email ?? '').toLowerCase();
-      const reason = (row.skip_reason ?? '').toLowerCase();
       const kind = (row.skip_kind ?? '').toLowerCase();
       const mid = (row.provider_message_id ?? '').toLowerCase();
-      return (
-        sub.includes(q) ||
-        from.includes(q) ||
-        reason.includes(q) ||
-        kind.includes(q) ||
-        mid.includes(q)
-      );
+      return sub.includes(q) || from.includes(q) || kind.includes(q) || mid.includes(q);
     });
   }, [aiSkippedRows, threadSearch]);
 
@@ -2644,9 +2809,8 @@ function MyEmailPageInner() {
     return histWindowSkippedRows.filter((row) => {
       const sub = (row.subject ?? '').toLowerCase();
       const from = (row.from_email ?? '').toLowerCase();
-      const reason = (row.skip_reason ?? '').toLowerCase();
       const kind = (row.skip_kind ?? '').toLowerCase();
-      return sub.includes(q) || from.includes(q) || reason.includes(q) || kind.includes(q);
+      return sub.includes(q) || from.includes(q) || kind.includes(q);
     });
   }, [histWindowSkippedRows, histWindowSkipSearch]);
 
@@ -2764,13 +2928,15 @@ function MyEmailPageInner() {
         setSuccess('Sync finished. Updating your inbox…');
       }
       await loadDashboard(token, syncEmployeeIdsParam || undefined);
+      void loadLiveIngestSchedule();
       window.setTimeout(() => {
         void loadDashboard(token, syncEmployeeIdsParam || undefined);
+        void loadLiveIngestSchedule();
       }, 2500);
     } finally {
       setLiveSyncBusy(false);
     }
-  }, [token, loadDashboard, syncEmployeeIdsParam, liveTrackDate, liveTrackTime, ownMailboxes]);
+  }, [token, loadDashboard, loadLiveIngestSchedule, syncEmployeeIdsParam, liveTrackDate, liveTrackTime, ownMailboxes]);
 
   const pipelineStep2Done =
     pipeline != null && (!pipeline.running || pipeline.status !== 'running');
@@ -3265,6 +3431,9 @@ function MyEmailPageInner() {
                       onLiveTrackTimeChange={setLiveTrackTime}
                       onSyncNow={() => void runLiveIngestionNow()}
                       syncBusy={liveSyncBusy}
+                      nextIngestionAtIso={liveIngestSchedule?.nextIngestionAt ?? null}
+                      ingestionRunning={liveIngestSchedule?.ingestionRunning ?? false}
+                      scheduleReady={liveIngestSchedule != null}
                     />
                   ) : null}
                 </>
@@ -3739,8 +3908,8 @@ function MyEmailPageInner() {
                         AI skipped (this date range)
                       </p>
                       <p className="mt-1 text-[11px] leading-relaxed text-amber-900/85">
-                        These messages were not stored as tracked threads. Clear a skip if you want the next{' '}
-                        <strong className="font-semibold">Fetch from Gmail</strong> to try them again.
+                        <strong className="font-semibold">Add to inbox</strong> imports now (bypasses Inbox AI).{' '}
+                        <strong className="font-semibold">Re-try on next fetch</strong> only clears the skip for a future run.
                       </p>
                     </div>
                     <button
@@ -3761,7 +3930,7 @@ function MyEmailPageInner() {
                       <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                         <input
                           type="search"
-                          placeholder="Filter skipped by subject, sender, reason…"
+                          placeholder="Filter skipped by subject, sender, kind…"
                           value={histWindowSkipSearch}
                           onChange={(e) => setHistWindowSkipSearch(e.target.value)}
                           className="w-full min-w-0 rounded-lg border border-amber-200/80 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:max-w-md"
@@ -3795,7 +3964,8 @@ function MyEmailPageInner() {
                             disabled={
                               histWindowSkippedSelectedIds.length === 0 ||
                               histWindowSkippedBulkClearing ||
-                              !!histWindowSkipClearingId
+                              !!histWindowSkipClearingId ||
+                              !!histWindowSkipImportingId
                             }
                             onClick={() => void clearSelectedHistWindowSkips()}
                             className="rounded-lg border border-brand-200 bg-white px-2.5 py-1.5 font-semibold text-brand-800 hover:bg-brand-50 disabled:opacity-40"
@@ -3839,9 +4009,8 @@ function MyEmailPageInner() {
                                 <th className="px-3 py-2">When skipped</th>
                                 <th className="px-3 py-2">Kind</th>
                                 <th className="px-3 py-2">From / subject</th>
-                                <th className="px-3 py-2">Why</th>
-                                <th className="px-3 py-2">Gmail</th>
-                                <th className="px-3 py-2 text-right">Action</th>
+                                <th className="px-3 py-2">Reply</th>
+                                <th className="px-3 py-2 text-right">Actions</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-amber-50 text-slate-800">
@@ -3850,6 +4019,7 @@ function MyEmailPageInner() {
                                   row.provider_thread_id && row.provider_thread_id.length > 0
                                     ? `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(row.provider_thread_id)}`
                                     : null;
+                                const replyMailto = mailtoReplyHref(row.from_email, row.subject);
                                 return (
                                   <tr key={`${row.employee_id}:${row.provider_message_id}`} className="align-top">
                                     <td className="px-2 py-2.5">
@@ -3888,37 +4058,62 @@ function MyEmailPageInner() {
                                         ) : null}
                                       </div>
                                     </td>
-                                    <td className="max-w-xs px-3 py-2.5 text-[11px] leading-snug text-slate-600">
-                                      {clipStr(row.skip_reason, 220) || '—'}
-                                    </td>
-                                    <td className="whitespace-nowrap px-3 py-2.5">
-                                      {gmailUrl ? (
-                                        <a
-                                          href={gmailUrl}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="font-semibold text-brand-600 hover:underline"
-                                        >
-                                          Open
-                                        </a>
-                                      ) : (
-                                        <span className="text-slate-400">—</span>
-                                      )}
+                                    <td className="px-3 py-2.5">
+                                      <div className="flex flex-col gap-1.5">
+                                        {replyMailto ? (
+                                          <a
+                                            href={replyMailto}
+                                            className="inline-flex w-fit font-semibold text-brand-600 hover:underline"
+                                          >
+                                            Reply
+                                          </a>
+                                        ) : null}
+                                        {gmailUrl ? (
+                                          <a
+                                            href={gmailUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-flex w-fit text-[11px] font-semibold text-slate-600 hover:underline"
+                                          >
+                                            Open in Gmail
+                                          </a>
+                                        ) : null}
+                                        {!replyMailto && !gmailUrl ? (
+                                          <span className="text-slate-400">—</span>
+                                        ) : null}
+                                      </div>
                                     </td>
                                     <td className="px-3 py-2.5 text-right">
-                                      <button
-                                        type="button"
-                                        disabled={
-                                          histWindowSkipClearingId === row.provider_message_id ||
-                                          histWindowSkippedBulkClearing
-                                        }
-                                        onClick={() => void clearHistWindowSkipEntry(row.provider_message_id)}
-                                        className="text-[11px] font-semibold text-brand-700 hover:underline disabled:opacity-40"
-                                      >
-                                        {histWindowSkipClearingId === row.provider_message_id
-                                          ? '…'
-                                          : 'Re-try on next fetch'}
-                                      </button>
+                                      <div className="flex flex-col items-end gap-2">
+                                        <button
+                                          type="button"
+                                          disabled={
+                                            histWindowSkipImportingId === row.provider_message_id ||
+                                            histWindowSkipClearingId === row.provider_message_id ||
+                                            histWindowSkippedBulkClearing
+                                          }
+                                          onClick={() => void importHistSkippedToInbox(row.provider_message_id)}
+                                          className="rounded-lg bg-brand-600 px-2.5 py-1.5 text-[11px] font-bold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          {histWindowSkipImportingId === row.provider_message_id
+                                            ? 'Adding…'
+                                            : 'Add to inbox'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={
+                                            histWindowSkipClearingId === row.provider_message_id ||
+                                            histWindowSkippedBulkClearing ||
+                                            histWindowSkipImportingId === row.provider_message_id
+                                          }
+                                          onClick={() => void clearHistWindowSkipEntry(row.provider_message_id)}
+                                          className="text-[11px] font-semibold text-slate-600 hover:underline disabled:opacity-40"
+                                        >
+                                          {histWindowSkipClearingId === row.provider_message_id
+                                            ? '…'
+                                            : 'Re-try on next fetch'}
+                                        </button>
+                                      </div>
                                     </td>
                                   </tr>
                                 );
@@ -4318,6 +4513,8 @@ function MyEmailPageInner() {
                     setAiSkippedOffset={setAiSkippedOffset}
                     onClearSkip={(id) => void clearAiSkipEntry(id)}
                     aiSkippedClearingId={aiSkippedClearingId}
+                    onImportToInbox={(id) => void importAiSkippedToInbox(id)}
+                    aiSkippedImportingId={aiSkippedImportingId}
                   />
                 )}
               </div>

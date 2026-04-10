@@ -3,6 +3,28 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { isGeminiEnvConfigured } from '../common/env';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 
+const INGESTION_CRON_INTERVAL_SECONDS = 120;
+
+/**
+ * Next UTC instant when ingestion cron runs (every 2 minutes at second 0, UTC even minutes):
+ * second 0, millisecond 0, minute ∈ {0,2,…,58}.
+ */
+function getNextUtcIngestionCronAfter(fromMs: number): number {
+  let t = Math.floor(fromMs / 1000) * 1000 + 1000;
+  for (let i = 0; i < 130; i++) {
+    const d = new Date(t);
+    if (
+      d.getUTCSeconds() === 0 &&
+      d.getUTCMilliseconds() === 0 &&
+      d.getUTCMinutes() % 2 === 0
+    ) {
+      return t;
+    }
+    t += 1000;
+  }
+  return t + INGESTION_CRON_INTERVAL_SECONDS * 1000;
+}
+
 export type AiMode = 'AUTO' | 'MANUAL' | 'OFF';
 
 export interface SystemSettings {
@@ -40,7 +62,10 @@ export interface RuntimeStatus {
   lastIngestionEmployees: number;
   lastIngestionMessages: number;
   ingestionIntervalSeconds: number;
+  /** ISO time of the next scheduled cron crawl (UTC), when automatic ingestion is enabled. */
   nextIngestionAt: string | null;
+  /** Seconds until {@link nextIngestionAt}; null when scheduled crawl is off. */
+  secondsUntilNextIngestion: number | null;
   reportIntervalSeconds: number;
   lastReportAt: string | null;
   nextReportAt: string | null;
@@ -184,8 +209,9 @@ export class SettingsService {
         lastIngestionError: null,
         lastIngestionEmployees: 0,
         lastIngestionMessages: 0,
-        ingestionIntervalSeconds: 120,
+        ingestionIntervalSeconds: INGESTION_CRON_INTERVAL_SECONDS,
         nextIngestionAt: null,
+        secondsUntilNextIngestion: null,
         reportIntervalSeconds: 3600,
         lastReportAt: null,
         nextReportAt: null,
@@ -193,7 +219,6 @@ export class SettingsService {
       };
     }
 
-    const INGESTION_INTERVAL_SECONDS = 120;
     const REPORT_INTERVAL_SECONDS = 3600;
 
     const map = new Map((data ?? []).map((r: { key: string; value: string }) => [r.key, r.value]));
@@ -210,9 +235,16 @@ export class SettingsService {
       return new Date(t).toISOString();
     };
 
-    const nextIngestionAt = lastFinished
-      ? alignNext(lastFinished, INGESTION_INTERVAL_SECONDS)
-      : null;
+    const cronDisabled = process.env.DISABLE_INGESTION_CRON === 'true';
+    const emailCrawlOn = map.get('email_crawl_enabled') !== 'false';
+    const serverNow = Date.now();
+    let nextIngestionAt: string | null = null;
+    let secondsUntilNextIngestion: number | null = null;
+    if (!cronDisabled && emailCrawlOn) {
+      const nextMs = getNextUtcIngestionCronAfter(serverNow);
+      nextIngestionAt = new Date(nextMs).toISOString();
+      secondsUntilNextIngestion = Math.max(0, Math.ceil((nextMs - serverNow) / 1000));
+    }
 
     const lastReportAt = companyId
       ? map.get(`last_ai_report_at_${companyId}`) ?? map.get('last_ai_report_at') ?? null
@@ -222,7 +254,6 @@ export class SettingsService {
       ? alignNext(lastReportAt, REPORT_INTERVAL_SECONDS)
       : alignNext(new Date().toISOString(), REPORT_INTERVAL_SECONDS);
 
-    const serverNow = Date.now();
     const nextReportMs = nextReportAt ? new Date(nextReportAt).getTime() : NaN;
     const secondsUntilNextReport =
       nextReportAt != null && !Number.isNaN(nextReportMs)
@@ -238,8 +269,9 @@ export class SettingsService {
       lastIngestionError: map.get('last_ingestion_error') ?? null,
       lastIngestionEmployees: Number(map.get('last_ingestion_employees') ?? '0'),
       lastIngestionMessages: Number(map.get('last_ingestion_messages') ?? '0'),
-      ingestionIntervalSeconds: INGESTION_INTERVAL_SECONDS,
+      ingestionIntervalSeconds: INGESTION_CRON_INTERVAL_SECONDS,
       nextIngestionAt,
+      secondsUntilNextIngestion,
       reportIntervalSeconds: REPORT_INTERVAL_SECONDS,
       lastReportAt,
       nextReportAt,
