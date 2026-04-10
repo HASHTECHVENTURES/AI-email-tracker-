@@ -2318,7 +2318,7 @@ function MyEmailPageInner() {
           ) : (
             <>
           {/* ── KPI strip — follow-up command center (scoped to tab) ── */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             {[
               {
                 label: 'Need your reply',
@@ -2329,6 +2329,12 @@ function MyEmailPageInner() {
                 label: 'Waiting on them',
                 value: kpiWaitingCount,
                 color: 'text-slate-700',
+              },
+              {
+                label: "CC'd (FYI)",
+                value: ccScopedRows.length,
+                color: 'text-sky-700',
+                hint: 'Threads where you were only on Cc on the latest inbound',
               },
               {
                 label: 'Missed SLA',
@@ -2344,6 +2350,7 @@ function MyEmailPageInner() {
               <div
                 key={kpi.label}
                 className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-card"
+                title={'hint' in kpi && kpi.hint ? kpi.hint : undefined}
               >
                 <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
                   {kpi.label}
@@ -2362,7 +2369,9 @@ function MyEmailPageInner() {
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Follow-ups</h2>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  AI continuously reads each email and writes summaries, sets priority, and identifies contacts.
+                  AI continuously reads each email and writes summaries, sets priority, and identifies contacts. Use the{' '}
+                  <strong className="font-medium text-slate-600">CC&apos;d</strong> tab for threads where you were only on
+                  Cc (not To) on the latest message.
                 </p>
               </div>
               <input
@@ -2379,7 +2388,7 @@ function MyEmailPageInner() {
                 [
                   ['action', 'Need your reply'],
                   ['waiting', 'Waiting on them'],
-                  ['cc', 'CC only'],
+                  ['cc', "CC'd"],
                   ['closed', 'Done'],
                   ['noise', 'Low / noise'],
                   ['all', 'All threads'],
