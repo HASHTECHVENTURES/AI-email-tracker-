@@ -10,6 +10,7 @@ import type { EmployeeRole } from '../common/types';
 import { RequestContext } from '../common/request-context';
 import type { HistoricalSearchRunListItem } from '../self-tracking/self-tracking.service';
 import { SelfTrackingService } from '../self-tracking/self-tracking.service';
+import { EmployeesService } from '../employees/employees.service';
 
 export interface GlobalMetrics {
   total_conversations: number;
@@ -171,6 +172,7 @@ export class DashboardService {
     private readonly emailService: EmailService,
     private readonly settingsService: SettingsService,
     private readonly companyPolicyService: CompanyPolicyService,
+    private readonly employeesService: EmployeesService,
     @Inject(forwardRef(() => SelfTrackingService))
     private readonly selfTrackingService: SelfTrackingService,
   ) {
@@ -269,14 +271,21 @@ export class DashboardService {
     if (employees.length === 0) {
       return [];
     }
-    const convRows = await this.fetchConversationAggregatesForEmployeeIds(companyId, employees.map((e) => e.id));
+
+    const { expandedIds, aliasToTargetMap } = await this.employeesService.getEmployeeAliasMapping(
+      companyId,
+      employees.map((e) => e.id)
+    );
+
+    const convRows = await this.fetchConversationAggregatesForEmployeeIds(companyId, expandedIds);
     type Agg = { total: number; done: number; pending: number; missed: number; delaySum: number };
     const byEmp = new Map<string, Agg>();
     for (const e of employees) {
       byEmp.set(e.id, { total: 0, done: 0, pending: 0, missed: 0, delaySum: 0 });
     }
     for (const r of convRows) {
-      const s = byEmp.get(r.employee_id);
+      const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
+      const s = byEmp.get(targetId);
       if (!s) continue;
       s.total += 1;
       s.delaySum += Number(r.delay_hours ?? 0);
@@ -354,11 +363,23 @@ export class DashboardService {
         query = query.eq('department_id', filters.departmentId);
       }
     }
-    if (filters.status) query = query.eq('follow_up_status', filters.status);
+    
+    let aliasToTargetMap = new Map<string, string>();
+    let effectiveEmployeeIds: string[] | undefined;
+
     if (filters.employeeIds && filters.employeeIds.length > 0) {
-      query = query.in('employee_id', filters.employeeIds);
+      const res = await this.employeesService.getEmployeeAliasMapping(filters.companyId, filters.employeeIds);
+      effectiveEmployeeIds = res.expandedIds;
+      aliasToTargetMap = res.aliasToTargetMap;
     } else if (filters.employeeId) {
-      query = query.eq('employee_id', filters.employeeId);
+      const res = await this.employeesService.getEmployeeAliasMapping(filters.companyId, [filters.employeeId]);
+      effectiveEmployeeIds = res.expandedIds;
+      aliasToTargetMap = res.aliasToTargetMap;
+    }
+
+    if (filters.status) query = query.eq('follow_up_status', filters.status);
+    if (effectiveEmployeeIds && effectiveEmployeeIds.length > 0) {
+      query = query.in('employee_id', effectiveEmployeeIds);
     }
     if (filters.priority) query = query.eq('priority', filters.priority);
     if (filters.lifecycle) query = query.eq('lifecycle_status', filters.lifecycle);
@@ -381,12 +402,13 @@ export class DashboardService {
     );
     const defaultSla = await this.getDefaultSlaHours();
     return rows.map((r) => {
+      const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
       const tid = encodeURIComponent(r.provider_thread_id);
-      const emp = employeeById.get(r.employee_id);
+      const emp = employeeById.get(targetId);
       return {
         conversation_id: r.conversation_id,
-        employee_id: r.employee_id,
-        employee_name: emp?.name ?? r.employee_id,
+        employee_id: targetId,
+        employee_name: emp?.name ?? targetId,
         provider_thread_id: r.provider_thread_id,
         client_name: r.client_name,
         client_email: r.client_email,

@@ -2354,4 +2354,63 @@ export class EmployeesService {
 
     return { connectedEmails, portalEmails };
   }
+
+  /**
+   * Helper: Given a list of target employee IDs, find all duplicate alias IDs sharing the same email in the company.
+   * Returns:
+   * - expandedIds: the full list of alias IDs to use for querying conversations/emails.
+   * - aliasToTargetMap: Map<string, string> to translate an alias ID back to the requested target ID.
+   */
+  async getEmployeeAliasMapping(companyId: string, targetIds: string[]): Promise<{ expandedIds: string[]; aliasToTargetMap: Map<string, string> }> {
+    const aliasToTargetMap = new Map<string, string>();
+    if (!targetIds || targetIds.length === 0) return { expandedIds: [], aliasToTargetMap };
+
+    const { data: targets } = await this.supabase
+      .from('employees')
+      .select('id, email')
+      .eq('company_id', companyId)
+      .in('id', targetIds);
+
+    const emailToTarget = new Map<string, string>();
+    for (const t of targets ?? []) {
+      const e = String((t as {email: string}).email).trim().toLowerCase();
+      if (!e) continue;
+      // In a collision (rare but possible), we pick the first target ID encountered for that email.
+      if (!emailToTarget.has(e)) {
+        emailToTarget.set(e, (t as {id: string}).id);
+      }
+    }
+
+    const emails = Array.from(emailToTarget.keys());
+    if (emails.length === 0) {
+      for (const id of targetIds) aliasToTargetMap.set(id, id);
+      return { expandedIds: targetIds, aliasToTargetMap };
+    }
+
+    const { data: aliases } = await this.supabase
+      .from('employees')
+      .select('id, email')
+      .eq('company_id', companyId)
+      .in('email', emails);
+
+    const expandedIds = new Set<string>();
+    for (const a of aliases ?? []) {
+      const e = String((a as {email: string}).email).trim().toLowerCase();
+      const targetId = emailToTarget.get(e);
+      if (targetId) {
+        aliasToTargetMap.set((a as {id: string}).id, targetId);
+        expandedIds.add((a as {id: string}).id);
+      }
+    }
+
+    // Ensure all strictly requested ones are mapped, just in case
+    for (const id of targetIds) {
+      if (!expandedIds.has(id)) {
+        expandedIds.add(id);
+        aliasToTargetMap.set(id, id);
+      }
+    }
+
+    return { expandedIds: Array.from(expandedIds), aliasToTargetMap };
+  }
 }

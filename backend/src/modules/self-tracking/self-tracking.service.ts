@@ -185,6 +185,8 @@ export class SelfTrackingService {
       };
     }
 
+    const { expandedIds, aliasToTargetMap } = await this.employeesService.getEmployeeAliasMapping(ctx.companyId, targetIds);
+
     let query = this.supabase
       .from('conversations')
       .select(
@@ -192,7 +194,7 @@ export class SelfTrackingService {
       )
       .eq('company_id', ctx.companyId)
       .eq('is_ignored', false)
-      .in('employee_id', targetIds)
+      .in('employee_id', expandedIds)
       .order('updated_at', { ascending: false });
 
     if (filters?.status) query = query.eq('follow_up_status', filters.status);
@@ -240,17 +242,19 @@ export class SelfTrackingService {
 
     const conversations: ConversationListItem[] = rows
       .filter((r) => {
-        const t0 = trackingStartMsByEmployee.get(r.employee_id);
+        const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
+        const t0 = trackingStartMsByEmployee.get(targetId);
         if (t0 == null) return true;
         if (!r.last_client_msg_at) return false;
         return Date.parse(r.last_client_msg_at) >= t0;
       })
       .map((r) => {
+        const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
         const tid = encodeURIComponent(r.provider_thread_id);
         return {
           conversation_id: r.conversation_id,
-          employee_id: r.employee_id,
-          employee_name: nameById.get(r.employee_id) ?? r.employee_id,
+          employee_id: targetId,
+          employee_name: nameById.get(targetId) ?? targetId,
           provider_thread_id: r.provider_thread_id,
           client_name: r.client_name,
           client_email: r.client_email,
@@ -258,7 +262,7 @@ export class SelfTrackingService {
           priority: r.priority,
           delay_hours: r.delay_hours,
           sla_hours:
-            mailboxes.find((m) => m.id === r.employee_id)?.sla_hours_default ?? 24,
+            mailboxes.find((m) => m.id === targetId)?.sla_hours_default ?? 24,
           summary: r.summary,
           short_reason: r.short_reason,
           reason: r.reason || r.short_reason,
@@ -313,12 +317,28 @@ export class SelfTrackingService {
       }
     }
 
+    const syncAliasMap = await this.employeesService.getEmployeeAliasMapping(ctx.companyId, syncedTargetIds);
+    
+    // trackingStartByEmployee should be propagated to aliases
+    const expandedTrackingDocs = new Map<string, string | null>();
+    for (const id of syncAliasMap.expandedIds) {
+      const targetId = syncAliasMap.aliasToTargetMap.get(id) ?? id;
+      expandedTrackingDocs.set(id, trackingStartByEmployee.get(targetId) ?? null);
+    }
+
     const synced = await this.employeesService.listSyncedMailInTrackingWindow(ctx, {
-      employeeIds: syncedTargetIds,
-      trackingStartByEmployee,
+      employeeIds: syncAliasMap.expandedIds,
+      trackingStartByEmployee: expandedTrackingDocs,
       limit: CEO_SYNCED_MAIL_PAGE_LIMIT,
       offset: 0,
     });
+    
+    // Remap synced mail employee ids and names
+    for (const item of synced.items) {
+      const targetId = syncAliasMap.aliasToTargetMap.get(item.employee_id) ?? item.employee_id;
+      item.employee_id = targetId;
+      item.employee_name = nameById.get(targetId) ?? item.employee_name;
+    }
 
     return {
       mailboxes,
@@ -399,6 +419,8 @@ export class SelfTrackingService {
       return { conversations: [] };
     }
 
+    const { expandedIds, aliasToTargetMap } = await this.employeesService.getEmployeeAliasMapping(ctx.companyId, targetIds);
+
     const startIso = new Date(startMs).toISOString();
     const endIso = new Date(endMs).toISOString();
 
@@ -410,7 +432,7 @@ export class SelfTrackingService {
       .eq('company_id', ctx.companyId)
       .eq('is_ignored', false)
       .eq('follow_up_status', 'MISSED')
-      .in('employee_id', targetIds)
+      .in('employee_id', expandedIds)
       .not('last_client_msg_at', 'is', null)
       .gte('last_client_msg_at', startIso)
       .lte('last_client_msg_at', endIso)
@@ -448,11 +470,12 @@ export class SelfTrackingService {
     const nameById = new Map(mailboxes.map((m) => [m.id, m.name]));
 
     const conversations: ConversationListItem[] = rows.map((r) => {
+      const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
       const tid = encodeURIComponent(r.provider_thread_id);
       return {
         conversation_id: r.conversation_id,
-        employee_id: r.employee_id,
-        employee_name: nameById.get(r.employee_id) ?? r.employee_id,
+        employee_id: targetId,
+        employee_name: nameById.get(targetId) ?? targetId,
         provider_thread_id: r.provider_thread_id,
         client_name: r.client_name,
         client_email: r.client_email,
@@ -460,7 +483,7 @@ export class SelfTrackingService {
         priority: r.priority,
         delay_hours: r.delay_hours,
         sla_hours:
-          mailboxes.find((m) => m.id === r.employee_id)?.sla_hours_default ?? 24,
+          mailboxes.find((m) => m.id === targetId)?.sla_hours_default ?? 24,
         summary: r.summary,
         short_reason: r.short_reason,
         reason: r.reason || r.short_reason,
@@ -519,13 +542,15 @@ export class SelfTrackingService {
     const startBound = new Date(startMs).toISOString();
     const endBound = new Date(endMs).toISOString();
 
+    const { expandedIds, aliasToTargetMap } = await this.employeesService.getEmployeeAliasMapping(ctx.companyId, [employeeId]);
+
     const { data, error } = await this.supabase
       .from('conversations')
       .select(
         'conversation_id, employee_id, provider_thread_id, client_name, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, user_cc_only, updated_at',
       )
       .eq('company_id', ctx.companyId)
-      .eq('employee_id', employeeId)
+      .in('employee_id', expandedIds)
       .eq('is_ignored', false)
       .not('last_client_msg_at', 'is', null)
       .gte('last_client_msg_at', startBound)
@@ -561,10 +586,11 @@ export class SelfTrackingService {
     };
 
     return (data ?? []).map((r: Row) => {
+      const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
       const tid = encodeURIComponent(r.provider_thread_id);
       return {
         conversation_id: r.conversation_id,
-        employee_id: r.employee_id,
+        employee_id: targetId,
         employee_name: employeeName,
         provider_thread_id: r.provider_thread_id,
         client_name: r.client_name,
