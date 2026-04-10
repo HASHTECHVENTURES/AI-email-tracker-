@@ -481,7 +481,11 @@ export class EmployeesService {
     return data !== null;
   }
 
-  async assertCanInitiateGmailOAuth(ctx: RequestContext, employeeId: string): Promise<void> {
+  async assertCanInitiateGmailOAuth(
+    ctx: RequestContext,
+    employeeId: string,
+    actorUserId: string,
+  ): Promise<void> {
     if (ctx.role === 'EMPLOYEE') {
       if (!ctx.employeeId || ctx.employeeId !== employeeId) {
         throw new ForbiddenException('You can only connect Gmail for your own mailbox');
@@ -489,17 +493,29 @@ export class EmployeesService {
     }
     const { data, error } = await this.supabase
       .from('employees')
-      .select('id, company_id, department_id')
+      .select('id, company_id, department_id, mailbox_type, created_by')
       .eq('id', employeeId)
       .maybeSingle();
     if (error || !data) {
       throw new BadRequestException('Employee not found');
     }
-    const row = data as { company_id: string; department_id: string };
+    const row = data as {
+      company_id: string;
+      department_id: string | null;
+      mailbox_type?: string | null;
+      created_by?: string | null;
+    };
     if (row.company_id !== ctx.companyId) {
       throw new ForbiddenException('Employee is not in your company');
     }
     if (ctx.role === 'HEAD') {
+      const isOwnSelfMailbox =
+        row.mailbox_type === 'SELF' &&
+        row.created_by != null &&
+        row.created_by === actorUserId;
+      if (isOwnSelfMailbox) {
+        return;
+      }
       if (!ctx.departmentId || row.department_id !== ctx.departmentId) {
         throw new ForbiddenException('You can only connect Gmail for employees in your department');
       }

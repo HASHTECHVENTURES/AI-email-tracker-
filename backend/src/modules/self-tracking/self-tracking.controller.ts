@@ -27,6 +27,15 @@ function assertSelfTrackingReader(ctx: RequestContext): void {
   }
 }
 
+/** Add/remove own “Connect my Gmail” mailbox row (SELF). CEOs and department managers (HEAD). */
+function assertCanMutateSelfMailbox(ctx: RequestContext): void {
+  if (ctx.role !== 'CEO' && ctx.role !== 'HEAD') {
+    throw new ForbiddenException(
+      'Only CEOs and department managers can add or remove their own tracked inbox',
+    );
+  }
+}
+
 @Controller('self-tracking')
 export class SelfTrackingController {
   constructor(
@@ -64,9 +73,7 @@ export class SelfTrackingController {
     const user = req.user;
     if (!user) throw new UnauthorizedException();
     const ctx = getRequestContext(req);
-    if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only CEOs can add self-tracked mailboxes');
-    }
+    assertCanMutateSelfMailbox(ctx);
 
     const raw = body as Record<string, unknown>;
     const useMyProfile =
@@ -109,9 +116,7 @@ export class SelfTrackingController {
     const user = req.user;
     if (!user) throw new UnauthorizedException();
     const ctx = getRequestContext(req);
-    if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only CEOs can remove self-tracked mailboxes');
-    }
+    assertCanMutateSelfMailbox(ctx);
     await this.employeesService.deleteSelfTrackedMailbox(ctx.companyId, id);
     return { ok: true };
   }

@@ -141,7 +141,11 @@ export class AuthController {
       );
     }
     const normalizedEmployeeId = employeeId.trim();
-    await this.employeesService.assertCanInitiateGmailOAuth(getRequestContext(req), normalizedEmployeeId);
+    await this.employeesService.assertCanInitiateGmailOAuth(
+      getRequestContext(req),
+      normalizedEmployeeId,
+      req.user.id,
+    );
     const state = await this.oauthStateService.createState({
       employeeId: normalizedEmployeeId,
       companyId: req.user.companyId,
@@ -221,7 +225,7 @@ export class AuthController {
         employeeId: actor.role === 'EMPLOYEE' ? actor.linkedEmployeeId ?? undefined : undefined,
         departmentId: actor.role === 'HEAD' ? actor.departmentId ?? undefined : undefined,
       };
-      await this.employeesService.assertCanInitiateGmailOAuth(oauthCtx, payload.employee_id);
+      await this.employeesService.assertCanInitiateGmailOAuth(oauthCtx, payload.employee_id, actor.id);
 
       const validEmployee = await this.employeesService.employeeExists(payload.employee_id);
       if (!validEmployee) {

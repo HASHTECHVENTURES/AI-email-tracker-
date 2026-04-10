@@ -1491,7 +1491,7 @@ function MyEmailPageInner() {
     window.location.href = body.url;
   }
 
-  /** CEO’s own mailbox only — uses session profile; also sends name/email so older APIs still work. */
+  /** Signed-in user’s own inbox row (CEO or department manager) — uses session profile for POST /self-tracking/mailboxes. */
   async function connectMyInbox() {
     if (!token || !me) return;
     const profileEmail = (me.email ?? '').trim();
