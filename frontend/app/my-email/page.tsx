@@ -2393,20 +2393,6 @@ function MyEmailPageInner() {
           {myEmailTab === 'ceo' && ceoInboxMode === 'historical' ? (
             <section className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-card sm:p-5">
               <h2 className="text-lg font-bold text-slate-900">Historical Search</h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Pick a date range and click{' '}
-                <strong className="font-medium text-slate-700">Fetch from Gmail</strong>. This runs a{' '}
-                <strong className="font-medium text-slate-700">separate on-demand job</strong> — it only processes mail
-                for the window you chose and shows results below. It uses the same{' '}
-                <strong className="font-medium text-slate-700">connected CEO inbox</strong> and the same app
-                credentials (Google link / AI) as Live Mails, but it is not the same process as ongoing Live tracking.
-              </p>
-              <p className="mt-2 rounded-lg border border-slate-100 bg-slate-50/90 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
-                <strong className="text-slate-800">Live vs Historical.</strong> Live Mails keeps syncing in the
-                background on its own schedule. Historical Search runs when you click Fetch for your selected dates only.
-                Do not treat them as one pipeline: they are two different flows that happen to use the same Gmail
-                connection and keys.
-              </p>
               {ownMailboxes.length > 0 ? (
                 <p className="mt-2 text-[11px] text-slate-400">
                   Inbox: {ownMailboxes[0].name} · {ownMailboxes[0].email}
