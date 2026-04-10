@@ -74,10 +74,12 @@ export async function middleware(request: NextRequest) {
 
     let user: { id: string } | null = null;
     try {
-      // Refresh session from cookies first (access token may expire during long OAuth round-trips).
-      await supabase.auth.getSession();
-      const { data } = await supabase.auth.getUser();
-      user = data.user;
+      // Prefer getSession() so the client refreshes expired access tokens from the refresh cookie
+      // (getUser() alone can miss a freshly refreshed session after long Gmail OAuth round-trips).
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      user = session?.user ?? null;
     } catch {
       user = null;
     }

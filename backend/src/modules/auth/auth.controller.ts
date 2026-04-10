@@ -269,15 +269,18 @@ export class AuthController {
       });
 
       const mailboxType = await this.employeesService.getMailboxType(payload.employee_id);
-      let returnPage = '/employees';
+      let nextPath = '/employees';
       if (mailboxType === 'SELF') {
-        returnPage = '/my-email';
+        nextPath = '/my-email';
       } else if (actor.role === 'HEAD') {
-        returnPage = '/my-mail';
+        nextPath = '/my-mail';
       }
-      res.redirect(
-        `${frontendBase}${returnPage}?connected=1&employee_id=${encodeURIComponent(payload.employee_id)}`,
-      );
+      /** Popup-friendly landing: notifies opener then closes; avoids losing the main tab Supabase session. */
+      const done = new URL(`${frontendBase}/auth/gmail-oauth-done`);
+      done.searchParams.set('connected', '1');
+      done.searchParams.set('employee_id', payload.employee_id);
+      done.searchParams.set('next', nextPath);
+      res.redirect(done.toString());
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('OAuth callback failed', err);

@@ -336,9 +336,7 @@ function AuthPageInner() {
       }
 
       if (!status.needs_onboarding && status.user) {
-        if (!me) {
-          return;
-        }
+        await refreshMe(token);
         router.replace(
           consumeGmailConnectedRedirect(postLoginPath(status.user.role, safeNext), gmailConnectedParam),
         );
@@ -382,7 +380,6 @@ function AuthPageInner() {
   }, [
     authCtxLoading,
     authCtxError,
-    me,
     router,
     safeNext,
     hasExplicitNext,
@@ -390,6 +387,7 @@ function AuthPageInner() {
     finalizeOnboarding,
     redirectIfPlatformAdmin,
     gmailConnectedParam,
+    refreshMe,
   ]);
 
   const handleLogin = async (e: React.FormEvent) => {

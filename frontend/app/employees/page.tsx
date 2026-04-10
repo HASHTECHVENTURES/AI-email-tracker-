@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch, oauthErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
@@ -181,6 +182,21 @@ function EmployeesPageInner() {
   }, [authLoading, token, searchParams, pathname, router]);
 
   useEffect(() => {
+    if (!token) return;
+    return subscribeGmailOAuthComplete(({ next, connected, employee_id }) => {
+      if (connected) {
+        setAddSuccess('Gmail connected successfully.');
+      }
+      void loadLists(token);
+      const q = new URLSearchParams();
+      if (connected) q.set('connected', '1');
+      if (employee_id) q.set('employee_id', employee_id);
+      const qs = q.toString();
+      router.replace(qs ? `${next}?${qs}` : next);
+    });
+  }, [token, router]);
+
+  useEffect(() => {
     if (!me || !isDepartmentManagerRole(me.role)) {
       setDashStats({});
       return;
@@ -218,7 +234,7 @@ function EmployeesPageInner() {
       setError(body.message || 'Could not start Gmail connection');
       return;
     }
-    window.location.href = body.url;
+    openGmailOAuthWindow(body.url);
   }
 
   async function deleteEmployee(employeeId: string, employeeName: string) {

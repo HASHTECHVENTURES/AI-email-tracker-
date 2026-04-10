@@ -25,6 +25,7 @@ import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { TrackedMailboxCard } from '@/components/my-email/TrackedMailboxCard';
 import { conversationReadPath } from '@/lib/conversation-read';
+import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
 
 type Mailbox = {
@@ -1463,6 +1464,22 @@ function MyEmailPageInner() {
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }, [authLoading, token, searchParams, pathname, router, loadDashboard]);
 
+  /** Popup OAuth: main tab keeps session; child window posts here when Google finishes. */
+  useEffect(() => {
+    if (!token) return;
+    return subscribeGmailOAuthComplete(({ next, connected, employee_id }) => {
+      if (connected) {
+        setSuccess('Gmail connected successfully.');
+      }
+      void loadDashboard(token);
+      const q = new URLSearchParams();
+      if (connected) q.set('connected', '1');
+      if (employee_id) q.set('employee_id', employee_id);
+      const qs = q.toString();
+      router.replace(qs ? `${next}?${qs}` : next);
+    });
+  }, [token, loadDashboard, router]);
+
   // Auto-clear success after 4s
   useEffect(() => {
     if (!success) return;
@@ -1488,7 +1505,7 @@ function MyEmailPageInner() {
       setError(body.message || 'Could not start Google connection');
       return;
     }
-    window.location.href = body.url;
+    openGmailOAuthWindow(body.url);
   }
 
   /** Signed-in user’s own inbox row (CEO or department manager) — uses session profile for POST /self-tracking/mailboxes. */
