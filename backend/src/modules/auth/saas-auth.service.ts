@@ -109,25 +109,50 @@ export class SaasAuthService {
     }
 
     /**
-     * HEAD without `users.linked_employee_id`: infer mailbox only when the same-email `employees`
-     * row is in a department this person does **not** manage (e.g. IC under another manager).
-     * If their only roster row is in a team they manage, do not infer — avoids spurious
-     * Manager/Mailbox for managers who are not also an IC elsewhere. Explicit `linked_employee_id`
-     * still wins.
+     * HEAD without `users.linked_employee_id`: infer mailbox for Manager/Mailbox toggle.
+     * 1) Prefer `mailbox_type = 'SELF'` (personal My Email row — any department).
+     * 2) Else same-email TEAM row whose `department_id` is **not** in managed teams (IC under another mgr).
+     * Explicit `users.linked_employee_id` still wins.
      */
-    if (row.role === 'HEAD' && !linkedEmployeeId && managedDepartmentIds.length > 0) {
+    if (row.role === 'HEAD' && !linkedEmployeeId) {
       const emailNorm = row.email.trim().toLowerCase();
-      const { data: empRow } = await this.supabase
+      let rows: Array<{ id: string; department_id: string | null; mailbox_type: string | null }> = [];
+      const withType = await this.supabase
         .from('employees')
-        .select('id, department_id')
+        .select('id, department_id, mailbox_type')
         .eq('company_id', row.company_id)
-        .eq('email', emailNorm)
-        .maybeSingle();
-      const emp = empRow as { id: string; department_id: string | null } | null;
-      const empDept = emp?.department_id?.trim() ? emp.department_id : null;
-      const managedSet = new Set(managedDepartmentIds);
-      if (emp && empDept && !managedSet.has(empDept)) {
-        linkedEmployeeId = emp.id;
+        .eq('email', emailNorm);
+      if (withType.error && String(withType.error.message ?? '').includes('mailbox_type')) {
+        const legacy = await this.supabase
+          .from('employees')
+          .select('id, department_id')
+          .eq('company_id', row.company_id)
+          .eq('email', emailNorm);
+        rows = ((legacy.data ?? []) as Array<{ id: string; department_id: string | null }>).map((r) => ({
+          ...r,
+          mailbox_type: null,
+        }));
+      } else if (withType.error) {
+        this.logger.warn(`HEAD mailbox lookup: ${withType.error.message}`);
+      } else {
+        rows = (withType.data ?? []) as Array<{
+          id: string;
+          department_id: string | null;
+          mailbox_type: string | null;
+        }>;
+      }
+      const selfRow = rows.find((r) => (r.mailbox_type ?? null) === 'SELF');
+      if (selfRow) {
+        linkedEmployeeId = selfRow.id;
+      } else if (managedDepartmentIds.length > 0) {
+        const managedSet = new Set(managedDepartmentIds);
+        const outside = rows.find((r) => {
+          const d = r.department_id?.trim() ? r.department_id : null;
+          return d != null && !managedSet.has(d);
+        });
+        if (outside) {
+          linkedEmployeeId = outside.id;
+        }
       }
     }
 
