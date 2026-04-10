@@ -180,6 +180,30 @@ export class DashboardService {
   }
 
   async getGlobalMetrics(companyId: string, departmentId?: string): Promise<GlobalMetrics> {
+    const { data: rpcData, error: rpcError } = await this.supabase.rpc('company_conversation_metrics', {
+      p_company_id: companyId,
+      p_department_id: departmentId ?? null,
+    });
+    if (!rpcError && rpcData && typeof rpcData === 'object') {
+      const j = rpcData as Record<string, unknown>;
+      const n = (k: string) => Number(j[k] ?? 0);
+      return {
+        total_conversations: n('total_conversations'),
+        done: n('done'),
+        pending: n('pending'),
+        missed: n('missed'),
+        high_priority_missed: n('high_priority_missed'),
+        avg_delay_hours: Number(n('avg_delay_hours').toFixed(2)),
+        alerts_sent: 0,
+        needs_attention: n('needs_attention'),
+        active: n('active'),
+        resolved: n('resolved'),
+        archived: n('archived'),
+      };
+    }
+    if (rpcError) {
+      this.logger.warn(`company_conversation_metrics RPC unavailable (${rpcError.message}), using row scan fallback`);
+    }
     let q = this.supabase
       .from('conversations')
       .select('follow_up_status, priority, delay_hours, lifecycle_status', { count: 'exact' })
@@ -193,13 +217,20 @@ export class DashboardService {
       this.logger.error('Failed to get global metrics', error.message);
       throw error;
     }
-    const rows = (data ?? []) as Array<{ follow_up_status: string; priority: string; delay_hours: number; lifecycle_status: string }>;
+    const rows = (data ?? []) as Array<{
+      follow_up_status: string;
+      priority: string;
+      delay_hours: number;
+      lifecycle_status: string;
+    }>;
     const total = rows.length;
     const done = rows.filter((r) => r.follow_up_status === 'DONE').length;
     const pending = rows.filter((r) => r.follow_up_status === 'PENDING').length;
     const missed = rows.filter((r) => r.follow_up_status === 'MISSED').length;
     const highPriorityMissed = rows.filter((r) => r.follow_up_status === 'MISSED' && r.priority === 'HIGH').length;
-    const avgDelay = rows.length ? Number((rows.reduce((s, r) => s + Number(r.delay_hours ?? 0), 0) / rows.length).toFixed(2)) : 0;
+    const avgDelay = rows.length
+      ? Number((rows.reduce((s, r) => s + Number(r.delay_hours ?? 0), 0) / rows.length).toFixed(2))
+      : 0;
     const needsAttention = rows.filter((r) => r.lifecycle_status === 'NEEDS_ATTENTION').length;
     const active = rows.filter((r) => r.lifecycle_status === 'ACTIVE').length;
     const resolved = rows.filter((r) => r.lifecycle_status === 'RESOLVED').length;
@@ -235,23 +266,61 @@ export class DashboardService {
       throw error;
     }
     const employees = (data ?? []) as Array<{ id: string; name: string; email: string }>;
-    const result: EmployeePerformance[] = [];
+    if (employees.length === 0) {
+      return [];
+    }
+    const convRows = await this.fetchConversationAggregatesForEmployeeIds(companyId, employees.map((e) => e.id));
+    type Agg = { total: number; done: number; pending: number; missed: number; delaySum: number };
+    const byEmp = new Map<string, Agg>();
     for (const e of employees) {
-      const conversations = await this.getConversationsList({ companyId, employeeId: e.id });
-      result.push({
+      byEmp.set(e.id, { total: 0, done: 0, pending: 0, missed: 0, delaySum: 0 });
+    }
+    for (const r of convRows) {
+      const s = byEmp.get(r.employee_id);
+      if (!s) continue;
+      s.total += 1;
+      s.delaySum += Number(r.delay_hours ?? 0);
+      if (r.follow_up_status === 'DONE') s.done += 1;
+      else if (r.follow_up_status === 'PENDING') s.pending += 1;
+      else if (r.follow_up_status === 'MISSED') s.missed += 1;
+    }
+    return employees.map((e) => {
+      const s = byEmp.get(e.id)!;
+      return {
         employee_id: e.id,
         employee_name: e.name,
         employee_email: e.email,
-        total: conversations.length,
-        done: conversations.filter((c) => c.follow_up_status === 'DONE').length,
-        pending: conversations.filter((c) => c.follow_up_status === 'PENDING').length,
-        missed: conversations.filter((c) => c.follow_up_status === 'MISSED').length,
-        avg_delay_hours: conversations.length
-          ? Number((conversations.reduce((s, c) => s + Number(c.delay_hours ?? 0), 0) / conversations.length).toFixed(2))
-          : 0,
-      });
+        total: s.total,
+        done: s.done,
+        pending: s.pending,
+        missed: s.missed,
+        avg_delay_hours: s.total ? Number((s.delaySum / s.total).toFixed(2)) : 0,
+      };
+    });
+  }
+
+  /** Minimal conversation rows for one or more mailboxes — batched to stay under PostgREST URL limits. */
+  private async fetchConversationAggregatesForEmployeeIds(
+    companyId: string,
+    employeeIds: string[],
+  ): Promise<Array<{ employee_id: string; follow_up_status: string; priority: string; delay_hours: number }>> {
+    const chunkSize = 120;
+    const out: Array<{ employee_id: string; follow_up_status: string; priority: string; delay_hours: number }> = [];
+    for (let i = 0; i < employeeIds.length; i += chunkSize) {
+      const slice = employeeIds.slice(i, i + chunkSize);
+      const { data, error } = await this.supabase
+        .from('conversations')
+        .select('employee_id, follow_up_status, priority, delay_hours')
+        .eq('company_id', companyId)
+        .eq('is_ignored', false)
+        .in('employee_id', slice);
+      if (error) {
+        this.logger.error('fetchConversationAggregatesForEmployeeIds', error.message);
+        throw error;
+      }
+      out.push(...((data ?? []) as Array<{ employee_id: string; follow_up_status: string; priority: string; delay_hours: number }>));
     }
-    return result;
+    return out;
   }
 
   async getConversationsList(filters: ConversationFilters): Promise<ConversationListItem[]> {
@@ -266,12 +335,10 @@ export class DashboardService {
 
     if (filters.departmentIds && filters.departmentIds.length > 0) {
       const deptIds = filters.departmentIds;
-      const allEmp: string[] = [];
-      for (const d of deptIds) {
-        const inDept = await this.getEmployeeIdsInDepartment(filters.companyId, d);
-        allEmp.push(...inDept);
-      }
-      const uniqEmp = [...new Set(allEmp)];
+      const allEmpNested = await Promise.all(
+        deptIds.map((d) => this.getEmployeeIdsInDepartment(filters.companyId, d)),
+      );
+      const uniqEmp = [...new Set(allEmpNested.flat())];
       if (uniqEmp.length > 0) {
         query = query.or(`department_id.in.(${deptIds.join(',')}),employee_id.in.(${uniqEmp.join(',')})`);
       } else {
@@ -972,7 +1039,7 @@ ${dataBlock}`;
 
   async getDashboard(
     companyId: string,
-    scope: { departmentId?: string; employeeId?: string; role: EmployeeRole },
+    scope: { departmentId?: string; employeeId?: string; role: EmployeeRole; userId?: string },
     filters?: {
       status?: string;
       employeeId?: string;
@@ -1097,6 +1164,7 @@ ${dataBlock}`;
       const ctx: RequestContext = {
         companyId,
         role: scope.role,
+        userId: scope.userId,
         employeeId: scope.employeeId,
         departmentId: scope.departmentId,
       };

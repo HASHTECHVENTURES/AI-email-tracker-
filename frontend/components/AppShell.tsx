@@ -5,7 +5,9 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
+import { setActAsEmployeeView } from '@/lib/api';
 import { isDepartmentManagerRole } from '@/lib/roles';
+import { useActAsEmployeeMailboxView } from '@/lib/use-act-as-employee-mailbox';
 
 type AppShellProps = {
   role: string;
@@ -20,16 +22,17 @@ type AppShellProps = {
   nextIngestionCountdownLabel?: string | null;
   nextReportCountdownLabel?: string | null;
   isActive?: boolean;
+  /**
+   * My Email: before the user links Gmail, show a neutral strip instead of red «Sync issue».
+   * Other pages omit (default) and keep In sync / Sync issue from `isActive`.
+   */
+  syncStripKind?: 'default' | 'gmail_not_linked';
   aiBriefingsEnabled?: boolean;
   mailboxCrawlEnabled?: boolean;
   onRefresh?: () => void;
   onSignOut: () => void;
   children: ReactNode;
 };
-
-function isManagerRole(role: string): boolean {
-  return isDepartmentManagerRole(role);
-}
 
 function navItemClass(active: boolean): string {
   return active
@@ -73,6 +76,7 @@ function onMyEmailHashNavClick(
 function ShellStatusStrip({
   mailboxCrawlEnabled,
   isActive,
+  syncStripKind,
   aiBriefingsEnabled,
   lastSyncLabel,
   nextIngestionCountdownLabel,
@@ -81,22 +85,26 @@ function ShellStatusStrip({
 }: {
   mailboxCrawlEnabled?: boolean;
   isActive: boolean;
+  syncStripKind?: 'default' | 'gmail_not_linked';
   aiBriefingsEnabled?: boolean;
   lastSyncLabel?: string | null;
   nextIngestionCountdownLabel?: string | null;
   nextReportCountdownLabel?: string | null;
   onRefresh?: () => void;
 }) {
+  const strip =
+    mailboxCrawlEnabled === false
+      ? { dot: 'bg-slate-300', text: 'Sync paused' as const }
+      : syncStripKind === 'gmail_not_linked'
+        ? { dot: 'bg-slate-400', text: 'Gmail not connected' as const }
+        : isActive
+          ? { dot: 'bg-emerald-500', text: 'In sync' as const }
+          : { dot: 'bg-red-500', text: 'Sync issue' as const };
+
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-2xl border border-slate-200/80 bg-white px-4 py-3 shadow-card hover:shadow-card-hover">
-      <span
-        className={`h-2 w-2 rounded-full ${
-          mailboxCrawlEnabled === false ? 'bg-slate-300' : isActive ? 'bg-emerald-500' : 'bg-red-500'
-        }`}
-      />
-      <span className="text-sm text-slate-600">
-        {mailboxCrawlEnabled === false ? 'Sync paused' : isActive ? 'In sync' : 'Sync issue'}
-      </span>
+      <span className={`h-2 w-2 rounded-full ${strip.dot}`} />
+      <span className="text-sm text-slate-600">{strip.text}</span>
       {aiBriefingsEnabled === false ? (
         <span
           className="rounded-lg bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200/80"
@@ -138,6 +146,7 @@ export function AppShell({
   nextIngestionCountdownLabel,
   nextReportCountdownLabel,
   isActive = true,
+  syncStripKind = 'default',
   aiBriefingsEnabled,
   mailboxCrawlEnabled,
   onRefresh,
@@ -158,20 +167,29 @@ export function AppShell({
   }, [pathname]);
 
   const isPlatformAdmin = role === 'PLATFORM_ADMIN';
-  const showOrg = (role === 'CEO' || isManagerRole(role)) && !isPlatformAdmin;
+  const showOrg = (role === 'CEO' || isDepartmentManagerRole(role)) && !isPlatformAdmin;
   const isCeo = role === 'CEO';
-  const isHead = isManagerRole(role);
+  const isHead = isDepartmentManagerRole(role);
   const isEmployee = role === 'EMPLOYEE';
+  const canActAsMailbox =
+    isHead && !isPlatformAdmin && !!(me?.linked_employee_id?.trim());
+  const actAsMailbox = useActAsEmployeeMailboxView(canActAsMailbox);
+  /** Employee portal nav, or manager viewing their linked mailbox. */
+  const mailboxNav = isEmployee || actAsMailbox;
+  /** Manager-only sidebar (hidden in mailbox view). */
+  const managerNavVisible = isHead && !isPlatformAdmin && !actAsMailbox;
   /** CEO (full My Email), department manager (HEAD), or Employee portal — Historical Search + scoped mailboxes. */
   const showMyEmail = (isCeo || isHead || isEmployee) && !isPlatformAdmin;
   const showMyEmailCeoHashNav = isCeo;
   const roleLabel = isPlatformAdmin
     ? 'Platform admin'
-    : isHead
-      ? 'Manager'
-      : isEmployee
-        ? 'Employee'
-        : 'CEO';
+    : actAsMailbox
+      ? 'Mailbox'
+      : isHead
+        ? 'Manager'
+        : isEmployee
+          ? 'Employee'
+          : 'CEO';
   const deptAlertsFocus = pathname === '/departments' && locHash === '#team-members';
   const myEmailHome =
     pathname === '/my-email' &&
@@ -226,6 +244,42 @@ export function AppShell({
             </div>
           ) : null}
 
+          {canActAsMailbox ? (
+            <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50/90 px-3 py-2.5">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">View</p>
+              <div className="mt-2 flex rounded-lg bg-slate-200/90 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActAsEmployeeView(false);
+                    router.refresh();
+                  }}
+                  className={`min-w-0 flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition ${
+                    !actAsMailbox
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Manager
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActAsEmployeeView(true);
+                    router.refresh();
+                  }}
+                  className={`min-w-0 flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition ${
+                    actAsMailbox
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Mailbox
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {/* Scroll lives on this wrapper (not <nav>) so overflow-y does not clip link text on the inline axis. */}
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]">
             <nav aria-label="Main">
@@ -261,13 +315,13 @@ export function AppShell({
                 </>
               ) : null}
 
-              {isHead && !isPlatformAdmin ? (
+              {managerNavVisible ? (
                 <SafeLink href="/team-mail-sync" className={navItemClass(teamMailSyncActive)}>
                   Team mail sync
                 </SafeLink>
               ) : null}
 
-              {isEmployee ? (
+              {mailboxNav ? (
                 <SafeLink href="/messages" className={navItemClass(pathname === '/messages')}>
                   Messages & alerts
                 </SafeLink>
@@ -287,13 +341,13 @@ export function AppShell({
                 </>
               ) : null}
 
-              {showOrg && isHead ? (
+              {showOrg && managerNavVisible ? (
                 <SafeLink href="/employees" className={navItemClass(pathname === '/employees')}>
                   Team
                 </SafeLink>
               ) : null}
 
-              {showOrg && isHead ? (
+              {showOrg && managerNavVisible ? (
                 <>
                   <SafeLink href="/manager-messages" className={navItemClass(managerMessagesActive)}>
                     Conversations
@@ -409,12 +463,12 @@ export function AppShell({
                   ) : null}
                 </>
               ) : null}
-              {isHead && !isPlatformAdmin ? (
+              {managerNavVisible ? (
                 <SafeLink href="/team-mail-sync" className={navMobileClass(teamMailSyncActive)}>
                   Team sync
                 </SafeLink>
               ) : null}
-              {isEmployee ? (
+              {mailboxNav ? (
                 <SafeLink href="/messages" className={navMobileClass(pathname === '/messages')}>
                   Messages
                 </SafeLink>
@@ -432,12 +486,12 @@ export function AppShell({
                   </SafeLink>
                 </>
               ) : null}
-              {showOrg && isHead ? (
+              {showOrg && managerNavVisible ? (
                 <SafeLink href="/employees" className={navMobileClass(pathname === '/employees')}>
                   Team
                 </SafeLink>
               ) : null}
-              {showOrg && isHead ? (
+              {showOrg && managerNavVisible ? (
                 <>
                   <SafeLink href="/manager-messages" className={navMobileClass(managerMessagesActive)}>
                     Conversations
@@ -480,11 +534,14 @@ export function AppShell({
               <div className="min-w-0">
                 {titleEyebrow}
                 <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">{title}</h1>
-                <p className="mt-1 max-w-2xl text-sm text-slate-500">{subtitle}</p>
+                {subtitle?.trim() ? (
+                  <p className="mt-1 max-w-2xl text-sm text-slate-500">{subtitle}</p>
+                ) : null}
               </div>
               <ShellStatusStrip
                 mailboxCrawlEnabled={mailboxCrawlEnabled}
                 isActive={isActive}
+                syncStripKind={syncStripKind}
                 aiBriefingsEnabled={aiBriefingsEnabled}
                 lastSyncLabel={lastSyncLabel}
                 nextIngestionCountdownLabel={nextIngestionCountdownLabel}

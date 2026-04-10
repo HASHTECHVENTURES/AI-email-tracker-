@@ -8,11 +8,12 @@ import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth, type AuthMe as Me } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
 import type { CeoDeptDirectoryRow } from '@/components/CeoDashboardScopePanel';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { TimeGreeting } from '@/components/TimeGreeting';
 import { Badge } from '@/components/Badge';
 import { conversationReadPath } from '@/lib/conversation-read';
 import { isDepartmentManagerRole } from '@/lib/roles';
+import { useActAsEmployeeMailboxView } from '@/lib/use-act-as-employee-mailbox';
 import { ReassignModal } from '@/components/ReassignModal';
 import { TeamAlertReplyModal } from '@/components/TeamAlertReplyModal';
 
@@ -171,6 +172,11 @@ function TeamHealthDot({ health }: { health: TeamHealth }) {
 export default function DashboardPage() {
   const router = useRouter();
   const { me, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
+  const canActAsMailbox =
+    !!me &&
+    isDepartmentManagerRole(me.role) &&
+    !!(me.linked_employee_id?.trim());
+  const actAsMailboxView = useActAsEmployeeMailboxView(canActAsMailbox);
   const [error, setError] = useState<string | null>(null);
   const [dash, setDash] = useState<DashboardPayload | null>(null);
   const [status, setStatus] = useState<SystemStatus | null>(null);
@@ -234,18 +240,18 @@ export default function DashboardPage() {
       if (deptQs.length > 0) qs.set('department_ids', deptQs.join(','));
       const ids = [...ceoEmployeeIds].sort();
       if (ids.length > 0) qs.set('employee_ids', ids.join(','));
-    } else if (filterEmployee && me?.role !== 'EMPLOYEE') {
+    } else if (filterEmployee && me?.role !== 'EMPLOYEE' && !actAsMailboxView) {
       qs.set('employee_id', filterEmployee);
     }
     const q = qs.toString();
     return `/dashboard${q ? `?${q}` : ''}`;
-  }, [filterStatus, filterPriority, filterEmployee, filterDepartmentIds, ceoEmployeeIds, me?.role]);
+  }, [filterStatus, filterPriority, filterEmployee, filterDepartmentIds, ceoEmployeeIds, me?.role, actAsMailboxView]);
 
   const refresh = useCallback(async () => {
     if (!token) return;
 
     const alertResPromise =
-      me?.role === 'EMPLOYEE'
+      me?.role === 'EMPLOYEE' || actAsMailboxView
         ? apiFetch('/team-alerts/mine', token)
         : Promise.resolve({ ok: false } as Response);
     const [dRes, sRes, taRes] = await Promise.all([
@@ -270,7 +276,7 @@ export default function DashboardPage() {
         nextStatus.email_crawl_enabled === false ? null : (nextStatus.seconds_until_next_ingestion ?? null),
       );
     }
-    if (me?.role === 'EMPLOYEE') {
+    if (me?.role === 'EMPLOYEE' || actAsMailboxView) {
       if (taRes.ok) {
         setTeamAlerts((await taRes.json()) as { items: TeamAlertItem[]; unread_count: number });
       } else {
@@ -279,7 +285,7 @@ export default function DashboardPage() {
     } else {
       setTeamAlerts(null);
     }
-  }, [buildDashboardPath, ctxSignOut, me?.role, token]);
+  }, [buildDashboardPath, ctxSignOut, me?.role, token, actAsMailboxView]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -319,7 +325,17 @@ export default function DashboardPage() {
     if (!me || !token) return;
     const id = window.setTimeout(() => void refresh(), 180);
     return () => clearTimeout(id);
-  }, [me, token, refresh, filterStatus, filterPriority, filterEmployee, filterDepartmentIds, ceoEmployeeIds]);
+  }, [
+    me,
+    token,
+    refresh,
+    filterStatus,
+    filterPriority,
+    filterEmployee,
+    filterDepartmentIds,
+    ceoEmployeeIds,
+    actAsMailboxView,
+  ]);
 
   useEffect(() => {
     if (me?.role !== 'CEO') {
@@ -589,16 +605,18 @@ export default function DashboardPage() {
       <AppShell
         role={shellRoleForLoading}
         title="Dashboard"
-        subtitle="Loading…"
+        subtitle=""
         onSignOut={() => void ctxSignOut()}
       >
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }
 
-  const isEmployee = me.role === 'EMPLOYEE';
+  const isEmployee = me.role === 'EMPLOYEE' || actAsMailboxView;
   const isHead = isDepartmentManagerRole(me.role);
+  /** Manager-only dashboard chrome (hide when HEAD is in mailbox / employee view). */
+  const managerDashboardChrome = isHead && !actAsMailboxView;
   const isCeo = !isEmployee && !isHead;
   const dashboardSubtitle = isEmployee
     ? 'Your follow-ups and SLA.'
@@ -649,7 +667,7 @@ export default function DashboardPage() {
             <p className="mt-3 text-xs text-red-700/90">Please retry in a moment. If this keeps happening, contact your admin.</p>
           </div>
         ) : (
-          <PageSkeleton />
+          <PortalPageLoader variant="embedded" />
         )}
         </AppShell>
     );
@@ -1335,7 +1353,7 @@ export default function DashboardPage() {
               <h2 className="text-lg font-bold text-slate-900">Action required</h2>
               <p className="mt-1 text-sm text-slate-500">Threads that need a reply or decision.</p>
             </div>
-            {isHead ? (
+            {managerDashboardChrome ? (
               <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700 ring-1 ring-brand-100">
                 Your department
               </span>
@@ -1504,7 +1522,7 @@ export default function DashboardPage() {
         ) : null}
 
         <section id="conversations" className={cardClass}>
-          {isHead ? (
+          {managerDashboardChrome ? (
             <details className="group">
               <summary className="list-none cursor-pointer [&::-webkit-details-marker]:hidden">
                 <div className="flex items-center justify-between gap-4">

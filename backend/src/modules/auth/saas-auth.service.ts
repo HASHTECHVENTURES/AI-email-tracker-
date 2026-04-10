@@ -75,6 +75,20 @@ export class SaasAuthService {
         linkedEmployeeId = (emp as { id: string }).id;
       }
     }
+    /** Same as employee portal: resolve mailbox row when `users.linked_employee_id` was never backfilled. */
+    if (row.role === 'HEAD' && !linkedEmployeeId) {
+      const { data: emp } = await this.supabase
+        .from('employees')
+        .select('id')
+        .eq('company_id', row.company_id)
+        .eq('email', row.email.trim().toLowerCase())
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (emp) {
+        linkedEmployeeId = (emp as { id: string }).id;
+      }
+    }
 
     let managedDepartmentIds: string[] = [];
     let resolvedDepartmentId: string | null = row.department_id ?? null;

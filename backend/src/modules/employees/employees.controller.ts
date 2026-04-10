@@ -122,6 +122,61 @@ export class EmployeesController {
     });
   }
 
+  /** CEO: demote a manager to employee under a team; same login email / Supabase Auth user. */
+  @Post('convert-manager-to-employee')
+  async convertManagerToEmployee(
+    @Req() req: Request,
+    @Body() body: { email?: string; targetDepartmentId?: string },
+  ) {
+    const ctx = getRequestContext(req);
+    const email = body.email?.trim() ?? '';
+    const targetDepartmentId = body.targetDepartmentId?.trim() ?? '';
+    if (!email || !targetDepartmentId) {
+      throw new BadRequestException('email and targetDepartmentId are required');
+    }
+    const result = await this.employeesService.convertManagerToEmployee(ctx, {
+      email,
+      targetDepartmentId,
+    });
+    await this.auditLogService.log({
+      userId: req.user!.id,
+      companyId: ctx.companyId,
+      action: 'manager_converted_to_employee',
+      entity: 'user',
+      entityId: result.userId,
+    });
+    return result;
+  }
+
+  /**
+   * CEO: keep someone as a department manager (HEAD) and also list them on another team’s roster
+   * (same login; secondary row does not receive duplicate mail sync).
+   */
+  @Post('add-secondary-team-roster')
+  async addSecondaryTeamRoster(
+    @Req() req: Request,
+    @Body() body: { managerEmail?: string; departmentId?: string },
+  ) {
+    const ctx = getRequestContext(req);
+    const managerEmail = body.managerEmail?.trim() ?? '';
+    const departmentId = body.departmentId?.trim() ?? '';
+    if (!managerEmail || !departmentId) {
+      throw new BadRequestException('managerEmail and departmentId are required');
+    }
+    const created = await this.employeesService.addManagerSecondaryTeamRoster(ctx, {
+      managerEmail,
+      departmentId,
+    });
+    await this.auditLogService.log({
+      userId: req.user!.id,
+      companyId: ctx.companyId,
+      action: 'manager_secondary_team_roster_added',
+      entity: 'employee',
+      entityId: created.id,
+    });
+    return created;
+  }
+
   @Delete(':id')
   async remove(@Req() req: Request, @Param('id') id: string) {
     const ctx = getRequestContext(req);
@@ -137,7 +192,12 @@ export class EmployeesController {
     @Body() body: { tracking_paused?: boolean; ai_enabled?: boolean },
   ) {
     const ctx = getRequestContext(req);
-    const updated = await this.employeesService.updateEmployeePauses(ctx, id, body);
+    const updated = await this.employeesService.updateEmployeePauses(
+      ctx,
+      id,
+      body,
+      req.user!.email?.trim().toLowerCase() ?? '',
+    );
     await this.auditLogService.log({
       userId: req.user!.id,
       companyId: ctx.companyId,
@@ -158,7 +218,12 @@ export class EmployeesController {
     if (typeof body.sla_hours !== 'number') {
       throw new BadRequestException('sla_hours is required');
     }
-    const updated = await this.employeesService.updateEmployeeSla(ctx, id, body.sla_hours);
+    const updated = await this.employeesService.updateEmployeeSla(
+      ctx,
+      id,
+      body.sla_hours,
+      req.user!.email?.trim().toLowerCase() ?? '',
+    );
     return { ok: true, employee: updated };
   }
 
@@ -176,6 +241,7 @@ export class EmployeesController {
       ctx,
       id,
       body.tracking_start_at.trim(),
+      req.user!.email?.trim().toLowerCase() ?? '',
     );
     return { ok: true, employee: updated };
   }
@@ -188,7 +254,12 @@ export class EmployeesController {
   ) {
     const ctx = getRequestContext(req);
     const paused = body.paused === true;
-    await this.employeesService.setTrackingPaused(ctx, id, paused);
+    await this.employeesService.setTrackingPaused(
+      ctx,
+      id,
+      paused,
+      req.user!.email?.trim().toLowerCase() ?? '',
+    );
     return { ok: true, paused };
   }
 
@@ -200,7 +271,12 @@ export class EmployeesController {
   ) {
     const ctx = getRequestContext(req);
     const parsedLimit = Number(limit ?? '10');
-    const messages = await this.employeesService.listRecentReceivedMessages(ctx, id, parsedLimit);
+    const messages = await this.employeesService.listRecentReceivedMessages(
+      ctx,
+      id,
+      parsedLimit,
+      req.user!.email?.trim().toLowerCase() ?? '',
+    );
     return { messages };
   }
 }

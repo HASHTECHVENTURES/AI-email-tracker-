@@ -15,7 +15,7 @@ import { useAuth } from '@/lib/auth-context';
 import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { TrackedMailboxCard } from '@/components/my-email/TrackedMailboxCard';
 
 type Mailbox = {
@@ -444,10 +444,10 @@ function ManagerMyMailInner() {
       <AppShell
         role="HEAD"
         title="My mail"
-        subtitle="Loading..."
+        subtitle=""
         onSignOut={() => void ctxSignOut()}
       >
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }
@@ -477,7 +477,7 @@ function ManagerMyMailInner() {
       )}
 
       {loading ? (
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" dense />
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -672,11 +672,7 @@ function ManagerMyMailInner() {
 export default function ManagerMyMailPage() {
   return (
     <Suspense
-      fallback={
-        <div className="flex min-h-screen items-center justify-center bg-surface">
-          <PageSkeleton />
-        </div>
-      }
+      fallback={<PortalPageLoader variant="fullscreen" />}
     >
       <ManagerMyMailInner />
     </Suspense>

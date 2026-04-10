@@ -31,6 +31,7 @@ interface EmployeeDbRow {
   last_synced_at?: string | null;
   /** `SELF` = CEO-added tracking row; `TEAM` / null = org directory mailboxes */
   mailbox_type?: string | null;
+  roster_duplicate?: boolean;
 }
 
 /** Org directory row returned to API clients */
@@ -61,6 +62,10 @@ export interface OrgEmployeeDto {
    * (matches a `users` row with role HEAD — by `linked_employee_id` or work email).
    */
   is_manager_mailbox?: boolean;
+  /** `users.id` who created this row (SELF / team adds). Used to classify manager-owned mailboxes for CEOs. */
+  created_by?: string | null;
+  /** Secondary directory row: same person as another dept; mail sync uses the primary row (`roster_duplicate = false`). */
+  roster_duplicate?: boolean;
 }
 
 export interface EmployeeMessageDto {
@@ -97,6 +102,39 @@ export class EmployeesService {
       c === '42703' ||
       m.includes('mailbox_type') ||
       (m.includes('column') && m.includes('does not exist'))
+    );
+  }
+
+  /** HEAD: personal `SELF` mailboxes they created (any `department_id`, often null). */
+  private isHeadOwnSelfMailboxRow(
+    ctx: RequestContext,
+    row: { mailbox_type?: string | null; created_by?: string | null; email?: string },
+    callerEmailNorm: string,
+  ): boolean {
+    if ((row.mailbox_type ?? null) !== 'SELF') return false;
+    const uid = ctx.userId;
+    if (uid && row.created_by === uid) return true;
+    const norm = callerEmailNorm.trim().toLowerCase();
+    if (norm.length > 0 && !row.created_by && row.email?.trim().toLowerCase() === norm) return true;
+    return false;
+  }
+
+  /** HEAD may edit TEAM rows in their active department, or their own `SELF` My Email rows. */
+  private assertHeadCanManageEmployeeRow(
+    ctx: RequestContext,
+    row: {
+      department_id: string | null;
+      mailbox_type?: string | null;
+      created_by?: string | null;
+      email?: string;
+    },
+    callerEmailNorm: string,
+  ): void {
+    if (ctx.role !== 'HEAD') return;
+    if (ctx.departmentId && row.department_id === ctx.departmentId) return;
+    if (this.isHeadOwnSelfMailboxRow(ctx, row, callerEmailNorm)) return;
+    throw new ForbiddenException(
+      'You can only update team mailboxes in your department, or personal inboxes you added under My Email.',
     );
   }
 
@@ -214,6 +252,287 @@ export class EmployeesService {
   }
 
   /**
+   * CEO: Turn a department manager (HEAD) into an employee under a chosen team.
+   * Keeps the same Supabase Auth user; updates `users.role`, `department_id`, and `linked_employee_id`.
+   * Removes all `manager_department_memberships` for that user.
+   */
+  async convertManagerToEmployee(
+    ctx: RequestContext,
+    dto: { email: string; targetDepartmentId: string },
+  ): Promise<{ ok: true; userId: string; employeeId: string; departmentName: string }> {
+    if (ctx.role !== 'CEO') {
+      throw new ForbiddenException('Only the company admin can move a manager to the employee portal');
+    }
+
+    const email = dto.email.trim().toLowerCase();
+    const targetDepartmentId = dto.targetDepartmentId?.trim() ?? '';
+    if (!email || !targetDepartmentId) {
+      throw new BadRequestException('email and targetDepartmentId are required');
+    }
+
+    const dept = await this.assertDepartmentInCompany(ctx.companyId, targetDepartmentId);
+
+    const { data: profile, error: userErr } = await this.supabase
+      .from('users')
+      .select('id, email, full_name, role')
+      .eq('company_id', ctx.companyId)
+      .eq('email', email)
+      .maybeSingle();
+
+    if (userErr) {
+      this.logger.error(`convertManagerToEmployee users: ${userErr.message}`);
+      throw userErr;
+    }
+    if (!profile) {
+      throw new BadRequestException('No user with this email exists in your company');
+    }
+
+    const role = (profile as { role: string }).role;
+    if (role === 'CEO') {
+      throw new BadRequestException('The company admin cannot be moved to the employee portal this way');
+    }
+    if (role === 'EMPLOYEE') {
+      throw new BadRequestException('This user is already on the employee portal');
+    }
+    if (role !== 'HEAD') {
+      throw new BadRequestException('Only a department manager can become an employee portal user');
+    }
+
+    const userId = (profile as { id: string }).id;
+
+    const { error: memDelErr } = await this.supabase
+      .from('manager_department_memberships')
+      .delete()
+      .eq('user_id', userId);
+    if (memDelErr) {
+      this.logger.error(`convertManagerToEmployee memberships: ${memDelErr.message}`);
+      throw memDelErr;
+    }
+
+    const displayName =
+      (profile as { full_name?: string | null }).full_name?.trim() ||
+      email.split('@')[0] ||
+      'Team member';
+
+    const { data: primaryCandidates, error: empLookupErr } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', ctx.companyId)
+      .eq('email', email)
+      .eq('roster_duplicate', false);
+
+    if (empLookupErr) {
+      this.logger.error(`convertManagerToEmployee employees: ${empLookupErr.message}`);
+      throw empLookupErr;
+    }
+
+    const existingEmp = (primaryCandidates ?? [])[0] as { id: string } | undefined;
+
+    let employeeId: string;
+
+    if (existingEmp) {
+      employeeId = existingEmp.id;
+      const { error: empUpErr } = await this.supabase
+        .from('employees')
+        .update({ department_id: dept.id })
+        .eq('id', employeeId)
+        .eq('company_id', ctx.companyId);
+      if (empUpErr) {
+        this.logger.error(`convertManagerToEmployee update employee: ${empUpErr.message}`);
+        throw empUpErr;
+      }
+    } else {
+      const startIso = new Date().toISOString();
+      const { data: inserted, error: insErr } = await this.supabase
+        .from('employees')
+        .insert({
+          name: displayName,
+          email,
+          company_id: ctx.companyId,
+          department_id: dept.id,
+          created_by: null,
+          is_active: true,
+          ai_enabled: true,
+          tracking_paused: true,
+          tracking_start_at: null,
+        })
+        .select('id')
+        .single();
+      if (insErr || !inserted) {
+        if (insErr?.code === '23505') {
+          throw new BadRequestException('An employee row with this email already exists');
+        }
+        this.logger.error(`convertManagerToEmployee insert employee: ${insErr?.message ?? 'unknown'}`);
+        throw insErr ?? new InternalServerErrorException('Could not create employee row');
+      }
+      employeeId = (inserted as { id: string }).id;
+      await this.ensureMailSyncState(employeeId, startIso);
+    }
+
+    const { error: upUserErr } = await this.supabase
+      .from('users')
+      .update({
+        role: 'EMPLOYEE',
+        department_id: dept.id,
+        linked_employee_id: employeeId,
+      })
+      .eq('id', userId)
+      .eq('company_id', ctx.companyId);
+    if (upUserErr) {
+      this.logger.error(`convertManagerToEmployee update users: ${upUserErr.message}`);
+      throw upUserErr;
+    }
+
+    return {
+      ok: true,
+      userId,
+      employeeId,
+      departmentName: dept.name,
+    };
+  }
+
+  /**
+   * CEO: Same login stays **HEAD** (e.g. support manager) while adding a second `employees` row in
+   * another department so they appear on that team’s roster (e.g. under tech). Mail sync uses only
+   * the primary row (`roster_duplicate = false`); the new row is directory-only.
+   */
+  async addManagerSecondaryTeamRoster(
+    ctx: RequestContext,
+    dto: { managerEmail: string; departmentId: string },
+  ): Promise<OrgEmployeeDto> {
+    if (ctx.role !== 'CEO' && ctx.role !== 'HEAD') {
+      throw new ForbiddenException('Only a company admin or department manager can add this roster entry');
+    }
+
+    const email = dto.managerEmail.trim().toLowerCase();
+    const departmentId = dto.departmentId?.trim() ?? '';
+    if (!email || !departmentId) {
+      throw new BadRequestException('managerEmail and departmentId are required');
+    }
+
+    if (ctx.role === 'HEAD') {
+      if (!ctx.departmentId || departmentId !== ctx.departmentId) {
+        throw new ForbiddenException('You can only list another manager on your own team’s roster');
+      }
+    }
+
+    const dept = await this.assertDepartmentInCompany(ctx.companyId, departmentId);
+
+    const { data: profile, error: userErr } = await this.supabase
+      .from('users')
+      .select('id, email, full_name, role')
+      .eq('company_id', ctx.companyId)
+      .eq('email', email)
+      .maybeSingle();
+
+    if (userErr) {
+      this.logger.error(`addManagerSecondaryTeamRoster users: ${userErr.message}`);
+      throw userErr;
+    }
+    if (!profile) {
+      throw new BadRequestException('No user with this email exists in your company');
+    }
+    if ((profile as { role: string }).role !== 'HEAD') {
+      throw new BadRequestException(
+        'This person must be a department manager. Use “Move to employee portal” only if they should stop managing.',
+      );
+    }
+
+    const { data: dupInDept, error: dupErr } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', ctx.companyId)
+      .eq('email', email)
+      .eq('department_id', departmentId)
+      .maybeSingle();
+    if (dupErr) {
+      this.logger.error(`addManagerSecondaryTeamRoster dup: ${dupErr.message}`);
+      throw dupErr;
+    }
+    if (dupInDept) {
+      throw new BadRequestException('This person already has an entry for that department');
+    }
+
+    const { data: primaryRows, error: pErr } = await this.supabase
+      .from('employees')
+      .select('id, name')
+      .eq('company_id', ctx.companyId)
+      .eq('email', email)
+      .eq('roster_duplicate', false);
+    if (pErr) {
+      this.logger.error(`addManagerSecondaryTeamRoster primary: ${pErr.message}`);
+      throw pErr;
+    }
+    const primary = (primaryRows ?? [])[0] as { id: string; name: string } | undefined;
+    const displayName =
+      primary?.name?.trim() ||
+      (profile as { full_name?: string | null }).full_name?.trim() ||
+      email.split('@')[0] ||
+      'Team member';
+
+    const baseInsert: Record<string, unknown> = {
+      name: displayName,
+      email,
+      company_id: ctx.companyId,
+      department_id: departmentId,
+      roster_duplicate: true,
+      tracking_paused: true,
+      is_active: true,
+      ai_enabled: true,
+      tracking_start_at: null,
+      created_by: null,
+      mailbox_type: 'TEAM',
+    };
+
+    let insertResult = await this.supabase
+      .from('employees')
+      .insert(baseInsert)
+      .select(
+        'id, name, email, company_id, department_id, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type, roster_duplicate',
+      )
+      .single();
+
+    if (insertResult.error && this.isMissingMailboxTypeColumn(insertResult.error)) {
+      const rest = { ...baseInsert };
+      delete rest.mailbox_type;
+      insertResult = await this.supabase
+        .from('employees')
+        .insert(rest)
+        .select(
+          'id, name, email, company_id, department_id, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, roster_duplicate',
+        )
+        .single();
+    }
+
+    if (insertResult.error || !insertResult.data) {
+      if (insertResult.error?.code === '23505') {
+        throw new BadRequestException('This person already has an entry for that department');
+      }
+      this.logger.error(`addManagerSecondaryTeamRoster insert: ${insertResult.error?.message ?? 'unknown'}`);
+      throw insertResult.error ?? new InternalServerErrorException('Could not create roster row');
+    }
+
+    const row = insertResult.data as EmployeeDbRow;
+    return {
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      department_id: row.department_id,
+      department_name: dept.name,
+      created_at: row.created_at,
+      gmail_connected: (row.gmail_status ?? 'EXPIRED') === 'CONNECTED',
+      gmail_status: (row.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
+      last_synced_at: row.last_synced_at ?? null,
+      sla_hours_default: row.sla_hours_default ?? null,
+      tracking_start_at: row.tracking_start_at ?? null,
+      tracking_paused: row.tracking_paused === true,
+      ai_enabled: row.ai_enabled !== false,
+      mailbox_type: (row.mailbox_type as 'TEAM' | null | undefined) ?? 'TEAM',
+      roster_duplicate: true,
+    };
+  }
+
+  /**
    * Department manager self-mailbox helper for `/my-mail`:
    * ensure there is a tracked mailbox row that matches the manager's login email.
    */
@@ -238,6 +557,7 @@ export class EmployeesService {
       )
       .eq('company_id', ctx.companyId)
       .eq('email', email)
+      .eq('department_id', ctx.departmentId)
       .maybeSingle();
 
     if (existing.error) {
@@ -247,9 +567,6 @@ export class EmployeesService {
 
     if (existing.data) {
       const row = existing.data as EmployeeDbRow;
-      if (row.department_id !== ctx.departmentId) {
-        throw new ForbiddenException('Your login email is already used by another department mailbox');
-      }
       const deptName = await this.getDepartmentName(ctx.companyId, row.department_id);
       return {
         id: row.id,
@@ -485,6 +802,7 @@ export class EmployeesService {
     ctx: RequestContext,
     employeeId: string,
     actorUserId: string,
+    actorEmailNorm?: string,
   ): Promise<void> {
     if (ctx.role === 'EMPLOYEE') {
       if (!ctx.employeeId || ctx.employeeId !== employeeId) {
@@ -493,7 +811,7 @@ export class EmployeesService {
     }
     const { data, error } = await this.supabase
       .from('employees')
-      .select('id, company_id, department_id, mailbox_type, created_by')
+      .select('id, company_id, department_id, mailbox_type, created_by, email')
       .eq('id', employeeId)
       .maybeSingle();
     if (error || !data) {
@@ -504,15 +822,17 @@ export class EmployeesService {
       department_id: string | null;
       mailbox_type?: string | null;
       created_by?: string | null;
+      email: string;
     };
     if (row.company_id !== ctx.companyId) {
       throw new ForbiddenException('Employee is not in your company');
     }
     if (ctx.role === 'HEAD') {
+      const norm = actorEmailNorm?.trim().toLowerCase() ?? '';
       const isOwnSelfMailbox =
         row.mailbox_type === 'SELF' &&
-        row.created_by != null &&
-        row.created_by === actorUserId;
+        ((row.created_by != null && row.created_by === actorUserId) ||
+          (!row.created_by && norm.length > 0 && row.email.trim().toLowerCase() === norm));
       if (isOwnSelfMailbox) {
         return;
       }
@@ -615,7 +935,7 @@ export class EmployeesService {
     let query = this.supabase
       .from('employees')
       .select(
-        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type, roster_duplicate',
       )
       .eq('company_id', ctx.companyId)
       .or('mailbox_type.is.null,mailbox_type.eq.TEAM')
@@ -707,6 +1027,7 @@ export class EmployeesService {
       tracking_paused: r.tracking_paused === true,
       ai_enabled: r.ai_enabled !== false,
       mailbox_type: (r.mailbox_type as 'TEAM' | null | undefined) ?? null,
+      roster_duplicate: r.roster_duplicate === true,
     }));
   }
 
@@ -773,6 +1094,7 @@ export class EmployeesService {
         'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
       )
       .eq('company_id', companyId)
+      .eq('roster_duplicate', false)
       .or('mailbox_type.is.null,mailbox_type.eq.TEAM')
       .order('name', { ascending: true });
 
@@ -788,6 +1110,7 @@ export class EmployeesService {
           'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
         )
         .eq('company_id', companyId)
+        .eq('roster_duplicate', false)
         .order('name', { ascending: true });
       if (r2.error) {
         this.logger.error('Failed to list team mailboxes (legacy)', r2.error.message);
@@ -840,6 +1163,7 @@ export class EmployeesService {
       department_id: r.department_id,
       department_name: (r.department_id ? deptNameById.get(r.department_id) : undefined) ?? '—',
       created_at: r.created_at,
+      created_by: r.created_by ?? null,
       gmail_connected: (r.gmail_status ?? 'EXPIRED') === 'CONNECTED',
       gmail_status: (r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
       last_synced_at: r.last_synced_at ?? null,
@@ -859,30 +1183,35 @@ export class EmployeesService {
   async getManagerMailboxIndicators(companyId: string): Promise<{
     linkedEmployeeIds: Set<string>;
     emailsNormalized: Set<string>;
+    /** `users.id` for every department manager — used to tag SELF mailboxes they created. */
+    headUserIds: Set<string>;
   }> {
     const { data, error } = await this.supabase
       .from('users')
-      .select('email, linked_employee_id')
+      .select('id, email, linked_employee_id')
       .eq('company_id', companyId)
       .eq('role', 'HEAD');
     if (error) {
       this.logger.error('getManagerMailboxIndicators', error.message);
-      return { linkedEmployeeIds: new Set(), emailsNormalized: new Set() };
+      return { linkedEmployeeIds: new Set(), emailsNormalized: new Set(), headUserIds: new Set() };
     }
     const linkedEmployeeIds = new Set<string>();
     const emailsNormalized = new Set<string>();
+    const headUserIds = new Set<string>();
     for (const row of data ?? []) {
-      const r = row as { email?: string; linked_employee_id?: string | null };
+      const r = row as { id?: string; email?: string; linked_employee_id?: string | null };
+      if (r.id) headUserIds.add(r.id);
       if (r.linked_employee_id) linkedEmployeeIds.add(r.linked_employee_id);
       if (r.email) emailsNormalized.add(String(r.email).trim().toLowerCase());
     }
-    return { linkedEmployeeIds, emailsNormalized };
+    return { linkedEmployeeIds, emailsNormalized, headUserIds };
   }
 
   async updateEmployeePauses(
     ctx: RequestContext,
     employeeId: string,
     body: { tracking_paused?: boolean; ai_enabled?: boolean },
+    callerEmailNorm = '',
   ): Promise<OrgEmployeeDto> {
     if (ctx.role === 'EMPLOYEE') {
       throw new ForbiddenException('Employees cannot update mailbox pauses');
@@ -897,7 +1226,7 @@ export class EmployeesService {
     const { data: row, error } = await this.supabase
       .from('employees')
       .select(
-        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
       )
       .eq('company_id', ctx.companyId)
       .eq('id', employeeId)
@@ -911,11 +1240,7 @@ export class EmployeesService {
       throw new NotFoundException('Employee not found');
     }
     const dbRow = row as EmployeeDbRow;
-    if (ctx.role === 'HEAD') {
-      if (!ctx.departmentId || dbRow.department_id !== ctx.departmentId) {
-        throw new ForbiddenException('You can only update pauses for employees in your department');
-      }
-    }
+    this.assertHeadCanManageEmployeeRow(ctx, dbRow, callerEmailNorm);
 
     const patch: { tracking_paused?: boolean; ai_enabled?: boolean } = {};
     if (typeof body.tracking_paused === 'boolean') {
@@ -972,6 +1297,7 @@ export class EmployeesService {
     ctx: RequestContext,
     employeeId: string,
     slaHours: number,
+    callerEmailNorm = '',
   ): Promise<OrgEmployeeDto> {
     if (ctx.role === 'EMPLOYEE') {
       throw new ForbiddenException('Employees cannot update SLA');
@@ -982,7 +1308,9 @@ export class EmployeesService {
     }
     const { data: row, error } = await this.supabase
       .from('employees')
-      .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused')
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, mailbox_type',
+      )
       .eq('company_id', ctx.companyId)
       .eq('id', employeeId)
       .maybeSingle();
@@ -993,11 +1321,11 @@ export class EmployeesService {
     if (!row) {
       throw new NotFoundException('Employee not found');
     }
-    if (ctx.role === 'HEAD') {
-      if (!ctx.departmentId || row.department_id !== ctx.departmentId) {
-        throw new ForbiddenException('You can only update SLA for employees in your department');
-      }
-    }
+    this.assertHeadCanManageEmployeeRow(
+      ctx,
+      row as EmployeeDbRow,
+      callerEmailNorm,
+    );
     const shouldRunIngestion = Boolean((row as EmployeeDbRow).tracking_start_at) && roundedSla > 0;
     const { data: updated, error: updErr } = await this.supabase
       .from('employees')
@@ -1021,10 +1349,11 @@ export class EmployeesService {
     ctx: RequestContext,
     employeeId: string,
     limit = 10,
+    callerEmailNorm = '',
   ): Promise<EmployeeMessageDto[]> {
     const { data: employee, error } = await this.supabase
       .from('employees')
-      .select('id, department_id, company_id')
+      .select('id, department_id, company_id, mailbox_type, created_by, email')
       .eq('company_id', ctx.companyId)
       .eq('id', employeeId)
       .maybeSingle();
@@ -1035,11 +1364,16 @@ export class EmployeesService {
     if (!employee) {
       throw new NotFoundException('Employee not found');
     }
-    if (ctx.role === 'HEAD') {
-      if (!ctx.departmentId || employee.department_id !== ctx.departmentId) {
-        throw new ForbiddenException('You can only view messages for employees in your department');
-      }
-    }
+    this.assertHeadCanManageEmployeeRow(
+      ctx,
+      employee as {
+        department_id: string | null;
+        mailbox_type?: string | null;
+        created_by?: string | null;
+        email?: string;
+      },
+      callerEmailNorm,
+    );
     if (ctx.role === 'EMPLOYEE') {
       if (!ctx.employeeId || ctx.employeeId !== employeeId) {
         throw new ForbiddenException('You can only view your own messages');
@@ -1308,6 +1642,7 @@ export class EmployeesService {
     ctx: RequestContext,
     employeeId: string,
     startAtIso: string,
+    callerEmailNorm = '',
   ): Promise<OrgEmployeeDto> {
     if (ctx.role === 'EMPLOYEE') {
       throw new ForbiddenException('Employees cannot update tracking window');
@@ -1318,7 +1653,9 @@ export class EmployeesService {
     }
     const { data: row, error } = await this.supabase
       .from('employees')
-      .select('id, department_id, company_id, sla_hours_default')
+      .select(
+        'id, department_id, company_id, sla_hours_default, mailbox_type, created_by, email',
+      )
       .eq('company_id', ctx.companyId)
       .eq('id', employeeId)
       .maybeSingle();
@@ -1329,11 +1666,16 @@ export class EmployeesService {
     if (!row) {
       throw new NotFoundException('Employee not found');
     }
-    if (ctx.role === 'HEAD') {
-      if (!ctx.departmentId || row.department_id !== ctx.departmentId) {
-        throw new ForbiddenException('You can only update employees in your department');
-      }
-    }
+    this.assertHeadCanManageEmployeeRow(
+      ctx,
+      row as {
+        department_id: string | null;
+        mailbox_type?: string | null;
+        created_by?: string | null;
+        email?: string;
+      },
+      callerEmailNorm,
+    );
     const iso = parsed.toISOString();
     const { data: updated, error: updErr } = await this.supabase
       .from('employees')
@@ -1498,10 +1840,11 @@ export class EmployeesService {
     const { data, error } = await this.supabase
       .from('employees')
       .select(
-        'id, name, email, company_id, department_id, sla_hours_default, is_active, ai_enabled, tracking_start_at, tracking_paused',
+        'id, name, email, company_id, department_id, sla_hours_default, is_active, ai_enabled, tracking_start_at, tracking_paused, roster_duplicate',
       )
       .eq('company_id', companyId)
-      .eq('is_active', true);
+      .eq('is_active', true)
+      .eq('roster_duplicate', false);
 
     if (error) {
       this.logger.error('Failed to list employees', error.message);
@@ -1558,7 +1901,33 @@ export class EmployeesService {
     ctx: RequestContext,
     employeeId: string,
     paused: boolean,
+    callerEmailNorm = '',
   ): Promise<void> {
+    if (ctx.role === 'HEAD') {
+      const { data: guard, error: gErr } = await this.supabase
+        .from('employees')
+        .select('department_id, mailbox_type, created_by, email')
+        .eq('company_id', ctx.companyId)
+        .eq('id', employeeId)
+        .maybeSingle();
+      if (gErr) {
+        this.logger.error('setTrackingPaused guard', gErr.message);
+        throw new InternalServerErrorException(gErr.message);
+      }
+      if (!guard) {
+        throw new NotFoundException('Employee not found');
+      }
+      this.assertHeadCanManageEmployeeRow(
+        ctx,
+        guard as {
+          department_id: string | null;
+          mailbox_type?: string | null;
+          created_by?: string | null;
+          email?: string;
+        },
+        callerEmailNorm,
+      );
+    }
     const updateFields: Record<string, unknown> = { tracking_paused: paused };
     if (!paused) {
       const { data: emp } = await this.supabase
@@ -1668,6 +2037,76 @@ export class EmployeesService {
       department_id: r.department_id,
       department_name: '—',
       created_at: r.created_at,
+      created_by: r.created_by ?? null,
+      gmail_connected: (r.gmail_status ?? 'EXPIRED') === 'CONNECTED',
+      gmail_status: (r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
+      last_synced_at: r.last_synced_at ?? null,
+      sla_hours_default: r.sla_hours_default ?? null,
+      tracking_start_at: r.tracking_start_at ?? null,
+      tracking_paused: r.tracking_paused === true,
+      ai_enabled: r.ai_enabled !== false,
+      mailbox_type: 'SELF' as const,
+    }));
+  }
+
+  /**
+   * Self-tracked rows a department manager added (`created_by`) or legacy rows without `created_by`
+   * that match their login email. Merged into My Email with team mailboxes for HEAD.
+   */
+  async listSelfTrackedMailboxesForUser(
+    companyId: string,
+    userId: string,
+    callerEmailNorm: string,
+  ): Promise<OrgEmployeeDto[]> {
+    const emailNorm = callerEmailNorm.trim().toLowerCase();
+    const { data: byCreator, error: err1 } = await this.supabase
+      .from('employees')
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
+      )
+      .eq('company_id', companyId)
+      .eq('mailbox_type', 'SELF')
+      .eq('created_by', userId)
+      .order('name', { ascending: true });
+
+    if (err1 && this.isMissingMailboxTypeColumn(err1)) {
+      return [];
+    }
+    if (err1) {
+      this.logger.error('listSelfTrackedMailboxesForUser (created_by)', err1.message);
+      throw new InternalServerErrorException(err1.message);
+    }
+
+    let rows = (byCreator ?? []) as EmployeeDbRow[];
+
+    if (emailNorm) {
+      const { data: legacy, error: err2 } = await this.supabase
+        .from('employees')
+        .select(
+          'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
+        )
+        .eq('company_id', companyId)
+        .eq('mailbox_type', 'SELF')
+        .is('created_by', null)
+        .eq('email', emailNorm)
+        .order('name', { ascending: true });
+
+      if (!err2 && legacy?.length) {
+        const have = new Set(rows.map((r) => r.id));
+        for (const r of legacy as EmployeeDbRow[]) {
+          if (!have.has(r.id)) rows.push(r);
+        }
+      }
+    }
+
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      department_id: r.department_id,
+      department_name: '—',
+      created_at: r.created_at,
+      created_by: r.created_by ?? null,
       gmail_connected: (r.gmail_status ?? 'EXPIRED') === 'CONNECTED',
       gmail_status: (r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
       last_synced_at: r.last_synced_at ?? null,
@@ -1691,19 +2130,22 @@ export class EmployeesService {
     }
 
     /** Same work email may already exist (e.g. manager row from Employees / my-mail). Re-use it for Gmail connect instead of 23505. */
-    const { data: existingSameEmail, error: existingErr } = await this.supabase
+    const { data: existingRows, error: existingErr } = await this.supabase
       .from('employees')
       .select(
-        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, mailbox_type',
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, mailbox_type, roster_duplicate',
       )
       .eq('company_id', companyId)
-      .eq('email', email)
-      .maybeSingle();
+      .eq('email', email);
 
     if (existingErr) {
       this.logger.error('createSelfTrackedMailbox existing lookup', existingErr.message);
       throw new InternalServerErrorException(existingErr.message);
     }
+
+    const existingSameEmail =
+      (existingRows ?? []).find((r) => (r as EmployeeDbRow).roster_duplicate !== true) ??
+      (existingRows ?? [])[0];
 
     if (existingSameEmail) {
       const row = existingSameEmail as EmployeeDbRow;
@@ -1746,14 +2188,16 @@ export class EmployeesService {
 
     if (error) {
       if (error.code === '23505') {
-        const { data: raced } = await this.supabase
+        const { data: racedRows } = await this.supabase
           .from('employees')
           .select(
-            'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, mailbox_type',
+            'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, mailbox_type, roster_duplicate',
           )
           .eq('company_id', companyId)
-          .eq('email', email)
-          .maybeSingle();
+          .eq('email', email);
+        const raced =
+          (racedRows ?? []).find((r) => (r as EmployeeDbRow).roster_duplicate !== true) ??
+          (racedRows ?? [])[0];
         if (raced) {
           const row = raced as EmployeeDbRow;
           const department_name = row.department_id
@@ -1799,10 +2243,15 @@ export class EmployeesService {
     };
   }
 
-  async deleteSelfTrackedMailbox(companyId: string, mailboxId: string): Promise<void> {
+  async deleteSelfTrackedMailbox(
+    ctx: RequestContext,
+    mailboxId: string,
+    callerEmailNorm: string,
+  ): Promise<void> {
+    const companyId = ctx.companyId;
     const { data: row, error } = await this.supabase
       .from('employees')
-      .select('id')
+      .select('id, created_by, email')
       .eq('company_id', companyId)
       .eq('id', mailboxId)
       .eq('mailbox_type', 'SELF')
@@ -1819,6 +2268,18 @@ export class EmployeesService {
     }
     if (!row) {
       throw new NotFoundException('Self-tracked mailbox not found');
+    }
+
+    const r = row as { id: string; created_by: string | null; email: string };
+    if (ctx.role === 'HEAD') {
+      const norm = callerEmailNorm.trim().toLowerCase();
+      const ownsByCreator = ctx.userId != null && r.created_by === ctx.userId;
+      const ownsLegacy = !r.created_by && r.email.trim().toLowerCase() === norm;
+      if (!ownsByCreator && !ownsLegacy) {
+        throw new ForbiddenException(
+          'You can only remove self-tracked mailboxes you added (or your own legacy inbox row).',
+        );
+      }
     }
 
     const { error: delErr } = await this.supabase

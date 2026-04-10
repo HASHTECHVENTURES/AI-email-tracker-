@@ -7,7 +7,7 @@ import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 
 type Me = { role: string; company_name?: string | null };
 type Settings = {
@@ -319,10 +319,10 @@ export default function SettingsPage() {
       <AppShell
         role={me?.role ?? shellRoleHint ?? 'EMPLOYEE'}
         title="Settings"
-        subtitle="Loading…"
+        subtitle=""
         onSignOut={() => void ctxSignOut()}
       >
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }

@@ -8,7 +8,7 @@ import { useAuth } from '@/lib/auth-context';
 import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { PasswordInput } from '@/components/PasswordInput';
 
 type Me = {
@@ -98,6 +98,8 @@ function EmployeesPageInner() {
   }, []);
 
   const [addOpen, setAddOpen] = useState(false);
+  /** New portal login vs list another team’s manager here (same login; no new password). */
+  const [addMode, setAddMode] = useState<'new_portal_user' | 'existing_manager_roster'>('new_portal_user');
   const [addName, setAddName] = useState('');
   const [addEmail, setAddEmail] = useState('');
   const [addPassword, setAddPassword] = useState('');
@@ -435,6 +437,7 @@ function EmployeesPageInner() {
 
   function closeAddModal() {
     setAddOpen(false);
+    setAddMode('new_portal_user');
     setAddError(null);
     setAddSuccess(null);
     if (typeof window !== 'undefined' && window.location.search.includes('add=')) {
@@ -446,6 +449,47 @@ function EmployeesPageInner() {
     e.preventDefault();
     setAddError(null);
     setAddSuccess(null);
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session || !me) return;
+
+    const dep =
+      isDepartmentManagerRole(me.role) && me.department_id ? me.department_id : addDeptId.trim();
+
+    if (addMode === 'existing_manager_roster') {
+      const email = addEmail.trim().toLowerCase();
+      if (!email) {
+        setAddError('Enter the manager’s login email.');
+        return;
+      }
+      if (!dep) {
+        setAddError(isManager ? 'Your account has no department assigned.' : 'Select a department.');
+        return;
+      }
+      setAddSaving(true);
+      try {
+        const res = await apiFetch('/employees/add-secondary-team-roster', session.access_token, {
+          method: 'POST',
+          body: JSON.stringify({ managerEmail: email, departmentId: dep }),
+        });
+        const b = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setAddError((b.message as string) || 'Could not add them to this roster');
+          return;
+        }
+        setAddEmail('');
+        setAddSuccess(
+          'They stay a manager elsewhere and now appear on this team with the same login. Mail is still tracked once.',
+        );
+        await loadLists(session.access_token);
+      } finally {
+        setAddSaving(false);
+      }
+      return;
+    }
+
     if (addPassword.length < 8) {
       setAddError('Password must be at least 8 characters.');
       return;
@@ -454,13 +498,6 @@ function EmployeesPageInner() {
       setAddError('Passwords do not match.');
       return;
     }
-    const supabase = createClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session || !me) return;
-    const dep =
-      isDepartmentManagerRole(me.role) && me.department_id ? me.department_id : addDeptId.trim();
     if (!dep) {
       setAddError(isManager ? 'Your account has no department assigned.' : 'Select a department.');
       return;
@@ -506,10 +543,10 @@ function EmployeesPageInner() {
       <AppShell
         role={me?.role ?? shellRoleHint ?? 'EMPLOYEE'}
         title="Employees"
-        subtitle="Loading…"
+        subtitle=""
         onSignOut={() => void ctxSignOut()}
       >
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }
@@ -551,6 +588,7 @@ function EmployeesPageInner() {
           onClick={() => {
             setAddError(null);
             setAddSuccess(null);
+            setAddMode('new_portal_user');
             setAddOpen(true);
           }}
           className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95"
@@ -993,46 +1031,96 @@ function EmployeesPageInner() {
               {isManager ? 'Add team member' : 'Add employee'}
             </h3>
             <p className="mt-1 text-sm text-slate-500">
-              Work email and password for the employee portal.
+              {addMode === 'new_portal_user'
+                ? 'Create a new employee portal login for this team.'
+                : 'List someone who already manages another team—they keep one login; no new password.'}
             </p>
+            <div className="mt-4 flex rounded-xl border border-slate-200 bg-slate-50/80 p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setAddMode('new_portal_user');
+                  setAddError(null);
+                }}
+                className={`flex-1 rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                  addMode === 'new_portal_user'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                New hire (portal login)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAddMode('existing_manager_roster');
+                  setAddError(null);
+                }}
+                className={`flex-1 rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                  addMode === 'existing_manager_roster'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Manager from another team
+              </button>
+            </div>
             <form onSubmit={(e) => void submitAddEmployee(e)} className="mt-4 space-y-3">
               {addError ? <p className="text-sm text-red-600">{addError}</p> : null}
               {addSuccess ? <p className="text-sm text-emerald-700">{addSuccess}</p> : null}
-              <input
-                value={addName}
-                onChange={(e) => setAddName(e.target.value)}
-                placeholder="Full name"
-                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
-                required
-                autoFocus
-              />
+              {addMode === 'new_portal_user' ? (
+                <input
+                  value={addName}
+                  onChange={(e) => setAddName(e.target.value)}
+                  placeholder="Full name"
+                  className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                  required
+                  autoFocus
+                />
+              ) : (
+                <p className="rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs text-indigo-950">
+                  Use the <span className="font-medium">same email they use to sign in as a manager</span>. They stay a
+                  manager on their other team; this only adds them to{' '}
+                  {isManager ? (
+                    <span className="font-medium">{managerDepartmentName ?? 'your team'}</span>
+                  ) : (
+                    'the department you pick below'
+                  )}{' '}
+                  for visibility (no duplicate mail sync).
+                </p>
+              )}
               <input
                 type="email"
                 value={addEmail}
                 onChange={(e) => setAddEmail(e.target.value)}
-                placeholder="Work email"
+                placeholder={addMode === 'existing_manager_roster' ? 'Manager login email' : 'Work email'}
                 className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
                 required
                 autoComplete="off"
+                autoFocus={addMode === 'existing_manager_roster'}
               />
-              <PasswordInput
-                value={addPassword}
-                onChange={(e) => setAddPassword(e.target.value)}
-                placeholder="Password (min 8 characters)"
-                className="rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
-                required
-                minLength={8}
-                autoComplete="new-password"
-              />
-              <PasswordInput
-                value={addConfirm}
-                onChange={(e) => setAddConfirm(e.target.value)}
-                placeholder="Confirm password"
-                className="rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
-                required
-                minLength={8}
-                autoComplete="new-password"
-              />
+              {addMode === 'new_portal_user' ? (
+                <>
+                  <PasswordInput
+                    value={addPassword}
+                    onChange={(e) => setAddPassword(e.target.value)}
+                    placeholder="Password (min 8 characters)"
+                    className="rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                    required
+                    minLength={8}
+                    autoComplete="new-password"
+                  />
+                  <PasswordInput
+                    value={addConfirm}
+                    onChange={(e) => setAddConfirm(e.target.value)}
+                    placeholder="Confirm password"
+                    className="rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                    required
+                    minLength={8}
+                    autoComplete="new-password"
+                  />
+                </>
+              ) : null}
               {isManager ? (
                 <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                   Department:{' '}
@@ -1045,7 +1133,7 @@ function EmployeesPageInner() {
                   className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
                   required
                 >
-                  <option value="">Department</option>
+                  <option value="">{addMode === 'existing_manager_roster' ? 'List them on this team' : 'Department'}</option>
                   {departments.map((d) => (
                     <option key={d.id} value={d.id}>
                       {d.name}

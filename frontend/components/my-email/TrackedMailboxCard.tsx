@@ -103,9 +103,9 @@ export function TrackedMailboxCard({
               })}
             </>
           ) : (
-            <span className="text-amber-800">
-              No sync recorded yet — use <strong className="font-medium">Run sync now</strong> above or wait for the
-              automatic run.
+            <span className="text-slate-500">
+              Sync time appears after the next completed run for this inbox (or use{' '}
+              <strong className="font-medium text-slate-600">Run sync now</strong>).
             </span>
           )}
         </p>

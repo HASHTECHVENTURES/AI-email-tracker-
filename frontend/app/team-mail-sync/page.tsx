@@ -9,7 +9,7 @@ import { useAuth } from '@/lib/auth-context';
 import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 
 type TeamMailbox = {
   id: string;
@@ -164,8 +164,8 @@ function TeamMailSyncInner() {
 
   if (!me || authLoading) {
     return (
-      <AppShell role="HEAD" title="Team mail sync" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
-        <PageSkeleton />
+      <AppShell role="HEAD" title="Team mail sync" subtitle="" onSignOut={() => void ctxSignOut()}>
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }
@@ -198,7 +198,7 @@ function TeamMailSyncInner() {
       )}
 
       {loading ? (
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" dense />
       ) : (
         <section className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-card sm:p-6">
           <h2 className="text-lg font-bold text-slate-900">Employee mailboxes</h2>
@@ -288,9 +288,7 @@ export default function TeamMailSyncPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-surface">
-          <PageSkeleton />
-        </div>
+        <PortalPageLoader variant="fullscreen" />
       }
     >
       <TeamMailSyncInner />

@@ -11,7 +11,7 @@ import {
   type CeoScopeOrgEmployee,
   type CeoDeptDirectoryRow,
 } from '@/components/CeoDashboardScopePanel';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { TimeGreeting } from '@/components/TimeGreeting';
 
 const SCOPE_KEY = 'ai_et_ceo_dashboard_scope_v1';
@@ -151,10 +151,10 @@ export default function DashboardScopePage() {
       <AppShell
         role={shellRoleForLoading}
         title="Dashboard scope"
-        subtitle="Loading…"
+        subtitle=""
         onSignOut={() => void ctxSignOut()}
       >
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }

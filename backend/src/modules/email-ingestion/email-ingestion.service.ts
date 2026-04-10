@@ -378,6 +378,15 @@ export class EmailIngestionService {
         lastProcessedAt: new Date(),
         clearListProgress: true,
       });
+      /** Same as a full batch: run completed — record per-mailbox sync time (was missing; UI showed a false “no sync” warning). */
+      await this.supabase
+        .from('employees')
+        .update({
+          last_synced_at: new Date().toISOString(),
+          gmail_status: 'CONNECTED',
+        })
+        .eq('id', employee.id)
+        .eq('company_id', companyId);
       return {
         companyId,
         employeeId: employee.id,

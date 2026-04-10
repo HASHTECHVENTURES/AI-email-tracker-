@@ -85,7 +85,7 @@ export class SelfTrackingService {
   /**
    * CEO: self-tracked mailboxes (CEO-added) **plus** all TEAM org mailboxes — so manager-connected
    * mail in Employees / manager portal flows into the same CEO My Email dashboard.
-   * HEAD: department mailboxes only (same as Team list in Employees).
+   * HEAD: department TEAM mailboxes **plus** this manager’s own `SELF` rows (Connect my Gmail / any email they add).
    * EMPLOYEE: the single mailbox row linked to the portal login.
    * Sets `is_manager_mailbox` for CEO merged list only.
    */
@@ -94,7 +94,20 @@ export class SelfTrackingService {
     callerEmail: string,
   ): Promise<OrgEmployeeDto[]> {
     if (ctx.role === 'HEAD') {
-      return this.employeesService.listOrgEmployees(ctx);
+      const teamRows = await this.employeesService.listOrgEmployees(ctx);
+      const uid = ctx.userId;
+      if (!uid) {
+        return teamRows;
+      }
+      const selfRows = await this.employeesService.listSelfTrackedMailboxesForUser(
+        ctx.companyId,
+        uid,
+        callerEmail,
+      );
+      const byId = new Map<string, OrgEmployeeDto>();
+      for (const m of teamRows) byId.set(m.id, m);
+      for (const m of selfRows) byId.set(m.id, m);
+      return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
     }
     if (ctx.role === 'EMPLOYEE') {
       return this.employeesService.getLinkedPortalEmployeeMailbox(ctx);
@@ -110,12 +123,18 @@ export class SelfTrackingService {
       const indicators = await this.employeesService.getManagerMailboxIndicators(ctx.companyId);
       return merged.map((m) => {
         const em = m.email.trim().toLowerCase();
+        const createdBy = m.created_by ?? null;
         const is_manager_mailbox =
-          indicators.linkedEmployeeIds.has(m.id) || indicators.emailsNormalized.has(em);
+          indicators.linkedEmployeeIds.has(m.id) ||
+          indicators.emailsNormalized.has(em) ||
+          (m.mailbox_type === 'SELF' &&
+            createdBy != null &&
+            indicators.headUserIds.has(createdBy));
         return { ...m, is_manager_mailbox };
       });
     }
-    return selfRows.filter((m) => m.email === callerEmail);
+    const callerNorm = callerEmail.trim().toLowerCase();
+    return selfRows.filter((m) => m.email.trim().toLowerCase() === callerNorm);
   }
 
   async getDashboard(

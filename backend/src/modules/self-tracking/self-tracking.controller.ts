@@ -117,7 +117,11 @@ export class SelfTrackingController {
     if (!user) throw new UnauthorizedException();
     const ctx = getRequestContext(req);
     assertCanMutateSelfMailbox(ctx);
-    await this.employeesService.deleteSelfTrackedMailbox(ctx.companyId, id);
+    await this.employeesService.deleteSelfTrackedMailbox(
+      ctx,
+      id,
+      user.email?.trim().toLowerCase() ?? '',
+    );
     return { ok: true };
   }
 

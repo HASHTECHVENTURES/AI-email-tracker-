@@ -25,6 +25,8 @@ export type AuthMe = {
   department_id: string | null;
   managed_department_ids?: string[];
   managed_departments?: ManagedDepartment[];
+  /** `employees.id` when this login is linked to a mailbox row (managers & employee portal). */
+  linked_employee_id?: string | null;
 };
 
 function resolveManagerActiveDept(me: AuthMe): string | null {

@@ -52,6 +52,12 @@ export function apiUrl(path: string): string {
 /** Active team for department managers (HEAD). Sent on API requests when set in localStorage. */
 export const MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY = 'manager_active_department_id';
 
+/**
+ * When set to `1`, department managers with a linked mailbox scope API calls like the employee portal
+ * (`x-act-as-employee: 1`) on allowed routes only — see `actAsEmployeeHeader`.
+ */
+export const ACT_AS_EMPLOYEE_STORAGE_KEY = 'ai_et_act_as_employee_v1';
+
 function managerDepartmentHeader(): Record<string, string> {
   if (typeof window === 'undefined') return {};
   try {
@@ -60,6 +66,48 @@ function managerDepartmentHeader(): Record<string, string> {
     return { 'x-manager-department-id': v };
   } catch {
     return {};
+  }
+}
+
+/** HEAD + employee view: only on routes that should use mailbox/employee scope (not e.g. /employees POST). */
+function actAsEmployeeHeader(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    if (sessionStorage.getItem(ACT_AS_EMPLOYEE_STORAGE_KEY) !== '1') return {};
+    const p = window.location.pathname;
+    const allowed =
+      p === '/dashboard' ||
+      p === '/messages' ||
+      p.startsWith('/conversation/') ||
+      p.startsWith('/dashboard/');
+    if (!allowed) return {};
+    return { 'x-act-as-employee': '1' };
+  } catch {
+    return {};
+  }
+}
+
+export function readActAsEmployeeViewEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return sessionStorage.getItem(ACT_AS_EMPLOYEE_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** Toggle mailbox (employee) view for department managers with a linked employee row. */
+export function setActAsEmployeeView(enabled: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (enabled) {
+      sessionStorage.setItem(ACT_AS_EMPLOYEE_STORAGE_KEY, '1');
+    } else {
+      sessionStorage.removeItem(ACT_AS_EMPLOYEE_STORAGE_KEY);
+    }
+    window.dispatchEvent(new Event('ai-et-act-as-changed'));
+  } catch {
+    /* ignore */
   }
 }
 
@@ -82,6 +130,7 @@ export async function apiFetch(path: string, accessToken: string, init?: Request
       cache,
       headers: {
         ...managerDepartmentHeader(),
+        ...actAsEmployeeHeader(),
         ...init?.headers,
         Authorization: `Bearer ${accessToken}`,
         ...(init?.body && typeof init.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
@@ -99,13 +148,25 @@ export async function apiFetch(path: string, accessToken: string, init?: Request
 /** Shown when fetch() throws (CORS, connection refused, mixed content, offline). */
 export function formatNetworkFetchFailureMessage(): string {
   const base = apiBase();
-  const proxyHint =
+  const isLocal =
     typeof window !== 'undefined' &&
-    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-      ? ' Restart `next dev` after changing env. Local dev uses /api-backend → Nest :3000 when NEXT_PUBLIC_API_URL is localhost. '
-      : ' ';
+    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  const portClash =
+    isLocal &&
+    (base === 'http://localhost:3000' || base === 'http://127.0.0.1:3000') &&
+    window.location.port === '3000';
+  const proxyHint = isLocal
+    ? ' Restart `next dev` after changing env. With NEXT_PUBLIC_USE_LOCAL_API_PROXY=1, requests use /api-backend → Nest :3000. '
+    : ' ';
+  const monorepoHint =
+    isLocal && !portClash
+      ? ' From the repo root, `npm run dev` starts Nest on :3000 and Next on :3001. If you only start the frontend, run `npm run start:dev` in the backend folder in another terminal. '
+      : '';
+  const portHint = portClash
+    ? ' This app is on port 3000 but the API URL is also :3000 — Nest cannot share that port. Run Next on 3001 (`npm run dev` in frontend/ or `npm run dev` from repo root). '
+    : '';
   return (
-    `Could not reach the API (${base}). Start the backend (e.g. npm run start:dev on port 3000).${proxyHint}` +
+    `Could not reach the API (${base}). Start the backend (e.g. npm run start:dev in backend/ on port 3000).${monorepoHint}${portHint}${proxyHint}` +
     `Set NEXT_PUBLIC_API_URL in .env.local to your Nest URL (e.g. http://localhost:3000). If the app is https, the API must be https too (not http://localhost).`
   );
 }
@@ -126,6 +187,7 @@ export async function apiPostSse(
       method: 'POST',
       headers: {
         ...managerDepartmentHeader(),
+        ...actAsEmployeeHeader(),
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },

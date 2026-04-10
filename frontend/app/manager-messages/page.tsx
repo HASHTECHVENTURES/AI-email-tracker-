@@ -6,7 +6,7 @@ import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 import Link from 'next/link';
 
 type SentItem = {
@@ -207,8 +207,8 @@ export default function ManagerMessagesPage() {
 
   if (!me || authLoading) {
     return (
-      <AppShell role="HEAD" title="Conversations" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
-        <PageSkeleton />
+      <AppShell role="HEAD" title="Conversations" subtitle="" onSignOut={() => void ctxSignOut()}>
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }
@@ -234,7 +234,7 @@ export default function ManagerMessagesPage() {
       </div>
 
       {loading ? (
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" dense />
       ) : items.length === 0 ? (
         <section className="rounded-2xl border border-dashed border-slate-200 bg-surface-card p-10 text-center shadow-card">
           <p className="text-sm text-slate-600">Nothing sent yet. Open <span className="font-semibold text-slate-800">Alerts</span> and pick a teammate.</p>

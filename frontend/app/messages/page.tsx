@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { apiFetch, readApiErrorMessage } from '@/lib/api';
+import { apiFetch, readActAsEmployeeViewEnabled, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { TeamAlertReplyModal } from '@/components/TeamAlertReplyModal';
 
 type Me = {
@@ -138,7 +139,12 @@ export default function MessagesPage() {
       router.replace('/admin');
       return;
     }
-    if (authMe.role !== 'EMPLOYEE') {
+    const allowEmployeeMessages =
+      authMe.role === 'EMPLOYEE' ||
+      (isDepartmentManagerRole(authMe.role) &&
+        !!authMe.linked_employee_id?.trim() &&
+        readActAsEmployeeViewEnabled());
+    if (!allowEmployeeMessages) {
       router.replace('/dashboard');
       return;
     }
@@ -208,8 +214,8 @@ export default function MessagesPage() {
 
   if (!me || authLoading) {
     return (
-      <AppShell role="EMPLOYEE" title="Messages & alerts" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
-        <PageSkeleton />
+      <AppShell role="EMPLOYEE" title="Messages & alerts" subtitle="" onSignOut={() => void ctxSignOut()}>
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }
@@ -243,7 +249,7 @@ export default function MessagesPage() {
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
 
       {loading ? (
-        <p className="text-sm text-gray-500">Loading…</p>
+        <PortalPageLoader variant="embedded" dense />
       ) : (
         <section id="manager-alerts-new" className="grid gap-4 scroll-mt-24 lg:grid-cols-[320px_minmax(0,1fr)]">
           <aside className="rounded-2xl border border-slate-200/70 bg-white shadow-card">

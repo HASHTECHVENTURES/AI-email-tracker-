@@ -7,7 +7,7 @@ import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { PasswordInput } from '@/components/PasswordInput';
 
 type Me = {
@@ -66,6 +66,12 @@ export default function DepartmentsPage() {
   const [alertError, setAlertError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [deletingDeptId, setDeletingDeptId] = useState<string | null>(null);
+  const [convertEmail, setConvertEmail] = useState('');
+  const [convertDeptId, setConvertDeptId] = useState('');
+  const [convertSaving, setConvertSaving] = useState(false);
+  const [secondaryRosterEmail, setSecondaryRosterEmail] = useState('');
+  const [secondaryRosterDeptId, setSecondaryRosterDeptId] = useState('');
+  const [secondaryRosterSaving, setSecondaryRosterSaving] = useState(false);
 
   const load = useCallback(async (token: string) => {
     const res = await apiFetch('/departments', token);
@@ -283,6 +289,79 @@ export default function DepartmentsPage() {
     await load(token);
   }
 
+  async function submitConvertManagerToEmployee(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setNotice(null);
+    if (!token) return;
+    const email = convertEmail.trim().toLowerCase();
+    if (!email || !convertDeptId) {
+      setError('Manager email and target team are required');
+      return;
+    }
+    if (
+      !window.confirm(
+        'This removes them as a department manager and makes them an employee on the team you pick. They keep the same login email and password.',
+      )
+    ) {
+      return;
+    }
+    setConvertSaving(true);
+    try {
+      const res = await apiFetch('/employees/convert-manager-to-employee', token, {
+        method: 'POST',
+        body: JSON.stringify({ email, targetDepartmentId: convertDeptId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError((body.message as string) || 'Could not update this user');
+        return;
+      }
+      const deptName = (body as { departmentName?: string }).departmentName ?? 'the team';
+      setConvertEmail('');
+      setConvertDeptId('');
+      setNotice(
+        `They can now sign in at the employee portal with the same account. Placed under ${deptName}.`,
+      );
+      await load(token);
+    } finally {
+      setConvertSaving(false);
+    }
+  }
+
+  async function submitSecondaryTeamRoster(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setNotice(null);
+    if (!token) return;
+    const email = secondaryRosterEmail.trim().toLowerCase();
+    if (!email || !secondaryRosterDeptId) {
+      setError('Manager email and team are required');
+      return;
+    }
+    setSecondaryRosterSaving(true);
+    try {
+      const res = await apiFetch('/employees/add-secondary-team-roster', token, {
+        method: 'POST',
+        body: JSON.stringify({ managerEmail: email, departmentId: secondaryRosterDeptId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError((body.message as string) || 'Could not add roster entry');
+        return;
+      }
+      const deptName = (body as { department_name?: string }).department_name ?? 'that team';
+      setSecondaryRosterEmail('');
+      setSecondaryRosterDeptId('');
+      setNotice(
+        `They stay a manager on their own team(s) and now also appear under ${deptName} with the same login. Mail is still tracked once (primary mailbox).`,
+      );
+      await load(token);
+    } finally {
+      setSecondaryRosterSaving(false);
+    }
+  }
+
   async function handleManagerPasswordReset(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -316,10 +395,10 @@ export default function DepartmentsPage() {
       <AppShell
         role={me?.role ?? shellRoleHint ?? 'EMPLOYEE'}
         title="Departments"
-        subtitle="Loading…"
+        subtitle=""
         onSignOut={() => void ctxSignOut()}
       >
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }
@@ -429,6 +508,89 @@ export default function DepartmentsPage() {
               className="min-h-[48px] w-full rounded-lg bg-gray-900 px-5 text-sm font-medium text-white transition-all duration-200 hover:bg-black hover:shadow-md sm:w-auto sm:self-start"
             >
               Assign Manager
+            </button>
+          </form>
+        </section>
+      ) : null}
+
+      {isCeo ? (
+        <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
+          <h2 className="text-base font-semibold text-slate-900">Manager + also on another team</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Example: keep someone as <span className="font-medium text-slate-700">support manager</span> and also list them
+            on <span className="font-medium text-slate-700">tech</span> under Sudhir. Same login and password; email is
+            still ingested once (no duplicate tracking).
+          </p>
+          <form onSubmit={(e) => void submitSecondaryTeamRoster(e)} className="mt-4 flex max-w-xl flex-col gap-3">
+            <input
+              type="email"
+              value={secondaryRosterEmail}
+              onChange={(e) => setSecondaryRosterEmail(e.target.value)}
+              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+              placeholder="Manager’s login email"
+              required
+              autoComplete="off"
+            />
+            <select
+              value={secondaryRosterDeptId}
+              onChange={(e) => setSecondaryRosterDeptId(e.target.value)}
+              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+              required
+            >
+              <option value="">Also show them on this team’s roster</option>
+              {rows.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              disabled={secondaryRosterSaving}
+              className="min-h-[48px] w-full rounded-lg bg-indigo-600 px-5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50 sm:w-auto sm:self-start"
+            >
+              {secondaryRosterSaving ? 'Saving…' : 'Add to team roster'}
+            </button>
+          </form>
+        </section>
+      ) : null}
+
+      {isCeo ? (
+        <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
+          <h2 className="text-base font-semibold text-slate-900">Manager → employee portal only</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Use only when they should <span className="font-medium text-slate-700">stop managing</span> and use the same
+            login as a normal employee on one team (same email and password).
+          </p>
+          <form onSubmit={(e) => void submitConvertManagerToEmployee(e)} className="mt-4 flex max-w-xl flex-col gap-3">
+            <input
+              type="email"
+              value={convertEmail}
+              onChange={(e) => setConvertEmail(e.target.value)}
+              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+              placeholder="Manager’s login email (e.g. karmaterra427@gmail.com)"
+              required
+              autoComplete="off"
+            />
+            <select
+              value={convertDeptId}
+              onChange={(e) => setConvertDeptId(e.target.value)}
+              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+              required
+            >
+              <option value="">Team they join as employee</option>
+              {rows.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              disabled={convertSaving}
+              className="min-h-[48px] w-full rounded-lg border border-amber-200 bg-amber-50 px-5 text-sm font-medium text-amber-950 transition hover:bg-amber-100 disabled:opacity-50 sm:w-auto sm:self-start"
+            >
+              {convertSaving ? 'Updating…' : 'Move to employee portal'}
             </button>
           </form>
         </section>

@@ -95,7 +95,7 @@ export class TeamAlertsService {
   }
 
   async replyFromEmployee(ctx: RequestContext, employeeUserId: string, parentAlertId: string, message: string) {
-    if (ctx.role !== 'EMPLOYEE' || !ctx.employeeId) {
+    if ((ctx.role !== 'EMPLOYEE' && !ctx.actAsEmployeePortal) || !ctx.employeeId) {
       throw new ForbiddenException('Only employees can reply from the portal');
     }
     const body = message.trim();
@@ -301,7 +301,7 @@ export class TeamAlertsService {
   }
 
   async listForEmployee(ctx: RequestContext): Promise<{ items: TeamAlertDto[]; unread_count: number }> {
-    if (ctx.role !== 'EMPLOYEE' || !ctx.employeeId) {
+    if ((ctx.role !== 'EMPLOYEE' && !ctx.actAsEmployeePortal) || !ctx.employeeId) {
       throw new ForbiddenException('Only employees can load their manager alerts here');
     }
 
@@ -390,7 +390,7 @@ export class TeamAlertsService {
   }
 
   async markRead(ctx: RequestContext, alertId: string) {
-    if (ctx.role !== 'EMPLOYEE' || !ctx.employeeId) {
+    if ((ctx.role !== 'EMPLOYEE' && !ctx.actAsEmployeePortal) || !ctx.employeeId) {
       throw new ForbiddenException();
     }
 
@@ -437,7 +437,7 @@ export class TeamAlertsService {
 
     const inReplyTo = (row as { in_reply_to?: string | null }).in_reply_to ?? null;
 
-    if (ctx.role === 'EMPLOYEE') {
+    if (ctx.role === 'EMPLOYEE' || ctx.actAsEmployeePortal) {
       if (!ctx.employeeId || row.employee_id !== ctx.employeeId) {
         throw new ForbiddenException('You can only delete alerts on your own inbox');
       }

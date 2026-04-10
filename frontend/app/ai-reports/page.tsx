@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 
 type Me = {
   id: string;
@@ -250,10 +250,10 @@ export default function AiReportsPage() {
       <AppShell
         role={me?.role ?? shellRoleHint ?? 'EMPLOYEE'}
         title="Reports"
-        subtitle="Loading…"
+        subtitle=""
         onSignOut={() => void ctxSignOut()}
       >
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }

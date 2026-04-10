@@ -55,14 +55,18 @@ export class DashboardController {
       u.role === 'CEO' && filterEmployeeIdsRaw?.trim()
         ? [...new Set(filterEmployeeIdsRaw.split(',').map((s) => s.trim()).filter(Boolean))]
         : undefined;
+    const actAs = ctx.actAsEmployeePortal === true;
+    const effectiveRole = actAs ? 'EMPLOYEE' : u.role;
     return this.dashboardService.getDashboard(
       ctx.companyId,
       {
-        departmentId: ctx.role === 'HEAD' ? ctx.departmentId : undefined,
-        employeeId: ctx.role === 'EMPLOYEE' ? ctx.employeeId : undefined,
-        role: u.role,
+        departmentId: actAs || u.role !== 'HEAD' ? undefined : ctx.departmentId,
+        employeeId:
+          u.role === 'EMPLOYEE' || actAs ? ctx.employeeId : undefined,
+        role: effectiveRole,
+        userId: u.id,
       },
-      u.role === 'EMPLOYEE'
+      actAs || u.role === 'EMPLOYEE'
         ? { status, priority }
         : {
             status,
@@ -97,10 +101,12 @@ export class DashboardController {
     @Query('lifecycle') lifecycle?: string,
   ) {
     const ctx = getRequestContext(req);
+    const actAs = ctx.actAsEmployeePortal === true;
     const conversations = await this.dashboardService.getConversationsList({
       companyId: ctx.companyId,
-      departmentId: ctx.role === 'HEAD' ? ctx.departmentId : undefined,
-      employeeId: ctx.role === 'EMPLOYEE' ? ctx.employeeId : employeeId,
+      departmentId: actAs || ctx.role !== 'HEAD' ? undefined : ctx.departmentId,
+      employeeId:
+        ctx.role === 'EMPLOYEE' || actAs ? ctx.employeeId : employeeId,
       status,
       priority,
       lifecycle,

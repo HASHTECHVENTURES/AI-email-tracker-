@@ -6,7 +6,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { Badge } from '@/components/Badge';
 import { ConversationThreadReader, type ThreadMessageDto } from '@/components/ConversationThreadReader';
 
@@ -137,7 +137,7 @@ function ConversationReadPageInner() {
         subtitle=""
         onSignOut={() => void ctxSignOut()}
       >
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }
@@ -220,7 +220,7 @@ function ConversationReadPageInner() {
         ) : null}
 
         {!payload && !loadError ? (
-          <PageSkeleton />
+          <PortalPageLoader variant="embedded" dense />
         ) : null}
 
         {t && payload ? (
@@ -280,7 +280,9 @@ function ConversationReadPageInner() {
 
 export default function ConversationReadPage() {
   return (
-    <Suspense fallback={<PageSkeleton />}>
+    <Suspense
+      fallback={<PortalPageLoader variant="fullscreen" />}
+    >
       <ConversationReadPageInner />
     </Suspense>
   );

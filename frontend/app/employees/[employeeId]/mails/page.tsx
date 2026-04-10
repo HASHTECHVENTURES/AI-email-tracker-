@@ -6,7 +6,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { conversationReadPath } from '@/lib/conversation-read';
 
 type EmployeeMessage = {
@@ -90,7 +90,7 @@ export default function EmployeeMailsPage() {
         subtitle=""
         onSignOut={() => void ctxSignOut()}
       >
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }
@@ -135,7 +135,7 @@ export default function EmployeeMailsPage() {
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>
       ) : null}
 
-      {messages === null ? <PageSkeleton /> : null}
+      {messages === null ? <PortalPageLoader variant="embedded" dense /> : null}
 
       {messages && threads.length === 0 && !error ? (
         <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-600">

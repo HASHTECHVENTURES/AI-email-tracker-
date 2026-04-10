@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
-import { PageSkeleton } from '@/components/PageSkeleton';
+import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { PasswordInput } from '@/components/PasswordInput';
 
 type Stats = {
@@ -228,10 +228,10 @@ export default function PlatformAdminPage() {
       <AppShell
         role="PLATFORM_ADMIN"
         title="Platform admin"
-        subtitle="Loading…"
+        subtitle=""
         onSignOut={() => void signOut()}
       >
-        <PageSkeleton />
+        <PortalPageLoader variant="embedded" />
       </AppShell>
     );
   }

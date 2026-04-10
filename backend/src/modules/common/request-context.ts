@@ -5,14 +5,27 @@ import { EmployeeRole } from './types';
 export interface RequestContext {
   companyId: string;
   role: EmployeeRole;
+  /** Authenticated `users.id` (tenant). Required for manager-scoped self-tracked mailboxes. */
+  userId?: string;
   employeeId?: string;
   departmentId?: string;
+  /**
+   * HEAD user requested employee-portal scope (`x-act-as-employee: 1`) and has `linked_employee_id`.
+   * APIs that scope by mailbox use `employeeId` like EMPLOYEE; role stays HEAD for authorization that checks it.
+   */
+  actAsEmployeePortal?: boolean;
 }
 
 function readManagerActiveDepartmentHeader(req: Request): string | undefined {
   const raw = req.headers['x-manager-department-id'];
   const v = Array.isArray(raw) ? raw[0] : raw;
   return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+}
+
+function readActAsEmployeeHeader(req: Request): boolean {
+  const raw = req.headers['x-act-as-employee'];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  return v === '1' || String(v).toLowerCase() === 'true';
 }
 
 /**
@@ -58,11 +71,23 @@ export function getRequestContext(req: Request): RequestContext {
     }
   }
 
+  const actAsEmployeePortal =
+    user.role === 'HEAD' && readActAsEmployeeHeader(req) && !!user.linkedEmployeeId?.trim();
+
+  let employeeId: string | undefined;
+  if (user.role === 'EMPLOYEE') {
+    employeeId = user.linkedEmployeeId ?? undefined;
+  } else if (actAsEmployeePortal) {
+    employeeId = user.linkedEmployeeId ?? undefined;
+  }
+
   return {
     companyId: user.companyId,
     role: user.role,
-    employeeId: user.role === 'EMPLOYEE' ? user.linkedEmployeeId ?? undefined : undefined,
+    userId: user.id,
+    employeeId,
     departmentId,
+    actAsEmployeePortal,
   };
 }
 
@@ -73,7 +98,18 @@ export function enforceConversationAccess(
   if (row.company_id !== ctx.companyId) {
     throw new ForbiddenException('Conversation does not belong to your company');
   }
-  if (ctx.role === 'HEAD' && ctx.departmentId && row.department_id !== ctx.departmentId) {
+  if (ctx.actAsEmployeePortal && ctx.employeeId) {
+    if (row.employee_id !== ctx.employeeId) {
+      throw new ForbiddenException('Conversation is outside your employee scope');
+    }
+    return;
+  }
+  if (
+    ctx.role === 'HEAD' &&
+    ctx.departmentId &&
+    row.department_id != null &&
+    row.department_id !== ctx.departmentId
+  ) {
     throw new ForbiddenException('Conversation is outside your department scope');
   }
   if (ctx.role === 'EMPLOYEE' && ctx.employeeId && row.employee_id !== ctx.employeeId) {

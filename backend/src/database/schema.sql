@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS employees (
     'alerts',
     'mailer-daemon'
   ],
-  UNIQUE (email, company_id)
+  roster_duplicate BOOLEAN NOT NULL DEFAULT FALSE,
+  UNIQUE (email, company_id, department_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_employees_company_id ON employees (company_id);
