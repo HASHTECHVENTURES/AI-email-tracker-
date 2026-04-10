@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { EmployeesModule } from '../employees/employees.module';
 import { ConversationsModule } from '../conversations/conversations.module';
@@ -12,7 +12,14 @@ import { EmailIngestionController } from './email-ingestion.controller';
 import { IngestionCronService } from './ingestion-cron.service';
 
 @Module({
-  imports: [AuthModule, EmployeesModule, ConversationsModule, SettingsModule, DashboardModule, CompanyPolicyModule],
+  imports: [
+    AuthModule,
+    EmployeesModule,
+    ConversationsModule,
+    SettingsModule,
+    forwardRef(() => DashboardModule),
+    CompanyPolicyModule,
+  ],
   controllers: [EmailIngestionController],
   providers: [supabaseProvider, GmailService, EmailIngestionService, IngestionCronService],
   exports: [EmailIngestionService, GmailService],

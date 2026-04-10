@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SupabaseClient } from '@supabase/supabase-js';
@@ -107,6 +108,7 @@ export class EmailIngestionService {
     private readonly oauthTokenService: OauthTokenService,
     private readonly conversationsService: ConversationsService,
     private readonly settingsService: SettingsService,
+    @Inject(forwardRef(() => DashboardService))
     private readonly dashboardService: DashboardService,
     private readonly companyPolicyService: CompanyPolicyService,
   ) {

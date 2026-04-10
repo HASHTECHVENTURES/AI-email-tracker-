@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { supabaseProvider } from '../common/supabase.provider';
 import { DashboardService } from './dashboard.service';
 import { DashboardController } from './dashboard.controller';
@@ -10,7 +10,13 @@ import { CompanyPolicyModule } from '../company-policy/company-policy.module';
 import { SelfTrackingModule } from '../self-tracking/self-tracking.module';
 
 @Module({
-  imports: [EmailModule, EmployeesModule, SettingsModule, CompanyPolicyModule, SelfTrackingModule],
+  imports: [
+    EmailModule,
+    EmployeesModule,
+    SettingsModule,
+    CompanyPolicyModule,
+    forwardRef(() => SelfTrackingModule),
+  ],
   controllers: [DashboardController],
   providers: [supabaseProvider, DashboardService, TelegramService],
   exports: [DashboardService],

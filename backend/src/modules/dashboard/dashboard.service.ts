@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
@@ -171,6 +171,7 @@ export class DashboardService {
     private readonly emailService: EmailService,
     private readonly settingsService: SettingsService,
     private readonly companyPolicyService: CompanyPolicyService,
+    @Inject(forwardRef(() => SelfTrackingService))
     private readonly selfTrackingService: SelfTrackingService,
   ) {
     const apiKey = process.env.GEMINI_API_KEY;
