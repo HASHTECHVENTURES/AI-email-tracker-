@@ -332,6 +332,40 @@ export class DashboardService {
     return out;
   }
 
+  /**
+   * CEO picked both department(s) and extra employee mailboxes — union thread lists (not intersection).
+   */
+  private async mergeCeoScopedConversations(
+    companyId: string,
+    filters: { status?: string; priority?: string } | undefined,
+    departmentIds: string[],
+    employeeIds: string[],
+  ): Promise<ConversationListItem[]> {
+    const [byDept, byEmp] = await Promise.all([
+      this.getConversationsList({
+        companyId,
+        departmentIds,
+        status: filters?.status,
+        priority: filters?.priority,
+      }),
+      this.getConversationsList({
+        companyId,
+        employeeIds,
+        status: filters?.status,
+        priority: filters?.priority,
+      }),
+    ]);
+    const seen = new Set<string>();
+    const out: ConversationListItem[] = [];
+    for (const c of [...byDept, ...byEmp]) {
+      if (seen.has(c.conversation_id)) continue;
+      seen.add(c.conversation_id);
+      out.push(c);
+    }
+    out.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+    return out;
+  }
+
   async getConversationsList(filters: ConversationFilters): Promise<ConversationListItem[]> {
     let query = this.supabase
       .from('conversations')
@@ -843,7 +877,7 @@ ${dataBlock}`;
   ): Promise<CeoDepartmentRollup[]> {
     const { data: convoRows, error: cErr } = await this.supabase
       .from('conversations')
-      .select('department_id, employee_id, follow_up_status, priority')
+      .select('conversation_id, department_id, employee_id, follow_up_status, priority')
       .eq('company_id', companyId)
       .eq('is_ignored', false);
     if (cErr) {
@@ -851,12 +885,15 @@ ${dataBlock}`;
       return [];
     }
 
-    let raw = (convoRows ?? []) as Array<{
+    type RawAggRow = {
+      conversation_id: string;
       department_id: string | null;
       employee_id: string;
       follow_up_status: string;
       priority: string;
-    }>;
+    };
+
+    let raw = (convoRows ?? []) as RawAggRow[];
 
     const normDept = (d: string | null | undefined): string | null => {
       if (d == null) return null;
@@ -879,18 +916,35 @@ ${dataBlock}`;
       }
     }
 
-    if (filterDepartmentIds && filterDepartmentIds.length > 0) {
-      const allowDept = new Set(filterDepartmentIds);
-      raw = raw.filter((r) => {
-        const fromConv = normDept(r.department_id);
-        const fromEmp = normDept(empDeptById.get(r.employee_id) ?? null);
-        const eff = fromConv ?? fromEmp ?? null;
-        return eff != null && allowDept.has(eff);
-      });
-    }
+    const deptFilterFn = (r: RawAggRow, allowDept: Set<string>): boolean => {
+      const fromConv = normDept(r.department_id);
+      const fromEmp = normDept(empDeptById.get(r.employee_id) ?? null);
+      const eff = fromConv ?? fromEmp ?? null;
+      return eff != null && allowDept.has(eff);
+    };
 
-    if (filterEmployeeIds && filterEmployeeIds.length > 0) {
-      const allow = new Set(filterEmployeeIds);
+    /**
+     * Manager scope + employee scope together means UNION (team OR selected mailboxes), not intersection.
+     */
+    if (filterDepartmentIds?.length && filterEmployeeIds?.length) {
+      const allowDept = new Set(filterDepartmentIds);
+      const { expandedIds } = await this.employeesService.getEmployeeAliasMapping(companyId, filterEmployeeIds);
+      const allowEmp = new Set(expandedIds);
+      const byDept = raw.filter((r) => deptFilterFn(r, allowDept));
+      const byEmp = raw.filter((r) => allowEmp.has(r.employee_id));
+      const seen = new Set<string>();
+      raw = [];
+      for (const row of [...byDept, ...byEmp]) {
+        if (seen.has(row.conversation_id)) continue;
+        seen.add(row.conversation_id);
+        raw.push(row);
+      }
+    } else if (filterDepartmentIds && filterDepartmentIds.length > 0) {
+      const allowDept = new Set(filterDepartmentIds);
+      raw = raw.filter((r) => deptFilterFn(r, allowDept));
+    } else if (filterEmployeeIds && filterEmployeeIds.length > 0) {
+      const { expandedIds } = await this.employeesService.getEmployeeAliasMapping(companyId, filterEmployeeIds);
+      const allow = new Set(expandedIds);
       raw = raw.filter((r) => allow.has(r.employee_id));
     }
 
@@ -1102,17 +1156,26 @@ ${dataBlock}`;
         ? this.getCeoDepartmentRollups(companyId, ceoDeptIdsRaw, ceoEmployeeIds)
         : Promise.resolve(undefined);
 
+    const ceoUnionDeptAndEmployees =
+      scope.role === 'CEO' &&
+      Boolean(ceoDeptIdsRaw?.length) &&
+      Boolean(ceoEmployeeIds?.length);
+
+    const conversationsPromise = ceoUnionDeptAndEmployees
+      ? this.mergeCeoScopedConversations(companyId, filters, ceoDeptIdsRaw!, ceoEmployeeIds!)
+      : this.getConversationsList({
+          companyId,
+          departmentId: scopedDepartmentIdHead,
+          departmentIds: scope.role === 'CEO' ? ceoDeptIdsRaw : undefined,
+          employeeId: filterEmployee,
+          employeeIds: ceoEmployeeIds,
+          status: filters?.status,
+          priority: filters?.priority,
+        });
+
     const [report, all, onboarding, employeeFilterOptions, ceo_department_rollups, actorEmployeeId] = await Promise.all([
       reportPromise,
-      this.getConversationsList({
-        companyId,
-        departmentId: scopedDepartmentIdHead,
-        departmentIds: scope.role === 'CEO' ? ceoDeptIdsRaw : undefined,
-        employeeId: filterEmployee,
-        employeeIds: ceoEmployeeIds,
-        status: filters?.status,
-        priority: filters?.priority,
-      }),
+      conversationsPromise,
       this.getOnboardingSnapshot(companyId),
       scope.role === 'EMPLOYEE'
         ? Promise.resolve(
@@ -1123,7 +1186,12 @@ ${dataBlock}`;
               is_manager: boolean;
             }[],
           )
-        : this.getEmployeeFilterOptions(companyId, undefined, scope.role === 'CEO' ? ceoDeptIdsRaw : undefined),
+        : this.getEmployeeFilterOptions(
+            companyId,
+            undefined,
+            scope.role === 'CEO' ? ceoDeptIdsRaw : undefined,
+            scope.role === 'CEO' ? ceoEmployeeIds : undefined,
+          ),
       rollupsPromise,
       scope.role === 'EMPLOYEE' || !actorEmail
         ? Promise.resolve<string | null>(null)
@@ -1237,6 +1305,8 @@ ${dataBlock}`;
     companyId: string,
     departmentId?: string,
     departmentIds?: string[],
+    /** CEO scope: always include these mailbox ids so the client does not drop out-of-department picks. */
+    alsoIncludeEmployeeIds?: string[],
   ): Promise<
     { id: string; name: string; department_name: string | null; is_manager: boolean }[]
   > {
@@ -1295,7 +1365,7 @@ ${dataBlock}`;
       }
     }
     type EmpRow = { id: string; name: string; email: string; department_id: string };
-    return ((data ?? []) as EmpRow[]).map((e) => {
+    const mapRow = (e: EmpRow) => {
       const em = (e.email ?? '').trim().toLowerCase();
       const dn = e.department_id ? (deptNameById.get(e.department_id) ?? null) : null;
       const is_manager = Boolean(
@@ -1308,7 +1378,25 @@ ${dataBlock}`;
         department_name: dn,
         is_manager,
       };
-    });
+    };
+    const base = ((data ?? []) as EmpRow[]).map(mapRow);
+    const byId = new Map(base.map((r) => [r.id, r]));
+    const extraIds = [...new Set((alsoIncludeEmployeeIds ?? []).filter(Boolean))].filter((id) => !byId.has(id));
+    if (extraIds.length === 0) return base;
+    const { data: extraRows, error: extraErr } = await this.supabase
+      .from('employees')
+      .select('id, name, email, department_id')
+      .eq('company_id', companyId)
+      .in('id', extraIds)
+      .or('mailbox_type.is.null,mailbox_type.eq.TEAM');
+    if (extraErr) {
+      this.logger.warn(`getEmployeeFilterOptions extra: ${extraErr.message}`);
+      return base;
+    }
+    for (const e of (extraRows ?? []) as EmpRow[]) {
+      byId.set(e.id, mapRow(e));
+    }
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
   private async getOnboardingSnapshot(companyId: string): Promise<{

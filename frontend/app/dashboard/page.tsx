@@ -699,31 +699,64 @@ export default function DashboardPage() {
   const historicalSearchCard =
     historicalRuns.length > 0 ? (
       <section className={cardClass}>
-        <div className="mb-4 border-b border-slate-100 pb-4">
+        <div className="mb-5 border-b border-slate-100 pb-4">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">My Email</p>
           <h2 className="mt-1 text-lg font-bold text-slate-950">Historical search log</h2>
           <p className="mt-1 text-sm text-slate-600">
-            Recent Gmail date-range runs you saved. Open one in My Email to see threads for that window.
+            Saved Gmail windows — bar length shows how many threads were captured in each run (relative to the
+            largest in this list).
           </p>
         </div>
-        <ul className="space-y-2">
-          {historicalRuns.map((r) => (
-            <li key={r.id}>
-              <Link
-                href={`/my-email?historicalRun=${encodeURIComponent(r.id)}`}
-                className="block rounded-xl border border-slate-100 bg-slate-50/50 px-4 py-3 text-sm transition hover:border-brand-200 hover:bg-white"
-              >
-                <span className="font-medium text-slate-900">{r.report_summary}</span>
-                <span className="mt-1 block text-xs text-slate-500">
-                  Saved {new Date(r.created_at).toLocaleString()}
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
+        {(() => {
+          const maxThreads = Math.max(1, ...historicalRuns.map((r) => Number(r.conversation_count ?? 0)));
+          return (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {historicalRuns.map((r) => {
+                const n = Number(r.conversation_count ?? 0);
+                const barPct = Math.round((n / maxThreads) * 100);
+                return (
+                  <Link
+                    key={r.id}
+                    href={`/my-email?historicalRun=${encodeURIComponent(r.id)}`}
+                    className="group relative flex flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-50/90 p-4 shadow-sm transition hover:border-brand-300 hover:shadow-md"
+                  >
+                    <div
+                      className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-brand-500 to-violet-600 opacity-90"
+                      aria-hidden
+                    />
+                    <div className="pl-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Mailbox</p>
+                      <p className="mt-0.5 line-clamp-2 text-sm font-semibold text-slate-900">{r.mailbox_name}</p>
+                      <p className="mt-2 text-[11px] leading-snug text-slate-500">{r.report_summary}</p>
+                      <div className="mt-3 flex items-end justify-between gap-2">
+                        <div>
+                          <p className="text-2xl font-bold tabular-nums text-slate-950">{n}</p>
+                          <p className="text-[10px] font-medium uppercase text-slate-400">threads</p>
+                        </div>
+                        <div className="text-right text-[10px] text-slate-400">
+                          Saved
+                          <br />
+                          <span className="tabular-nums text-slate-600">
+                            {new Date(r.created_at).toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-slate-200/80">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-brand-500 to-violet-500 transition-[width] group-hover:from-brand-600 group-hover:to-violet-600"
+                          style={{ width: `${barPct}%` }}
+                        />
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          );
+        })()}
         <Link
           href="/my-email"
-          className="mt-4 inline-flex text-sm font-semibold text-brand-600 hover:text-brand-800"
+          className="mt-5 inline-flex text-sm font-semibold text-brand-600 hover:text-brand-800"
         >
           Open My Email →
         </Link>
@@ -914,6 +947,12 @@ export default function DashboardPage() {
                   </h2>
                   <p className="mt-1 text-sm text-slate-600">
                     Need-attention volume by department — bar length is relative to the busiest team in view.
+                    {filterDepartmentIds.length > 0 && ceoEmployeeIds.length > 0 ? (
+                      <span className="mt-1 block text-slate-500">
+                        Scope combines selected manager teams <strong className="font-semibold text-slate-700">and</strong>{' '}
+                        any extra mailboxes you picked (union — not only the overlap).
+                      </span>
+                    ) : null}
                   </p>
                 </div>
                 <div className="space-y-4">
