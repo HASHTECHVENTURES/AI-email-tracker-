@@ -75,20 +75,12 @@ export class SaasAuthService {
         linkedEmployeeId = (emp as { id: string }).id;
       }
     }
-    /** Same as employee portal: resolve mailbox row when `users.linked_employee_id` was never backfilled. */
-    if (row.role === 'HEAD' && !linkedEmployeeId) {
-      const { data: emp } = await this.supabase
-        .from('employees')
-        .select('id')
-        .eq('company_id', row.company_id)
-        .eq('email', row.email.trim().toLowerCase())
-        .order('created_at', { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (emp) {
-        linkedEmployeeId = (emp as { id: string }).id;
-      }
-    }
+    /**
+     * HEAD: do **not** infer `linked_employee_id` from a same-email `employees` row.
+     * Otherwise every manager who shares an email with any roster row gets the Manager/Mailbox
+     * toggle and act-as-employee APIs without an explicit link. Mailbox view requires
+     * `users.linked_employee_id` set (e.g. when the org links the manager to their mailbox).
+     */
 
     let managedDepartmentIds: string[] = [];
     let resolvedDepartmentId: string | null = row.department_id ?? null;
