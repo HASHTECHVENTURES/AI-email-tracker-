@@ -1128,10 +1128,10 @@ function MyEmailPageInner() {
   const [adding, setAdding] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
 
-  /** Sidebar hash drives separate screens — CEO inbox is not one long scroll with manager/team below. */
+  /** Sidebar hash drives separate screens for CEO (manager mail / team mail). Department managers stay on the CEO-style home tab only. */
   const [myEmailTab, setMyEmailTab] = useState<'ceo' | 'manager' | 'team'>('ceo');
 
-  /** CEO inbox only: live feed vs past missed search (does not affect Manager / Team tabs). */
+  /** Main inbox: live feed vs past missed search (only when `myEmailTab === 'ceo'`). */
   const [ceoInboxMode, setCeoInboxMode] = useState<'live' | 'historical'>('live');
   const [histStartDate, setHistStartDate] = useState('');
   const [histEndDate, setHistEndDate] = useState('');
@@ -1395,7 +1395,16 @@ function MyEmailPageInner() {
 
   useEffect(() => {
     const syncTab = () => {
-      const h = typeof window !== 'undefined' ? window.location.hash : '';
+      if (typeof window === 'undefined') return;
+      const h = window.location.hash;
+      /** Department managers use the same single-inbox surface as the CEO home tab — no team/manager sub-views here. */
+      if (me && isDepartmentManagerRole(me.role)) {
+        if (h === '#manager-mailboxes' || h === '#team-mailboxes-ceo') {
+          window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+        }
+        setMyEmailTab('ceo');
+        return;
+      }
       if (h === '#manager-mailboxes') setMyEmailTab('manager');
       else if (h === '#team-mailboxes-ceo') setMyEmailTab('team');
       else setMyEmailTab('ceo');
@@ -1403,7 +1412,7 @@ function MyEmailPageInner() {
     syncTab();
     window.addEventListener('hashchange', syncTab);
     return () => window.removeEventListener('hashchange', syncTab);
-  }, []);
+  }, [me]);
 
   useEffect(() => {
     if (myEmailTab !== 'team') setShowAddForm(false);
@@ -1972,7 +1981,7 @@ function MyEmailPageInner() {
   const canRunCompanyWideSync = me?.role === 'CEO' || isDepartmentManagerRole(me?.role);
 
   const historicalMailboxCandidates = useMemo(() => {
-    if (me?.role === 'CEO') return ownMailboxes;
+    if (me?.role === 'CEO' || isDepartmentManagerRole(me?.role)) return ownMailboxes;
     return mailboxes;
   }, [me?.role, mailboxes, ownMailboxes]);
 
@@ -3334,8 +3343,6 @@ function MyEmailPageInner() {
     );
   }
 
-  const isManagerOrIc = isDepartmentManagerRole(me.role) || me.role === 'EMPLOYEE';
-
   const pageTitle =
     me.role === 'CEO'
       ? myEmailTab === 'manager'
@@ -3351,9 +3358,11 @@ function MyEmailPageInner() {
         : myEmailTab === 'manager'
           ? 'Department heads’ tracked inboxes.'
           : 'Individual contributors and other org mailboxes (not your CEO login).'
-      : isManagerOrIc
-        ? 'Live mail, follow-ups, and historical search for mailboxes you can access. Managers: your team’s connected mailboxes sync here automatically — employees do not need to share passwords; they connect Gmail in the employee portal and you see the same threads in Dashboard and My Email.'
-        : 'My Email';
+      : isDepartmentManagerRole(me.role)
+        ? 'Your inbox only. Gemini reads mail in your tracking window and keeps messages that may need a reply or follow-up.'
+        : me.role === 'EMPLOYEE'
+          ? 'Live mail, follow-ups, and historical search for mailboxes you can access. Managers: your team’s connected mailboxes sync here automatically — employees do not need to share passwords; they connect Gmail in the employee portal and you see the same threads in Dashboard and My Email.'
+          : 'My Email';
 
   const bulkDeleteBarPct =
     bulkDeleteProgress == null || bulkDeleteProgress.total <= 0
@@ -3630,64 +3639,16 @@ function MyEmailPageInner() {
         <PageSkeleton />
       ) : (
         <>
-          {isDepartmentManagerRole(me.role) ? (
-            <div
-              className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card"
-              role="tablist"
-              aria-label="Manager inbox sections"
-            >
-              <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                My Email
-              </span>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={myEmailTab === 'ceo'}
-                onClick={() => {
-                  if (typeof window === 'undefined') return;
-                  if (window.location.hash) {
-                    window.location.hash = '';
-                  } else {
-                    setMyEmailTab('ceo');
-                  }
-                }}
-                className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
-                  myEmailTab === 'ceo'
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
-                }`}
-              >
-                Follow-ups & your inbox
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={myEmailTab === 'manager'}
-                onClick={() => {
-                  if (typeof window === 'undefined') return;
-                  if (window.location.hash !== '#manager-mailboxes') {
-                    window.location.hash = 'manager-mailboxes';
-                  } else {
-                    setMyEmailTab('manager');
-                  }
-                }}
-                className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
-                  myEmailTab === 'manager'
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
-                }`}
-              >
-                Team mailboxes
-              </button>
-            </div>
-          ) : null}
-
           {myEmailTab === 'ceo' ? (
             <div className="mb-6 space-y-4">
               <>
                   <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card">
                     <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      {me?.role === 'CEO' ? 'CEO inbox' : 'Your inbox'}
+                      {me?.role === 'CEO'
+                        ? 'CEO inbox'
+                        : isDepartmentManagerRole(me?.role)
+                          ? 'Manager inbox'
+                          : 'Your inbox'}
                     </span>
                     <button
                       type="button"
@@ -5017,14 +4978,22 @@ function MyEmailPageInner() {
               <>
                 <div className="mb-3">
                   <h2 className="text-lg font-bold text-slate-900">
-                    {me.role === 'CEO' ? 'Your inbox (CEO)' : 'Your inbox'}
+                    {me.role === 'CEO'
+                      ? 'Your inbox (CEO)'
+                      : isDepartmentManagerRole(me.role)
+                        ? 'Your inbox (Manager)'
+                        : 'Your inbox'}
                   </h2>
                 </div>
 
                 {mailboxes.length === 0 && (
                   <div className="mb-4 rounded-2xl border border-brand-200/80 bg-gradient-to-br from-indigo-50/90 to-white p-6 shadow-card">
                     <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
-                      {me.role === 'CEO' ? 'Your inbox (CEO)' : 'Your inbox'}
+                      {me.role === 'CEO'
+                        ? 'Your inbox (CEO)'
+                        : isDepartmentManagerRole(me.role)
+                          ? 'Your inbox (Manager)'
+                          : 'Your inbox'}
                     </p>
                     <h3 className="mt-1 text-base font-bold text-slate-900">
                       Connect your own Gmail
@@ -5062,7 +5031,8 @@ function MyEmailPageInner() {
                         <p>
                           Your work inbox isn&apos;t listed yet. Use{' '}
                           <strong className="font-medium text-slate-800">Connect my Gmail</strong> so
-                          the row matches your CEO email.
+                          the row matches{' '}
+                          {me.role === 'CEO' ? 'your CEO email' : 'your work email'}.
                         </p>
                         <button
                           type="button"
