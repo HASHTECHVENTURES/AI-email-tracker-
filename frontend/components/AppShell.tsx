@@ -180,6 +180,7 @@ export function AppShell({
   const managerMailFocus =
     pathname === '/my-email' && locHash === '#manager-mailboxes';
   const managerMessagesActive = pathname === '/manager-messages';
+  const teamMailSyncActive = pathname === '/team-mail-sync';
   const brandTitle = companyName?.trim() || 'AI Auto Mail';
   const personLine = userDisplayName?.trim() || null;
   const showTeamSwitcher =
@@ -258,6 +259,12 @@ export function AppShell({
                     </SafeLink>
                   ) : null}
                 </>
+              ) : null}
+
+              {isHead && !isPlatformAdmin ? (
+                <SafeLink href="/team-mail-sync" className={navItemClass(teamMailSyncActive)}>
+                  Team mail sync
+                </SafeLink>
               ) : null}
 
               {isEmployee ? (
@@ -401,6 +408,11 @@ export function AppShell({
                     </SafeLink>
                   ) : null}
                 </>
+              ) : null}
+              {isHead && !isPlatformAdmin ? (
+                <SafeLink href="/team-mail-sync" className={navMobileClass(teamMailSyncActive)}>
+                  Team sync
+                </SafeLink>
               ) : null}
               {isEmployee ? (
                 <SafeLink href="/messages" className={navMobileClass(pathname === '/messages')}>

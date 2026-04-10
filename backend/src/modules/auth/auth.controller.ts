@@ -273,7 +273,8 @@ export class AuthController {
       if (mailboxType === 'SELF') {
         nextPath = '/my-email';
       } else if (actor.role === 'HEAD') {
-        nextPath = '/my-mail';
+        /** Manager team-mail OAuth completes here (dedicated sidebar page; not mixed with personal My mail). */
+        nextPath = '/team-mail-sync';
       }
       /** Popup-friendly landing: notifies opener then closes; avoids losing the main tab Supabase session. */
       const done = new URL(`${frontendBase}/auth/gmail-oauth-done`);
