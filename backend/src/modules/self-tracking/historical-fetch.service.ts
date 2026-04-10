@@ -8,6 +8,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { GmailService, buildGmailHistoricalWindowQuery } from '../email-ingestion/gmail.service';
+import { buildSharedIngestRelevancePrompt } from '../email-ingestion/relevance-prompt.builder';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { SettingsService } from '../settings/settings.service';
@@ -22,7 +23,6 @@ import type { gmail_v1 } from 'googleapis';
 const MAX_HISTORICAL_RANGE_DAYS = 731;
 const MAX_HISTORICAL_MESSAGES = 500;
 const MAX_STORED_EMAIL_BODY_CHARS = 2_000_000;
-const RELEVANCE_PROMPT_PER_MESSAGE_BODY = 1_400;
 
 /** Inbound + mailbox only on Cc (not To) — matches Live “CC’d” chip semantics. */
 function employeeOnlyOnCc(msg: EmailMessage, employeeEmail: string): boolean {
@@ -48,6 +48,8 @@ export interface HistoricalFetchResult {
   conversations: ConversationListItem[];
   /** True when the client disconnected or aborted mid-run; partial data was still saved. */
   stopped?: boolean;
+  /** Set when the run was persisted to `historical_search_runs`. */
+  run_id?: string | null;
 }
 
 /** Streamed to the client for live progress (Historical Search UI). */
@@ -110,7 +112,7 @@ export class HistoricalFetchService {
     startIso: string,
     endIso: string,
     onProgress?: HistoricalProgressFn,
-    options?: { abortSignal?: AbortSignal },
+    options?: { abortSignal?: AbortSignal; createdByUserId?: string },
   ): Promise<HistoricalFetchResult> {
     const signal = options?.abortSignal;
     const startMs = Date.parse(startIso);
@@ -176,13 +178,22 @@ export class HistoricalFetchService {
         startIso.trim(),
         endIso.trim(),
       );
-      const empty: HistoricalFetchResult = {
+      const emptyBase: HistoricalFetchResult = {
         fetched_from_gmail: 0,
         stored_relevant: 0,
         skipped_irrelevant: 0,
         conversations_created: 0,
         conversations: inWindow,
       };
+      const empty = await this.finalizeHistoricalRun(
+        ctx,
+        employeeId,
+        employee.name,
+        startIso.trim(),
+        endIso.trim(),
+        emptyBase,
+        options?.createdByUserId,
+      );
       onProgress?.({ phase: 'complete', result: empty });
       return empty;
     }
@@ -364,7 +375,7 @@ export class HistoricalFetchService {
     );
 
     const wasStopped = stoppedEarly || Boolean(signal?.aborted);
-    const result: HistoricalFetchResult = {
+    const resultBase: HistoricalFetchResult = {
       fetched_from_gmail: fetchedCount,
       stored_relevant: messages.length,
       skipped_irrelevant: skippedIrrelevant,
@@ -372,8 +383,46 @@ export class HistoricalFetchService {
       conversations,
       stopped: wasStopped || undefined,
     };
+    const result = await this.finalizeHistoricalRun(
+      ctx,
+      employeeId,
+      employee.name,
+      startIso.trim(),
+      endIso.trim(),
+      resultBase,
+      options?.createdByUserId,
+    );
     onProgress?.({ phase: 'complete', result });
     return result;
+  }
+
+  private async finalizeHistoricalRun(
+    ctx: RequestContext,
+    employeeId: string,
+    mailboxName: string,
+    startIso: string,
+    endIso: string,
+    base: HistoricalFetchResult,
+    createdByUserId?: string,
+  ): Promise<HistoricalFetchResult> {
+    const uid = createdByUserId?.trim();
+    if (!uid) return base;
+    const run_id = await this.selfTrackingService.recordHistoricalSearchRun(ctx, {
+      createdByUserId: uid,
+      employeeId,
+      mailboxName,
+      startIso,
+      endIso,
+      stats: {
+        fetched_from_gmail: base.fetched_from_gmail,
+        stored_relevant: base.stored_relevant,
+        skipped_irrelevant: base.skipped_irrelevant,
+        conversations_created: base.conversations_created,
+        ...(base.stopped ? { stopped: true } : {}),
+      },
+      conversationCount: base.conversations.length,
+    });
+    return run_id ? { ...base, run_id } : base;
   }
 
   /** Union by conversation id; prefer rows from the current fetch when duplicates exist. */
@@ -402,47 +451,6 @@ export class HistoricalFetchService {
 
   private sortThreadChronological(slice: EmailMessage[]): EmailMessage[] {
     return [...slice].sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
-  }
-
-  private buildRelevancePrompt(
-    target: EmailMessage,
-    threadSlice: EmailMessage[],
-    employeeEmail: string,
-    hasNoiseGmailLabel: boolean,
-  ): string {
-    const ordered = this.sortThreadChronological(threadSlice);
-    const threadBlocks = ordered.map((m, idx) => {
-      const isTarget = m.providerMessageId === target.providerMessageId;
-      const body = (m.bodyText ?? '').slice(0, RELEVANCE_PROMPT_PER_MESSAGE_BODY);
-      return [
-        `### Part ${idx + 1}/${ordered.length} — classification_target=${isTarget ? 'YES' : 'no'}`,
-        `gmail_message_id: ${m.providerMessageId}`,
-        `direction: ${m.direction}`,
-        `sent_at: ${m.sentAt.toISOString()}`,
-        `from: ${m.fromEmail}`,
-        `to: ${(m.toEmails ?? []).join(', ')}`,
-        `cc: ${(m.ccEmails ?? []).join(', ')}`,
-        `subject: ${m.subject ?? ''}`,
-        '',
-        'body_text:',
-        body,
-      ].join('\n');
-    });
-
-    return [
-      '## Role',
-      'You are the gatekeeper for a business email follow-up product.',
-      'Decide if the target message is relevant (needs tracking/reply) or noise.',
-      '',
-      '## Output',
-      'Return ONLY valid JSON: {"relevant":true|false,"reason":"one sentence"}',
-      '',
-      `tracked_mailbox: ${employeeEmail}`,
-      `gmail_noise_hint=${hasNoiseGmailLabel ? 'yes' : 'no'}`,
-      '',
-      '## Thread',
-      ...threadBlocks,
-    ].join('\n');
   }
 
   private async callGeminiRelevance(prompt: string): Promise<{ relevant: boolean; reason: string | null } | null> {
@@ -484,7 +492,7 @@ export class HistoricalFetchService {
           ? threadSlice
           : [...threadSlice, target],
       );
-      const prompt = this.buildRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
+      const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
       const parsed = await this.callGeminiRelevance(prompt);
       if (parsed) return parsed;
       return { relevant: ingestWithoutAiConfirmed, reason: null };

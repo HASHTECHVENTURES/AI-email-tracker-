@@ -7,6 +7,9 @@ import { EmailService } from '../email/email.service';
 import { SettingsService } from '../settings/settings.service';
 import { CompanyPolicyService } from '../company-policy/company-policy.service';
 import type { EmployeeRole } from '../common/types';
+import { RequestContext } from '../common/request-context';
+import type { HistoricalSearchRunListItem } from '../self-tracking/self-tracking.service';
+import { SelfTrackingService } from '../self-tracking/self-tracking.service';
 
 export interface GlobalMetrics {
   total_conversations: number;
@@ -153,6 +156,8 @@ export interface SimplifiedDashboardResponse {
   my_followups?: { missed: number; pending: number; done: number };
   /** Populated for CEO only — department vs manager vs thread pressure. */
   ceo_department_rollups?: CeoDepartmentRollup[];
+  /** Recent saved Historical Search runs (My Email) visible to this user. */
+  historical_search_runs?: HistoricalSearchRunListItem[];
 }
 
 @Injectable()
@@ -166,6 +171,7 @@ export class DashboardService {
     private readonly emailService: EmailService,
     private readonly settingsService: SettingsService,
     private readonly companyPolicyService: CompanyPolicyService,
+    private readonly selfTrackingService: SelfTrackingService,
   ) {
     const apiKey = process.env.GEMINI_API_KEY;
     const genAI = new GoogleGenerativeAI(apiKey ?? '');
@@ -1055,6 +1061,23 @@ ${dataBlock}`;
         pending: visibleConversations.filter((c) => c.follow_up_status === 'PENDING').length,
         done: visibleConversations.filter((c) => c.follow_up_status === 'DONE').length,
       };
+    }
+
+    if (
+      actorEmail &&
+      (scope.role === 'CEO' || scope.role === 'HEAD' || scope.role === 'EMPLOYEE')
+    ) {
+      const ctx: RequestContext = {
+        companyId,
+        role: scope.role,
+        employeeId: scope.employeeId,
+        departmentId: scope.departmentId,
+      };
+      out.historical_search_runs = await this.selfTrackingService.listHistoricalSearchRuns(
+        ctx,
+        actorEmail,
+        8,
+      );
     }
 
     return out;

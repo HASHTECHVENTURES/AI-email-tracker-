@@ -695,6 +695,58 @@ export class EmployeesService {
   }
 
   /**
+   * Employee portal: the single `employees` row linked to the signed-in user (`linked_employee_id`).
+   * Used for Historical Search / self-tracking scope.
+   */
+  async getLinkedPortalEmployeeMailbox(ctx: RequestContext): Promise<OrgEmployeeDto[]> {
+    if (ctx.role !== 'EMPLOYEE' || !ctx.employeeId) return [];
+
+    const listResult = await this.supabase
+      .from('employees')
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
+      )
+      .eq('company_id', ctx.companyId)
+      .eq('id', ctx.employeeId)
+      .maybeSingle();
+
+    if (listResult.error || !listResult.data) return [];
+
+    const r = listResult.data as EmployeeDbRow;
+    const deptName = r.department_id
+      ? (await this.getDepartmentName(ctx.companyId, r.department_id)) ?? '—'
+      : '—';
+
+    const { data: profiles } = await this.supabase
+      .from('users')
+      .select('linked_employee_id')
+      .eq('company_id', ctx.companyId)
+      .eq('linked_employee_id', r.id)
+      .limit(1);
+    const hasPortal = (profiles ?? []).length > 0;
+
+    return [
+      {
+        id: r.id,
+        name: r.name,
+        email: r.email,
+        department_id: r.department_id,
+        department_name: deptName,
+        created_at: r.created_at,
+        gmail_connected: (r.gmail_status ?? 'EXPIRED') === 'CONNECTED',
+        gmail_status: (r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
+        last_synced_at: r.last_synced_at ?? null,
+        sla_hours_default: r.sla_hours_default ?? null,
+        tracking_start_at: r.tracking_start_at ?? null,
+        has_portal_login: hasPortal,
+        tracking_paused: r.tracking_paused === true,
+        ai_enabled: r.ai_enabled !== false,
+        mailbox_type: (r.mailbox_type as 'TEAM' | null | undefined) ?? null,
+      },
+    ];
+  }
+
+  /**
    * TEAM / org mailboxes company-wide (excludes `mailbox_type = SELF`).
    * Merged into the CEO My Email API so manager-connected inboxes appear alongside CEO-added mailboxes.
    */

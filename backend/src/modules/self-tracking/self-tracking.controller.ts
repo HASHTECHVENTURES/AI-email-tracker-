@@ -5,6 +5,7 @@ import {
   Delete,
   ForbiddenException,
   Get,
+  NotFoundException,
   Param,
   Post,
   Query,
@@ -14,10 +15,17 @@ import {
 } from '@nestjs/common';
 import { EmailIngestionService } from '../email-ingestion/email-ingestion.service';
 import { Request, Response } from 'express';
-import { getRequestContext } from '../common/request-context';
+import { getRequestContext, type RequestContext } from '../common/request-context';
 import { EmployeesService } from '../employees/employees.service';
 import { SelfTrackingService } from './self-tracking.service';
 import { HistoricalFetchService, type HistoricalProgressFn } from './historical-fetch.service';
+
+/** CEO, department manager (HEAD), and Employee portal — Historical Search + scoped dashboard. */
+function assertSelfTrackingReader(ctx: RequestContext): void {
+  if (ctx.role !== 'CEO' && ctx.role !== 'HEAD' && ctx.role !== 'EMPLOYEE') {
+    throw new ForbiddenException('Only CEO, manager, or employee can access this');
+  }
+}
 
 @Controller('self-tracking')
 export class SelfTrackingController {
@@ -33,9 +41,7 @@ export class SelfTrackingController {
     const user = req.user;
     if (!user) throw new UnauthorizedException();
     const ctx = getRequestContext(req);
-    if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only CEOs can access self-tracking');
-    }
+    assertSelfTrackingReader(ctx);
     const mailboxes = await this.selfTrackingService.getVisibleMailboxes(
       ctx,
       user.email,
@@ -122,9 +128,7 @@ export class SelfTrackingController {
     const user = req.user;
     if (!user) throw new UnauthorizedException();
     const ctx = getRequestContext(req);
-    if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only CEOs can access self-tracking');
-    }
+    assertSelfTrackingReader(ctx);
     return this.selfTrackingService.getDashboard(ctx, user.email, {
       status,
       priority,
@@ -148,9 +152,7 @@ export class SelfTrackingController {
     const user = req.user;
     if (!user) throw new UnauthorizedException();
     const ctx = getRequestContext(req);
-    if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only CEOs can access self-tracking');
-    }
+    assertSelfTrackingReader(ctx);
     if (!start?.trim() || !end?.trim()) {
       throw new BadRequestException('start and end query parameters are required');
     }
@@ -166,6 +168,34 @@ export class SelfTrackingController {
    * Threads already in the DB for one mailbox whose last client message falls in [start, end] (ISO).
    * Refreshes the Historical Search table after a client-side stop without re-listing Gmail.
    */
+  /**
+   * Saved Historical Search runs (date range + stats) for mailboxes in scope.
+   */
+  @Get('historical-search-runs')
+  async listHistoricalSearchRuns(@Req() req: Request, @Query('limit') limit?: string) {
+    const user = req.user;
+    if (!user) throw new UnauthorizedException();
+    const ctx = getRequestContext(req);
+    assertSelfTrackingReader(ctx);
+    const n = Number(limit ?? '40');
+    const lim = Number.isFinite(n) ? n : 40;
+    const runs = await this.selfTrackingService.listHistoricalSearchRuns(ctx, user.email, lim);
+    return { runs };
+  }
+
+  @Get('historical-search-runs/:id')
+  async getHistoricalSearchRun(@Req() req: Request, @Param('id') id: string) {
+    const user = req.user;
+    if (!user) throw new UnauthorizedException();
+    const ctx = getRequestContext(req);
+    assertSelfTrackingReader(ctx);
+    const run = await this.selfTrackingService.getHistoricalSearchRun(ctx, user.email, id);
+    if (!run) {
+      throw new NotFoundException('Saved search not found');
+    }
+    return { run };
+  }
+
   @Get('historical-window-results')
   async historicalWindowResults(
     @Req() req: Request,
@@ -176,9 +206,7 @@ export class SelfTrackingController {
     const user = req.user;
     if (!user) throw new UnauthorizedException();
     const ctx = getRequestContext(req);
-    if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only CEOs can access self-tracking');
-    }
+    assertSelfTrackingReader(ctx);
     const s = start?.trim();
     const e = end?.trim();
     const id = employeeId?.trim();
@@ -215,9 +243,7 @@ export class SelfTrackingController {
     const user = req.user;
     if (!user) throw new UnauthorizedException();
     const ctx = getRequestContext(req);
-    if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only CEOs can run mail fetch probe');
-    }
+    assertSelfTrackingReader(ctx);
     const id = employeeId?.trim();
     if (!id) {
       throw new BadRequestException('employee_id is required');
@@ -257,9 +283,7 @@ export class SelfTrackingController {
     const user = req.user;
     if (!user) throw new UnauthorizedException();
     const ctx = getRequestContext(req);
-    if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only CEOs can run historical fetch');
-    }
+    assertSelfTrackingReader(ctx);
     if (!body.start?.trim() || !body.end?.trim()) {
       throw new BadRequestException('start and end are required');
     }
@@ -278,6 +302,8 @@ export class SelfTrackingController {
       body.employee_id.trim(),
       body.start.trim(),
       body.end.trim(),
+      undefined,
+      { createdByUserId: user.id },
     );
   }
 
@@ -298,9 +324,7 @@ export class SelfTrackingController {
     const user = req.user;
     if (!user) throw new UnauthorizedException();
     const ctx = getRequestContext(req);
-    if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only CEOs can run historical fetch');
-    }
+    assertSelfTrackingReader(ctx);
     if (!body.start?.trim() || !body.end?.trim()) {
       throw new BadRequestException('start and end are required');
     }
@@ -340,7 +364,7 @@ export class SelfTrackingController {
         body.start.trim(),
         body.end.trim(),
         emit,
-        { abortSignal: ac.signal },
+        { abortSignal: ac.signal, createdByUserId: user.id },
       );
     } catch (err) {
       const message =

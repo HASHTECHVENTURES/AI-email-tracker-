@@ -7,9 +7,10 @@ import { EmailModule } from '../email/email.module';
 import { EmployeesModule } from '../employees/employees.module';
 import { SettingsModule } from '../settings/settings.module';
 import { CompanyPolicyModule } from '../company-policy/company-policy.module';
+import { SelfTrackingModule } from '../self-tracking/self-tracking.module';
 
 @Module({
-  imports: [EmailModule, EmployeesModule, SettingsModule, CompanyPolicyModule],
+  imports: [EmailModule, EmployeesModule, SettingsModule, CompanyPolicyModule, SelfTrackingModule],
   controllers: [DashboardController],
   providers: [supabaseProvider, DashboardService, TelegramService],
   exports: [DashboardService],

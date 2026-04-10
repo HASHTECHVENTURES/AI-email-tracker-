@@ -20,6 +20,7 @@ import {
   buildGmailInboxListQuery,
   GmailService,
 } from './gmail.service';
+import { buildSharedIngestRelevancePrompt } from './relevance-prompt.builder';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { getGeminiApiKeyFromEnv } from '../common/env';
 
@@ -74,8 +75,6 @@ const GMAIL_LIST_MAX_PAGES_DEFAULT = 6;
  * body below this limit (HTML→text); older builds truncated at 2k chars — re-run sync to refresh rows.
  */
 const MAX_STORED_EMAIL_BODY_CHARS = 2_000_000;
-/** Max plain-text chars per message in thread context sent to Gemini (up to 3 messages). */
-const RELEVANCE_PROMPT_PER_MESSAGE_BODY = 1_400;
 
 function clipStoredBody(bodyText: string | undefined): string {
   const t = bodyText ?? '';
@@ -531,82 +530,9 @@ export class EmailIngestionService {
     await this.conversationsService.recomputeForThreads(keys);
   }
 
-  /** Sort thread slice oldest → newest for the prompt. */
+  /** Sort thread slice oldest → newest for classification input. */
   private sortThreadChronological(slice: EmailMessage[]): EmailMessage[] {
     return [...slice].sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
-  }
-
-  private buildIngestRelevancePrompt(
-    target: EmailMessage,
-    threadSlice: EmailMessage[],
-    employeeEmail: string,
-    hasNoiseGmailLabel: boolean,
-  ): string {
-    const ordered = this.sortThreadChronological(threadSlice);
-    const threadBlocks = ordered.map((m, idx) => {
-      const isTarget = m.providerMessageId === target.providerMessageId;
-      const body = (m.bodyText ?? '').slice(0, RELEVANCE_PROMPT_PER_MESSAGE_BODY);
-      return [
-        `### Part ${idx + 1}/${ordered.length} — classification_target=${isTarget ? 'YES (decide on this message)' : 'no (context only)'}`,
-        `gmail_message_id: ${m.providerMessageId}`,
-        `direction: ${m.direction}`,
-        `sent_at: ${m.sentAt.toISOString()}`,
-        `from: ${m.fromEmail}`,
-        `from_name: ${m.fromName ?? ''}`,
-        `to: ${(m.toEmails ?? []).join(', ')}`,
-        `cc: ${(m.ccEmails ?? []).join(', ')}`,
-        `subject: ${m.subject ?? ''}`,
-        '',
-        'body_text:',
-        body,
-      ].join('\n');
-    });
-
-    return [
-      '## Role',
-      'You are the sole gatekeeper for a business email follow-up and SLA monitoring product.',
-      'You receive up to three messages from the same Gmail thread (oldest first). Exactly one is marked classification_target=YES — that is the message being ingested now.',
-      'Decide if that target message should enter the user’s tracked inbox (relevant=true) or be ignored (relevant=false).',
-      'Use older parts only for conversation context (ongoing deal, open questions, prior commitments). Do not mark relevant=true only because an older part was important if the target message itself is pure noise.',
-      'There is no code filter before you — your judgment is final for this step.',
-      '',
-      '## What “relevant” means',
-      'True = a real person or organization expects this mailbox to notice, act, reply, decide, or stay informed about something work-related (or personally important to work), including:',
-      '- Direct questions, requests, approvals, quotes, invoices, contracts, legal, HR, payroll, security, or compliance',
-      '- Client, vendor, partner, investor, or government correspondence',
-      '- Meeting invites or threads that include a real discussion (not only a blank machine-generated invite with no context)',
-      '- Support tickets, escalations, incident reports, delivery or project updates that need a human response',
-      '- Forwarded chains where the latest content still needs attention',
-      '- Bounces, DMARC, or delivery failures ONLY if the user likely needs to fix DNS, recipients, or deliverability (actionable)',
-      '- Cold outreach ONLY if it is clearly targeted (named ask, specific role/company) and plausibly worth a business reply; generic blast = false',
-      '',
-      '## What “not relevant” means',
-      'False = no reasonable need for this mailbox to track or reply — typical bulk or machine-only noise:',
-      '- Mass newsletters, digests, marketing, flash sales, “webinar recording”, unsubscribable promo',
-      '- Purely automated receipts/invoices with no dispute or action (unless amounts/terms need review — then true)',
-      '- Password resets, 2FA codes, login alerts, routine “your report is ready” with no decision',
-      '- GitHub/Jira/Slack/CI bot spam with no human question in the snippet',
-      '- Empty or template-only out-of-office with no thread context',
-      '- Obvious phishing or pure spam (if unsure, prefer true so a human can delete)',
-      '',
-      '## Signals (hints only)',
-      `gmail_noise_hint_on_target=${hasNoiseGmailLabel ? 'yes' : 'no'} (Promotions/Forums/Updates — weak signal; do not reject on this alone).`,
-      '- From-address may be noreply, mailer-daemon, or postmaster — read the body; bounce notices can be relevant.',
-      '',
-      '## Tie-breakers',
-      '- If the target message could require human judgment, reply, or follow-up within ~2 weeks → relevant=true.',
-      '- If the target is only informational broadcast with no plausible action → relevant=false.',
-      '- When uncertain about the target, prefer relevant=true so important mail is not silently dropped.',
-      '',
-      '## Output',
-      'Return ONLY valid JSON (no markdown fences). Keys:',
-      '{"relevant":true|false,"reason":"one concise sentence citing the decisive factor (about the target message)"}',
-      '',
-      `tracked_mailbox (employee): ${employeeEmail}`,
-      '',
-      '## Thread (chronological)',
-      ...threadBlocks,
-    ].join('\n');
   }
 
   /**
@@ -686,7 +612,7 @@ export class EmailIngestionService {
           ? threadSlice
           : [...threadSlice, target],
       );
-      const prompt = this.buildIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
+      const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
       const parsed = await this.callGeminiIngestRelevance(prompt, target.fromEmail);
       if (parsed) {
         return { relevant: parsed.relevant, reason: parsed.reason };
@@ -851,21 +777,17 @@ export class EmailIngestionService {
     return msg.includes('cc_emails');
   }
 
-  /** Gmail incremental fetch: use the later of last processed cursor and start-tracking window. */
-  private effectiveAfterDate(
-    lastProcessed: string | null | undefined,
-    startDate: string | null | undefined,
-  ): Date | null {
-    const dates: number[] = [];
-    if (lastProcessed) dates.push(new Date(lastProcessed).getTime());
-    if (startDate) dates.push(new Date(startDate).getTime());
-    if (dates.length === 0) return null;
-    return new Date(Math.max(...dates));
-  }
-
   /**
-   * Live Gmail list lower bound: resume token wins; else max(last_processed, product tracking start).
-   * Never uses `mail_sync_state.start_date` alone — that field can be a stale technical default (e.g. 2020).
+   * Live Gmail `messages.list` lower bound for `after:` (resume token + epoch win while paginating).
+   *
+   * **Bug without overlap:** Using max(tracking_start, last_processed) as `after:` means the next run
+   * only lists mail *newer than* `last_processed`. Any message *older* than that instant that was never
+   * stored (Gemini skip, fetch error, or arrived in a race) never matches the query again — e.g. a 2:59 PM
+   * test mail after a sync that advanced the cursor to 3:01 PM.
+   *
+   * **Fix:** Roll `after:` back by `INGEST_GMAIL_LIST_AFTER_OVERLAP_HOURS` (default 48) from
+   * `last_processed` so recent stragglers reappear; `messageInDatabase` / skip rows dedupe.
+   * Set overlap to `0` to restore the legacy tight cursor (not recommended).
    */
   private liveListAfterDate(
     syncState: MailSyncRow | null,
@@ -876,11 +798,27 @@ export class EmailIngestionService {
     if (resumeToken != null && resumeEpoch != null) {
       return new Date(Number(resumeEpoch) * 1000);
     }
-    const productStartIso = trackingStartIso?.trim()
-      ? new Date(trackingStartIso.trim()).toISOString()
-      : new Date().toISOString();
-    const afterDate = this.effectiveAfterDate(syncState?.last_processed_at, productStartIso);
-    return afterDate ?? new Date(productStartIso);
+
+    const productStartMs = trackingStartIso?.trim()
+      ? new Date(trackingStartIso.trim()).getTime()
+      : Date.now();
+
+    const lastProcessedRaw = syncState?.last_processed_at?.trim();
+    const lastProcessedMs = lastProcessedRaw ? new Date(lastProcessedRaw).getTime() : null;
+
+    const hoursRaw = Number(process.env.INGEST_GMAIL_LIST_AFTER_OVERLAP_HOURS ?? '48');
+    const overlapHours = Number.isFinite(hoursRaw) ? Math.min(Math.max(hoursRaw, 0), 168) : 48;
+    const overlapMs = overlapHours * 60 * 60 * 1000;
+
+    if (lastProcessedMs != null && overlapMs > 0) {
+      return new Date(Math.max(productStartMs, lastProcessedMs - overlapMs));
+    }
+
+    if (lastProcessedMs != null) {
+      return new Date(Math.max(productStartMs, lastProcessedMs));
+    }
+
+    return new Date(productStartMs);
   }
 
   private async getSyncState(employeeId: string): Promise<MailSyncRow | null> {

@@ -17,6 +17,34 @@ const CEO_SYNCED_MAIL_PAGE_LIMIT = 200;
 /** Max calendar span for historical missed search (inclusive). */
 const HISTORICAL_MISSED_MAX_RANGE_DAYS = 731;
 
+export interface HistoricalSearchRunListItem {
+  id: string;
+  employee_id: string;
+  mailbox_name: string;
+  window_start: string;
+  window_end: string;
+  created_at: string;
+  report_summary: string;
+  conversation_count: number;
+  stats: Record<string, unknown>;
+}
+
+function buildHistoricalRunSummary(r: {
+  mailbox_name: string;
+  window_start: string;
+  window_end: string;
+  conversation_count: number;
+}): string {
+  const a = new Date(r.window_start);
+  const b = new Date(r.window_end);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) {
+    return `${r.mailbox_name} · ${r.conversation_count} thread(s)`;
+  }
+  const fmt = (d: Date) =>
+    d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  return `${r.mailbox_name} · ${fmt(a)} → ${fmt(b)} · ${r.conversation_count} thread(s)`;
+}
+
 export interface SelfTrackingDashboard {
   mailboxes: OrgEmployeeDto[];
   needs_attention: ConversationListItem[];
@@ -45,12 +73,21 @@ export class SelfTrackingService {
   /**
    * CEO: self-tracked mailboxes (CEO-added) **plus** all TEAM org mailboxes — so manager-connected
    * mail in Employees / manager portal flows into the same CEO My Email dashboard.
-   * Sets `is_manager_mailbox` so the UI can show department managers separately from ICs.
+   * HEAD: department mailboxes only (same as Team list in Employees).
+   * EMPLOYEE: the single mailbox row linked to the portal login.
+   * Sets `is_manager_mailbox` for CEO merged list only.
    */
   async getVisibleMailboxes(
     ctx: RequestContext,
     callerEmail: string,
   ): Promise<OrgEmployeeDto[]> {
+    if (ctx.role === 'HEAD') {
+      return this.employeesService.listOrgEmployees(ctx);
+    }
+    if (ctx.role === 'EMPLOYEE') {
+      return this.employeesService.getLinkedPortalEmployeeMailbox(ctx);
+    }
+
     const selfRows = await this.employeesService.listSelfTracked(ctx.companyId);
     if (ctx.role === 'CEO') {
       const teamRows = await this.employeesService.listTeamMailboxesAcrossCompany(ctx.companyId);
@@ -555,6 +592,132 @@ export class SelfTrackingService {
       skipsUpserted: result.skipsUpserted,
       batches: result.batches,
       recompute,
+    };
+  }
+
+  /**
+   * Persist one Historical Search completion (Gmail window + stats) for My Email + dashboard recall.
+   */
+  async recordHistoricalSearchRun(
+    ctx: RequestContext,
+    params: {
+      createdByUserId: string;
+      employeeId: string;
+      mailboxName: string;
+      startIso: string;
+      endIso: string;
+      stats: Record<string, unknown>;
+      conversationCount: number;
+    },
+  ): Promise<string | null> {
+    const { data, error } = await this.supabase
+      .from('historical_search_runs')
+      .insert({
+        company_id: ctx.companyId,
+        created_by_user_id: params.createdByUserId,
+        employee_id: params.employeeId,
+        mailbox_name: params.mailboxName.slice(0, 500),
+        window_start: params.startIso,
+        window_end: params.endIso,
+        stats: params.stats,
+        conversation_count: params.conversationCount,
+      })
+      .select('id')
+      .maybeSingle();
+    if (error) {
+      this.logger.warn(`recordHistoricalSearchRun: ${error.message}`);
+      return null;
+    }
+    const row = data as { id?: string } | null;
+    return row?.id ?? null;
+  }
+
+  /**
+   * Saved Historical Search runs the caller can see (mailbox must be in {@link getVisibleMailboxes} scope).
+   */
+  async listHistoricalSearchRuns(
+    ctx: RequestContext,
+    callerEmail: string,
+    limit = 40,
+  ): Promise<HistoricalSearchRunListItem[]> {
+    const mailboxes = await this.getVisibleMailboxes(ctx, callerEmail);
+    const ids = [...new Set(mailboxes.map((m) => m.id))];
+    if (ids.length === 0) return [];
+    const lim = Math.min(Math.max(1, limit), 100);
+    const { data, error } = await this.supabase
+      .from('historical_search_runs')
+      .select('id, employee_id, mailbox_name, window_start, window_end, created_at, stats, conversation_count')
+      .eq('company_id', ctx.companyId)
+      .in('employee_id', ids)
+      .order('created_at', { ascending: false })
+      .limit(lim);
+    if (error) {
+      this.logger.warn(`listHistoricalSearchRuns: ${error.message}`);
+      return [];
+    }
+    const rows = (data ?? []) as Array<{
+      id: string;
+      employee_id: string;
+      mailbox_name: string;
+      window_start: string;
+      window_end: string;
+      created_at: string;
+      stats: Record<string, unknown> | null;
+      conversation_count: number;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      employee_id: r.employee_id,
+      mailbox_name: r.mailbox_name,
+      window_start: r.window_start,
+      window_end: r.window_end,
+      created_at: r.created_at,
+      conversation_count: r.conversation_count,
+      stats: (r.stats ?? {}) as Record<string, unknown>,
+      report_summary: buildHistoricalRunSummary(r),
+    }));
+  }
+
+  async getHistoricalSearchRun(
+    ctx: RequestContext,
+    callerEmail: string,
+    runId: string,
+  ): Promise<HistoricalSearchRunListItem | null> {
+    const id = runId?.trim();
+    if (!id) return null;
+    const mailboxes = await this.getVisibleMailboxes(ctx, callerEmail);
+    const allowed = new Set(mailboxes.map((m) => m.id));
+    const { data, error } = await this.supabase
+      .from('historical_search_runs')
+      .select('id, employee_id, mailbox_name, window_start, window_end, created_at, stats, conversation_count')
+      .eq('company_id', ctx.companyId)
+      .eq('id', id)
+      .maybeSingle();
+    if (error) {
+      this.logger.warn(`getHistoricalSearchRun: ${error.message}`);
+      return null;
+    }
+    const r = data as {
+      id: string;
+      employee_id: string;
+      mailbox_name: string;
+      window_start: string;
+      window_end: string;
+      created_at: string;
+      stats: Record<string, unknown> | null;
+      conversation_count: number;
+    } | null;
+    if (!r || !allowed.has(r.employee_id)) return null;
+    return {
+      id: r.id,
+      employee_id: r.employee_id,
+      mailbox_name: r.mailbox_name,
+      window_start: r.window_start,
+      window_end: r.window_end,
+      created_at: r.created_at,
+      conversation_count: r.conversation_count,
+      stats: (r.stats ?? {}) as Record<string, unknown>,
+      report_summary: buildHistoricalRunSummary(r),
     };
   }
 }

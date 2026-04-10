@@ -163,7 +163,9 @@ export function AppShell({
   const isCeo = role === 'CEO';
   const isHead = isManagerRole(role);
   const isEmployee = role === 'EMPLOYEE';
-  const showMyEmail = isCeo && !isPlatformAdmin;
+  /** CEO (full My Email), department manager (HEAD), or Employee portal — Historical Search + scoped mailboxes. */
+  const showMyEmail = (isCeo || isHead || isEmployee) && !isPlatformAdmin;
+  const showMyEmailCeoHashNav = isCeo;
   const roleLabel = isPlatformAdmin
     ? 'Platform admin'
     : isHead
@@ -219,13 +221,15 @@ export function AppShell({
                   >
                     My Email
                   </SafeLink>
-                  <SafeLink
-                    href="/my-email#manager-mailboxes"
-                    className={navItemClass(managerMailFocus)}
-                    onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
-                  >
-                    Manager mail
-                  </SafeLink>
+                  {showMyEmailCeoHashNav ? (
+                    <SafeLink
+                      href="/my-email#manager-mailboxes"
+                      className={navItemClass(managerMailFocus)}
+                      onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
+                    >
+                      Manager mail
+                    </SafeLink>
+                  ) : null}
                 </>
               ) : null}
 
@@ -338,13 +342,15 @@ export function AppShell({
                   >
                     My Email
                   </SafeLink>
-                  <SafeLink
-                    href="/my-email#manager-mailboxes"
-                    className={navMobileClass(managerMailFocus)}
-                    onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
-                  >
-                    Manager mail
-                  </SafeLink>
+                  {showMyEmailCeoHashNav ? (
+                    <SafeLink
+                      href="/my-email#manager-mailboxes"
+                      className={navMobileClass(managerMailFocus)}
+                      onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
+                    >
+                      Manager mail
+                    </SafeLink>
+                  ) : null}
                 </>
               ) : null}
               {isEmployee ? (

@@ -478,6 +478,25 @@ function formatLocalYmd(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** Map a stored ISO window boundary to `input[type=date]` value in local time. */
+function isoToLocalYmd(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return formatLocalYmd(d);
+}
+
+type HistoricalSearchRunItem = {
+  id: string;
+  employee_id: string;
+  mailbox_name: string;
+  window_start: string;
+  window_end: string;
+  created_at: string;
+  report_summary: string;
+  conversation_count: number;
+  stats: Record<string, unknown>;
+};
+
 /** Start/end of local calendar days as ISO strings for the historical missed API. */
 function localYmdRangeToIsoBounds(
   startYmd: string,
@@ -733,8 +752,16 @@ function MyEmailPageInner() {
 
   /** Abort in-flight `historical-fetch-stream` (Stop button). */
   const historicalFetchAbortRef = useRef<AbortController | null>(null);
+  /** Avoid re-applying the same `?historicalRun=` deep link on re-renders. */
+  const historicalRunUrlHandledRef = useRef<string | null>(null);
   const [histDeletingAll, setHistDeletingAll] = useState(false);
   const [histRowDeletingId, setHistRowDeletingId] = useState<string | null>(null);
+  /** Mailbox row id for Historical Search (managers pick a team inbox; employees have one). */
+  const [histMailboxId, setHistMailboxId] = useState('');
+  const [historicalSavedRuns, setHistoricalSavedRuns] = useState<HistoricalSearchRunItem[]>([]);
+  const [historicalRunsLoading, setHistoricalRunsLoading] = useState(false);
+  /** Which saved run row is expanded (details + stats). */
+  const [expandedHistoricalRunId, setExpandedHistoricalRunId] = useState<string | null>(null);
 
   const [filterMailbox, setFilterMailbox] = useState('');
   /** Extra filters only for the “All threads” tab. */
@@ -869,8 +896,8 @@ function MyEmailPageInner() {
       router.replace('/admin');
       return;
     }
-    /** My Email is CEO-only — managers and employees use Dashboard / their tools. */
-    if (me.role !== 'CEO') {
+    /** My Email: CEO full workspace; HEAD/EMPLOYEE — Historical Search (scoped mailboxes). */
+    if (me.role !== 'CEO' && me.role !== 'HEAD' && me.role !== 'EMPLOYEE') {
       router.replace('/dashboard');
       return;
     }
@@ -1453,26 +1480,145 @@ function MyEmailPageInner() {
     [mailboxes, ceoEmailNorm],
   );
 
-  const refreshHistoricalWindowTable = useCallback(async (): Promise<ConversationRow[]> => {
-    if (!token) return [];
-    const bounds = localYmdRangeToIsoBounds(histStartDate, histEndDate);
-    if (!bounds) return [];
-    const targetMailboxId = ownMailboxes.length > 0 ? ownMailboxes[0].id : '';
-    if (!targetMailboxId) return [];
-    const params = new URLSearchParams({
-      start: bounds.startIso,
-      end: bounds.endIso,
-      employee_id: targetMailboxId,
+  const showCEOOnlyChrome = me?.role === 'CEO';
+  const isHeadOrEmp = me?.role === 'HEAD' || me?.role === 'EMPLOYEE';
+
+  const historicalMailboxCandidates = useMemo(() => {
+    if (showCEOOnlyChrome) return ownMailboxes;
+    return mailboxes;
+  }, [showCEOOnlyChrome, mailboxes, ownMailboxes]);
+
+  const showHistoricalShell =
+    myEmailTab === 'ceo' &&
+    (showCEOOnlyChrome ? ceoInboxMode === 'historical' : Boolean(isHeadOrEmp));
+
+  useEffect(() => {
+    if (!me || (me.role !== 'HEAD' && me.role !== 'EMPLOYEE')) return;
+    setMyEmailTab('ceo');
+    setCeoInboxMode('historical');
+  }, [me]);
+
+  useEffect(() => {
+    if (historicalMailboxCandidates.length === 0) return;
+    setHistMailboxId((prev) => {
+      if (prev && historicalMailboxCandidates.some((m) => m.id === prev)) return prev;
+      return historicalMailboxCandidates[0].id;
     });
-    const res = await apiFetch(`/self-tracking/historical-window-results?${params}`, token);
-    if (!res.ok) {
-      throw new Error(await readApiErrorMessage(res, 'Could not refresh historical results.'));
+  }, [historicalMailboxCandidates]);
+
+  const effectiveHistoricalMailboxId = useMemo(() => {
+    if (historicalMailboxCandidates.length === 0) return '';
+    if (histMailboxId && historicalMailboxCandidates.some((m) => m.id === histMailboxId)) {
+      return histMailboxId;
     }
-    const data = (await res.json()) as { conversations?: ConversationRow[] };
-    const conv = data.conversations ?? [];
-    setHistoricalRows(conv);
-    return conv;
-  }, [token, histStartDate, histEndDate, ownMailboxes]);
+    return historicalMailboxCandidates[0].id;
+  }, [histMailboxId, historicalMailboxCandidates]);
+
+  const refreshHistoricalWindowTable = useCallback(
+    async (override?: {
+      startIso: string;
+      endIso: string;
+      employeeId: string;
+    }): Promise<ConversationRow[]> => {
+      if (!token) return [];
+      const bounds = override
+        ? { startIso: override.startIso, endIso: override.endIso }
+        : localYmdRangeToIsoBounds(histStartDate, histEndDate);
+      if (!bounds) return [];
+      const targetMailboxId = override?.employeeId ?? effectiveHistoricalMailboxId;
+      if (!targetMailboxId) return [];
+      const params = new URLSearchParams({
+        start: bounds.startIso,
+        end: bounds.endIso,
+        employee_id: targetMailboxId,
+      });
+      const res = await apiFetch(`/self-tracking/historical-window-results?${params}`, token);
+      if (!res.ok) {
+        throw new Error(await readApiErrorMessage(res, 'Could not refresh historical results.'));
+      }
+      const data = (await res.json()) as { conversations?: ConversationRow[] };
+      const conv = data.conversations ?? [];
+      setHistoricalRows(conv);
+      return conv;
+    },
+    [token, histStartDate, histEndDate, effectiveHistoricalMailboxId],
+  );
+
+  const loadHistoricalSavedRuns = useCallback(async () => {
+    if (!token) return;
+    setHistoricalRunsLoading(true);
+    try {
+      const res = await apiFetch('/self-tracking/historical-search-runs?limit=50', token);
+      if (!res.ok) {
+        throw new Error(await readApiErrorMessage(res, 'Could not load saved searches.'));
+      }
+      const data = (await res.json()) as { runs?: HistoricalSearchRunItem[] };
+      setHistoricalSavedRuns(Array.isArray(data.runs) ? data.runs : []);
+    } catch (e) {
+      console.warn(e);
+    } finally {
+      setHistoricalRunsLoading(false);
+    }
+  }, [token]);
+
+  const applySavedHistoricalRun = useCallback(
+    async (run: HistoricalSearchRunItem) => {
+      if (showCEOOnlyChrome) setCeoInboxMode('historical');
+      setHistMailboxId(run.employee_id);
+      setHistStartDate(isoToLocalYmd(run.window_start));
+      setHistEndDate(isoToLocalYmd(run.window_end));
+      const st = run.stats ?? {};
+      setHistoricalStats({
+        fetched_from_gmail: Number(st.fetched_from_gmail ?? 0),
+        stored_relevant: Number(st.stored_relevant ?? 0),
+        skipped_irrelevant: Number(st.skipped_irrelevant ?? 0),
+        conversations_created: Number(st.conversations_created ?? 0),
+      });
+      setHistoricalSearched(true);
+      setError(null);
+      try {
+        await refreshHistoricalWindowTable({
+          startIso: run.window_start,
+          endIso: run.window_end,
+          employeeId: run.employee_id,
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not load threads for this saved search.');
+      }
+    },
+    [refreshHistoricalWindowTable, showCEOOnlyChrome],
+  );
+
+  useEffect(() => {
+    if (!searchParams.get('historicalRun')?.trim()) {
+      historicalRunUrlHandledRef.current = null;
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!showHistoricalShell || !token) return;
+    void loadHistoricalSavedRuns();
+  }, [showHistoricalShell, token, loadHistoricalSavedRuns]);
+
+  useEffect(() => {
+    const rid = searchParams.get('historicalRun')?.trim();
+    if (!rid || !token || !me) return;
+    if (historicalRunUrlHandledRef.current === rid) return;
+    let cancelled = false;
+    void (async () => {
+      const res = await apiFetch(`/self-tracking/historical-search-runs/${encodeURIComponent(rid)}`, token);
+      if (!res.ok || cancelled) return;
+      const data = (await res.json()) as { run?: HistoricalSearchRunItem };
+      if (!data.run || cancelled) return;
+      historicalRunUrlHandledRef.current = rid;
+      await applySavedHistoricalRun(data.run);
+      setExpandedHistoricalRunId(rid);
+      router.replace(pathname, { scroll: false });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams, token, me, applySavedHistoricalRun, router, pathname]);
 
   const searchHistoricalFetch = useCallback(async () => {
     if (!token) return;
@@ -1482,10 +1628,13 @@ function MyEmailPageInner() {
       return;
     }
 
-    /** Same mailbox row as Live Mails — CEO login inbox only, no picker. */
-    const targetMailboxId = ownMailboxes.length > 0 ? ownMailboxes[0].id : '';
+    const targetMailboxId = effectiveHistoricalMailboxId;
     if (!targetMailboxId) {
-      setError('Connect your CEO inbox under My Email (Live Mails) first.');
+      setError(
+        showCEOOnlyChrome
+          ? 'Connect your CEO inbox under My Email (Live Mails) first.'
+          : 'No mailbox in scope. Connect Gmail for this mailbox on the Employees / Team page first.',
+      );
       return;
     }
 
@@ -1612,6 +1761,7 @@ function MyEmailPageInner() {
                   skipped_irrelevant?: number;
                   conversations_created?: number;
                   stopped?: boolean;
+                  run_id?: string | null;
                 }
               | undefined;
             const conv = result?.conversations ?? [];
@@ -1624,6 +1774,10 @@ function MyEmailPageInner() {
             });
             setHistoricalSearched(true);
             setHistLive((prev) => ({ ...prev, phase: 'done' }));
+            void loadHistoricalSavedRuns();
+            if (result?.run_id) {
+              setExpandedHistoricalRunId(String(result.run_id));
+            }
             if (result?.stopped) {
               setSuccess(
                 conv.length > 0
@@ -1674,7 +1828,15 @@ function MyEmailPageInner() {
       historicalFetchAbortRef.current = null;
       setHistoricalLoading(false);
     }
-  }, [token, histStartDate, histEndDate, ownMailboxes, refreshHistoricalWindowTable]);
+  }, [
+    token,
+    histStartDate,
+    histEndDate,
+    effectiveHistoricalMailboxId,
+    refreshHistoricalWindowTable,
+    showCEOOnlyChrome,
+    loadHistoricalSavedRuns,
+  ]);
 
   const deleteHistoricalRow = useCallback(
     async (conversationId: string) => {
@@ -1989,7 +2151,7 @@ function MyEmailPageInner() {
                 : 30;
 
   useEffect(() => {
-    if (!token || !me || me.role !== 'CEO') return;
+    if (!token || !me || (me.role !== 'CEO' && me.role !== 'HEAD' && me.role !== 'EMPLOYEE')) return;
     const id = window.setTimeout(() => {
       void loadDashboard(token, syncEmployeeIdsParam || undefined);
     }, 180);
@@ -2108,7 +2270,7 @@ function MyEmailPageInner() {
     );
   }
 
-  if (me.role !== 'CEO') {
+  if (me.role !== 'CEO' && me.role !== 'HEAD' && me.role !== 'EMPLOYEE') {
     return (
       <AppShell
         role={me.role}
@@ -2122,17 +2284,21 @@ function MyEmailPageInner() {
   }
 
   const pageTitle =
-    myEmailTab === 'manager'
-      ? 'Manager mail'
-      : myEmailTab === 'team'
-        ? 'Team mail'
-        : 'My Email';
-  const shellSubtitle =
-    myEmailTab === 'ceo'
-      ? 'Your CEO inbox only. Gemini reads mail in your tracking window and keeps messages that may need a reply or follow-up.'
+    me.role === 'HEAD' || me.role === 'EMPLOYEE'
+      ? 'Historical search'
       : myEmailTab === 'manager'
-        ? 'Department heads’ tracked inboxes.'
-        : 'Individual contributors and other org mailboxes (not your CEO login).';
+        ? 'Manager mail'
+        : myEmailTab === 'team'
+          ? 'Team mail'
+          : 'My Email';
+  const shellSubtitle =
+    me.role === 'HEAD' || me.role === 'EMPLOYEE'
+      ? 'Pull Gmail for a date range and classify with AI for mailboxes you can access. Your scope is your department (managers) or your own mailbox (employees).'
+      : myEmailTab === 'ceo'
+        ? 'Your CEO inbox only. Gemini reads mail in your tracking window and keeps messages that may need a reply or follow-up.'
+        : myEmailTab === 'manager'
+          ? 'Department heads’ tracked inboxes.'
+          : 'Individual contributors and other org mailboxes (not your CEO login).';
 
   const bulkDeleteBarPct =
     bulkDeleteProgress == null || bulkDeleteProgress.total <= 0
@@ -2411,58 +2577,94 @@ function MyEmailPageInner() {
         <>
           {myEmailTab === 'ceo' ? (
             <div className="mb-6 space-y-4">
-              <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card">
-                <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  CEO inbox
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setCeoInboxMode('live')}
-                  className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
-                    ceoInboxMode === 'live'
-                      ? 'bg-slate-900 text-white'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
-                  }`}
-                >
-                  Live Mails
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCeoInboxMode('historical');
-                    if (!histEndDate || !histStartDate) {
-                      const end = new Date();
-                      const start = new Date();
-                      start.setDate(start.getDate() - 30);
-                      setHistEndDate(formatLocalYmd(end));
-                      setHistStartDate(formatLocalYmd(start));
-                    }
-                  }}
-                  className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
-                    ceoInboxMode === 'historical'
-                      ? 'bg-slate-900 text-white'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
-                  }`}
-                >
-                  Historical Search
-                </button>
-              </div>
-              {ceoInboxMode === 'live' ? (
-                <CeoLiveSyncStrip
-                  mailboxes={ownMailboxes}
-                  onSyncNow={() => void runLiveIngestionNow()}
-                  syncBusy={liveSyncBusy}
-                />
-              ) : null}
+              {showCEOOnlyChrome ? (
+                <>
+                  <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card">
+                    <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      CEO inbox
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setCeoInboxMode('live')}
+                      className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
+                        ceoInboxMode === 'live'
+                          ? 'bg-slate-900 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
+                      }`}
+                    >
+                      Live Mails
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCeoInboxMode('historical');
+                        if (!histEndDate || !histStartDate) {
+                          const end = new Date();
+                          const start = new Date();
+                          start.setDate(start.getDate() - 30);
+                          setHistEndDate(formatLocalYmd(end));
+                          setHistStartDate(formatLocalYmd(start));
+                        }
+                      }}
+                      className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
+                        ceoInboxMode === 'historical'
+                          ? 'bg-slate-900 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
+                      }`}
+                    >
+                      Historical Search
+                    </button>
+                  </div>
+                  {ceoInboxMode === 'live' ? (
+                    <CeoLiveSyncStrip
+                      mailboxes={ownMailboxes}
+                      onSyncNow={() => void runLiveIngestionNow()}
+                      syncBusy={liveSyncBusy}
+                    />
+                  ) : null}
+                </>
+              ) : (
+                <div className="rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Mailbox for this search
+                  </p>
+                  {historicalMailboxCandidates.length > 1 ? (
+                    <label className="mt-2 flex max-w-md flex-col gap-1 text-xs font-medium text-slate-600">
+                      Select inbox
+                      <select
+                        value={histMailboxId}
+                        onChange={(e) => setHistMailboxId(e.target.value)}
+                        className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                      >
+                        {historicalMailboxCandidates.map((mb) => (
+                          <option key={mb.id} value={mb.id}>
+                            {mb.name} · {mb.email}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : historicalMailboxCandidates.length === 1 ? (
+                    <p className="mt-1 text-sm text-slate-700">
+                      {historicalMailboxCandidates[0].name} · {historicalMailboxCandidates[0].email}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-sm text-amber-800">
+                      No tracked mailbox in your scope yet. Connect Gmail from the Team / Employees page.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           ) : null}
 
-          {myEmailTab === 'ceo' && ceoInboxMode === 'historical' ? (
+          {showHistoricalShell ? (
             <section className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-card sm:p-5">
               <h2 className="text-lg font-bold text-slate-900">Historical Search</h2>
-              {ownMailboxes.length > 0 ? (
+              {historicalMailboxCandidates.length > 0 ? (
                 <p className="mt-2 text-[11px] text-slate-400">
-                  Inbox: {ownMailboxes[0].name} · {ownMailboxes[0].email}
+                  Inbox:{' '}
+                  {historicalMailboxCandidates.find((m) => m.id === effectiveHistoricalMailboxId)?.name ?? '—'} ·{' '}
+                  {historicalMailboxCandidates.find((m) => m.id === effectiveHistoricalMailboxId)?.email ?? ''}
                 </p>
               ) : null}
               <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
@@ -2522,6 +2724,84 @@ function MyEmailPageInner() {
                     </button>
                   ) : null}
                 </div>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-3 sm:px-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Saved searches</p>
+                  <button
+                    type="button"
+                    onClick={() => void loadHistoricalSavedRuns()}
+                    disabled={historicalRunsLoading}
+                    className="text-xs font-semibold text-brand-600 hover:text-brand-800 disabled:opacity-50"
+                  >
+                    {historicalRunsLoading ? 'Refreshing…' : 'Refresh list'}
+                  </button>
+                </div>
+                <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                  Each completed Gmail fetch is stored with its date range and stats. Open one to reload that window’s
+                  threads (same as choosing those dates and mailbox).
+                </p>
+                {historicalSavedRuns.length === 0 && !historicalRunsLoading ? (
+                  <p className="mt-3 text-sm text-slate-500">No saved searches yet — run <strong>Fetch from Gmail</strong> above.</p>
+                ) : (
+                  <ul className="mt-3 space-y-2">
+                    {historicalSavedRuns.map((run) => {
+                      const open = expandedHistoricalRunId === run.id;
+                      const st = run.stats ?? {};
+                      return (
+                        <li key={run.id} className="rounded-lg border border-white/80 bg-white/90 shadow-sm">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedHistoricalRunId((prev) => (prev === run.id ? null : run.id))
+                            }
+                            className="flex w-full items-start justify-between gap-2 px-3 py-2.5 text-left text-sm text-slate-800 hover:bg-slate-50/90"
+                          >
+                            <span className="min-w-0 flex-1">
+                              <span className="block font-semibold text-slate-900">{run.report_summary}</span>
+                              <span className="mt-0.5 block text-[11px] text-slate-500">
+                                Saved {new Date(run.created_at).toLocaleString()}
+                              </span>
+                            </span>
+                            <span className="shrink-0 text-slate-400" aria-hidden>
+                              {open ? '▾' : '▸'}
+                            </span>
+                          </button>
+                          {open ? (
+                            <div className="border-t border-slate-100 px-3 py-3 text-xs text-slate-600">
+                              <dl className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
+                                <div>
+                                  <dt className="text-slate-400">Listed from Gmail</dt>
+                                  <dd className="font-mono tabular-nums">{String(st.fetched_from_gmail ?? '—')}</dd>
+                                </div>
+                                <div>
+                                  <dt className="text-slate-400">Kept (relevant)</dt>
+                                  <dd className="font-mono tabular-nums">{String(st.stored_relevant ?? '—')}</dd>
+                                </div>
+                                <div>
+                                  <dt className="text-slate-400">Skipped</dt>
+                                  <dd className="font-mono tabular-nums">{String(st.skipped_irrelevant ?? '—')}</dd>
+                                </div>
+                                <div>
+                                  <dt className="text-slate-400">Threads in view</dt>
+                                  <dd className="font-mono tabular-nums">{run.conversation_count}</dd>
+                                </div>
+                              </dl>
+                              <button
+                                type="button"
+                                onClick={() => void applySavedHistoricalRun(run)}
+                                className="mt-3 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                              >
+                                Load this search
+                              </button>
+                            </div>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
 
               {historicalLoading ? (
@@ -2836,7 +3116,7 @@ function MyEmailPageInner() {
                 </div>
               ) : null}
             </section>
-          ) : (
+          ) : showCEOOnlyChrome ? (
             <>
           {/* ── KPI strip — follow-up command center (scoped to tab) ── */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -3358,7 +3638,7 @@ function MyEmailPageInner() {
           </section>
           </div>
             </>
-          )}
+          ) : null}
 
         </>
       )}

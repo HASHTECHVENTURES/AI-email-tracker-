@@ -78,6 +78,17 @@ type DashboardPayload = {
   employee_filter_options: { id: string; name: string; department_name?: string | null; is_manager?: boolean }[];
   my_followups?: { missed: number; pending: number; done: number };
   ceo_department_rollups?: CeoDepartmentRollup[];
+  historical_search_runs?: {
+    id: string;
+    employee_id: string;
+    mailbox_name: string;
+    window_start: string;
+    window_end: string;
+    created_at: string;
+    report_summary: string;
+    conversation_count: number;
+    stats: Record<string, unknown>;
+  }[];
 };
 
 type CeoDeptDirectoryRow = {
@@ -816,6 +827,41 @@ export default function DashboardPage() {
   const cardClass =
     'rounded-2xl border border-slate-200/60 bg-surface-card p-6 shadow-card';
 
+  const historicalRuns = dash.historical_search_runs ?? [];
+  const historicalSearchCard =
+    historicalRuns.length > 0 ? (
+      <section className={cardClass}>
+        <div className="mb-4 border-b border-slate-100 pb-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">My Email</p>
+          <h2 className="mt-1 text-lg font-bold text-slate-950">Historical search log</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Recent Gmail date-range runs you saved. Open one in My Email to see threads for that window.
+          </p>
+        </div>
+        <ul className="space-y-2">
+          {historicalRuns.map((r) => (
+            <li key={r.id}>
+              <Link
+                href={`/my-email?historicalRun=${encodeURIComponent(r.id)}`}
+                className="block rounded-xl border border-slate-100 bg-slate-50/50 px-4 py-3 text-sm transition hover:border-brand-200 hover:bg-white"
+              >
+                <span className="font-medium text-slate-900">{r.report_summary}</span>
+                <span className="mt-1 block text-xs text-slate-500">
+                  Saved {new Date(r.created_at).toLocaleString()}
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+        <Link
+          href="/my-email"
+          className="mt-4 inline-flex text-sm font-semibold text-brand-600 hover:text-brand-800"
+        >
+          Open My Email →
+        </Link>
+      </section>
+    ) : null;
+
   const conversationsBrowse = (
     <>
       <div id="conv-filters" className="mb-4 flex flex-wrap gap-4">
@@ -991,6 +1037,8 @@ export default function DashboardPage() {
                 </div>
               ))}
             </section>
+
+            {historicalSearchCard}
 
             {(dash.ceo_department_rollups?.length ?? 0) > 0 ? (
               <section className={cardClass}>
@@ -1386,6 +1434,8 @@ export default function DashboardPage() {
                 </div>
               ))}
             </section>
+
+            {historicalSearchCard}
 
         {isEmployee && teamAlerts?.items?.some((a) => !a.read_at && !a.in_reply_to) ? (
           <div className="space-y-3" role="region" aria-label="Messages from your manager">

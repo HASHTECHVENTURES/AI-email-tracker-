@@ -6,8 +6,8 @@ import { retryWithBackoff } from '../common/retry.util';
 import { getGoogleOAuthCredentials } from '../common/google-oauth-credentials';
 
 /**
- * Gmail label IDs that indicate the message is NOT a direct human conversation.
- * Excluding these at the query level AND on the fetched message.
+ * Gmail label IDs used as a weak hint to Gemini (`isNoise` → prompt), not to exclude from `messages.list`.
+ * Category tabs (Promotions/Social/Forums) are no longer filtered in the list query so misfiled client mail can sync.
  */
 const NOISE_LABEL_IDS = new Set([
   'CATEGORY_PROMOTIONS',
@@ -27,10 +27,6 @@ const BASE_QUERY_FILTERS = [
   '{in:inbox in:sent}',
   '-in:spam',
   '-in:trash',
-  '-category:promotions',
-  '-category:social',
-  // Do not exclude category:updates — otherwise many legitimate inbound emails never appear in messages.list.
-  '-category:forums',
   '-is:muted',
 ].join(' ');
 
@@ -130,7 +126,7 @@ export class GmailService {
     return ids;
   }
 
-  /** Returns true if the message has a noise label — second safety net after query filters. */
+  /** Returns true if Gmail labeled the message as promo/social/forums — passed to Gemini as a weak hint only. */
   isNoise(labelIds: string[] | undefined): boolean {
     if (!labelIds) return false;
     return labelIds.some((l) => NOISE_LABEL_IDS.has(l));
