@@ -11,7 +11,9 @@ import {
 } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY } from '@/lib/api';
+
+export type ManagedDepartment = { id: string; name: string };
 
 export type AuthMe = {
   id: string;
@@ -21,7 +23,35 @@ export type AuthMe = {
   company_name?: string | null;
   role: string;
   department_id: string | null;
+  managed_department_ids?: string[];
+  managed_departments?: ManagedDepartment[];
 };
+
+function resolveManagerActiveDept(me: AuthMe): string | null {
+  if (me.role !== 'HEAD' || !me.managed_department_ids?.length) return null;
+  const allowed = new Set(me.managed_department_ids);
+  let fromStore = '';
+  try {
+    if (typeof window !== 'undefined') {
+      fromStore = localStorage.getItem(MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY)?.trim() ?? '';
+    }
+  } catch {
+    /* ignore */
+  }
+  if (fromStore && allowed.has(fromStore)) return fromStore;
+  const fb =
+    me.department_id && allowed.has(me.department_id)
+      ? me.department_id
+      : (me.managed_department_ids[0] ?? null);
+  if (fb && typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY, fb);
+    } catch {
+      /* ignore */
+    }
+  }
+  return fb;
+}
 
 type AuthState = {
   me: AuthMe | null;
@@ -31,6 +61,9 @@ type AuthState = {
   signOut: () => Promise<void>;
   /** Re-fetch /auth/me; pass token immediately after sign-in so navigation waits on profile. */
   refreshMe: (accessToken?: string) => Promise<void>;
+  /** Department manager (HEAD): active team for API scope (`x-manager-department-id`). */
+  managerActiveDepartmentId: string | null;
+  setManagerActiveDepartmentId: (id: string) => void;
 };
 
 const AuthContext = createContext<AuthState>({
@@ -40,6 +73,8 @@ const AuthContext = createContext<AuthState>({
   error: null,
   signOut: async () => {},
   refreshMe: async () => {},
+  managerActiveDepartmentId: null,
+  setManagerActiveDepartmentId: () => {},
 });
 
 export function useAuth() {
@@ -52,6 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [managerActiveDepartmentId, setManagerActiveDepartmentIdState] = useState<string | null>(null);
 
   const loadProfile = useCallback(async (accessToken: string) => {
     let meRes: Response;
@@ -60,6 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       setError('Cannot reach API server. Check backend URL or whether backend is running.');
       setMe(null);
+      setManagerActiveDepartmentIdState(null);
       return;
     }
     if (!meRes.ok) {
@@ -69,6 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setMe(null);
         setToken(null);
         setError(null);
+        setManagerActiveDepartmentIdState(null);
         return;
       }
       // Signed in to Supabase but no `users` row yet — backend returns 403 ONBOARDING_REQUIRED (see AppAuthGuard).
@@ -88,15 +126,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (code === 'ONBOARDING_REQUIRED') {
           setMe(null);
           setError(null);
+          setManagerActiveDepartmentIdState(null);
           return;
         }
       }
       setError('Could not load profile.');
       setMe(null);
+      setManagerActiveDepartmentIdState(null);
       return;
     }
-    setMe((await meRes.json()) as AuthMe);
+    const parsed = (await meRes.json()) as AuthMe;
+    setMe(parsed);
+    setManagerActiveDepartmentIdState(resolveManagerActiveDept(parsed));
     setError(null);
+  }, []);
+
+  const setManagerActiveDepartmentId = useCallback((id: string) => {
+    try {
+      localStorage.setItem(MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY, id);
+    } catch {
+      /* ignore */
+    }
+    setManagerActiveDepartmentIdState(id);
   }, []);
 
   const bootstrap = useCallback(async () => {
@@ -137,6 +188,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setMe(null);
         setToken(null);
         setError(null);
+        setManagerActiveDepartmentIdState(null);
+        try {
+          localStorage.removeItem(MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY);
+        } catch {
+          /* ignore */
+        }
         return;
       }
       setToken(session.access_token);
@@ -153,6 +210,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await supabase.auth.signOut();
     setMe(null);
     setToken(null);
+    setManagerActiveDepartmentIdState(null);
+    try {
+      localStorage.removeItem(MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
     router.replace('/auth');
   }, [router]);
 
@@ -167,8 +230,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ me, token, loading, error, signOut, refreshMe }),
-    [me, token, loading, error, signOut, refreshMe],
+    () => ({
+      me,
+      token,
+      loading,
+      error,
+      signOut,
+      refreshMe,
+      managerActiveDepartmentId,
+      setManagerActiveDepartmentId,
+    }),
+    [
+      me,
+      token,
+      loading,
+      error,
+      signOut,
+      refreshMe,
+      managerActiveDepartmentId,
+      setManagerActiveDepartmentId,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

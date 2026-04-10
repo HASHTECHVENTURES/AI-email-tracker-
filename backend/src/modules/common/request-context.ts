@@ -9,9 +9,18 @@ export interface RequestContext {
   departmentId?: string;
 }
 
+function readManagerActiveDepartmentHeader(req: Request): string | undefined {
+  const raw = req.headers['x-manager-department-id'];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+}
+
 /**
  * Tenant context from the authenticated `public.users` row only.
  * Never use x-company-id / x-role headers for authorization.
+ *
+ * **HEAD:** optional `x-manager-department-id` selects which managed team this request applies to
+ * (must be in `user.managedDepartmentIds`). If omitted, uses profile default (`user.departmentId`).
  */
 export function getRequestContext(req: Request): RequestContext {
   const user = req.user;
@@ -25,11 +34,35 @@ export function getRequestContext(req: Request): RequestContext {
     );
   }
 
+  let departmentId = user.departmentId ?? undefined;
+
+  if (user.role === 'HEAD') {
+    const managed =
+      user.managedDepartmentIds && user.managedDepartmentIds.length > 0
+        ? user.managedDepartmentIds
+        : user.departmentId
+          ? [user.departmentId]
+          : [];
+    const requested = readManagerActiveDepartmentHeader(req);
+    if (managed.length > 0) {
+      if (requested && managed.includes(requested)) {
+        departmentId = requested;
+      } else {
+        departmentId =
+          user.departmentId && managed.includes(user.departmentId)
+            ? user.departmentId
+            : managed[0];
+      }
+    } else {
+      departmentId = undefined;
+    }
+  }
+
   return {
     companyId: user.companyId,
     role: user.role,
     employeeId: user.role === 'EMPLOYEE' ? user.linkedEmployeeId ?? undefined : undefined,
-    departmentId: user.departmentId ?? undefined,
+    departmentId,
   };
 }
 

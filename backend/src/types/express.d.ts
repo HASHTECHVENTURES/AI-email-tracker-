@@ -7,8 +7,13 @@ export interface AuthedRequestUser {
   companyId: string;
   companyName: string | null;
   role: EmployeeRole;
-  /** Set when the user is a HEAD; links them to their department scope */
+  /**
+   * Default department for HEAD (legacy `users.department_id` when in managed set, else first managed).
+   * Active scope may be overridden per request via `x-manager-department-id` (see getRequestContext).
+   */
   departmentId: string | null;
+  /** HEAD: all department IDs this user may manage (memberships + legacy profile). Empty for other roles. */
+  managedDepartmentIds: string[];
   /** Tracked employee row for EMPLOYEE role (dashboard scope) */
   linkedEmployeeId: string | null;
 }

@@ -78,7 +78,7 @@ type ConversationRow = {
 
 const MAIL_PAGE_SIZE = 50;
 
-type MailTab = 'action' | 'waiting' | 'cc' | 'closed' | 'noise' | 'all';
+type MailTab = 'action' | 'waiting' | 'cc' | 'closed' | 'noise' | 'all' | 'skipped';
 
 /** Mirrors GET /settings (includes company_admin_ai_enabled). Used before Start to gate ingest without Inbox AI. */
 type IngestAiSettings = {
@@ -554,45 +554,38 @@ function clipStr(s: string | null | undefined, max: number): string {
 
 const AI_SKIPPED_PAGE = 25;
 
-/** Skipped-message ledger for Live Mails (shown below KPIs next to Follow-ups). */
-function AiSkippedMailsPanel({
+/** Inbox AI / tracking skips — rendered inside Follow-ups → Skipped tab (same table chrome as other tabs). */
+function SkippedMailsTabTable({
   mailboxes,
+  rows,
   aiSkippedMailboxId,
   onMailboxChange,
   onRefresh,
   aiSkippedLoading,
   aiSkippedTotal,
-  aiSkippedRows,
   aiSkippedOffset,
   setAiSkippedOffset,
   onClearSkip,
   aiSkippedClearingId,
+  unfilteredPageCount,
 }: {
   mailboxes: Mailbox[];
+  rows: AiSkippedMailItem[];
+  /** Rows on this API page before client search filter (for empty-state copy). */
+  unfilteredPageCount: number;
   aiSkippedMailboxId: string;
   onMailboxChange: (id: string) => void;
   onRefresh: () => void;
   aiSkippedLoading: boolean;
   aiSkippedTotal: number;
-  aiSkippedRows: AiSkippedMailItem[];
   aiSkippedOffset: number;
   setAiSkippedOffset: Dispatch<SetStateAction<number>>;
   onClearSkip: (providerMessageId: string) => void;
   aiSkippedClearingId: string | null;
 }) {
   return (
-    <div className="rounded-2xl border border-amber-200/80 bg-gradient-to-br from-amber-50/90 via-white to-slate-50/80 px-4 py-4 shadow-card sm:px-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <p className="text-xs font-bold uppercase tracking-wide text-amber-900/90">
-            Messages not added to your tracker
-          </p>
-          <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
-            Gmail sync sometimes skips mail (Inbox AI marked it not relevant, or it was before your tracking start).
-            Review here and open in Gmail. Use <strong>Re-try on next sync</strong> to remove the skip and let the next
-            run fetch it again.
-          </p>
-        </div>
+    <div className="space-y-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         {mailboxes.length > 1 ? (
           <label className="flex min-w-[12rem] flex-col gap-1 text-xs font-medium text-slate-600">
             Mailbox
@@ -609,29 +602,37 @@ function AiSkippedMailsPanel({
             </select>
           </label>
         ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={aiSkippedLoading}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+          >
+            {aiSkippedLoading ? 'Loading…' : 'Refresh'}
+          </button>
+          <span className="text-[11px] text-slate-500">
+            {aiSkippedTotal} total skip{aiSkippedTotal === 1 ? '' : 's'} recorded
+          </span>
+        </div>
       </div>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={aiSkippedLoading}
-          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-        >
-          {aiSkippedLoading ? 'Loading…' : 'Refresh'}
-        </button>
-        <span className="text-[11px] text-slate-500">
-          {aiSkippedTotal} total skip{aiSkippedTotal === 1 ? '' : 's'} recorded
-        </span>
-      </div>
-      {aiSkippedRows.length === 0 && !aiSkippedLoading ? (
-        <p className="mt-3 text-sm text-slate-600">
-          No skipped messages in the ledger for this mailbox yet (or all were cleared).
+      <p className="text-[11px] leading-relaxed text-slate-500">
+        These messages were not stored in your tracker. <strong className="font-medium text-slate-700">Re-try on next sync</strong>{' '}
+        removes the skip so the next Gmail run can import them if Inbox AI agrees.
+      </p>
+      {rows.length === 0 && !aiSkippedLoading ? (
+        <p className="rounded-lg border border-slate-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
+          {aiSkippedTotal === 0
+            ? 'No skipped messages in the ledger for this mailbox yet (or all were cleared).'
+            : unfilteredPageCount > 0
+              ? 'No matches for your search in the rows on this page — clear search or use Previous / Next.'
+              : 'Nothing on this results page — use Previous / Next.'}
         </p>
       ) : null}
-      {aiSkippedRows.length > 0 ? (
-        <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200/80 bg-white/90">
+      {rows.length > 0 ? (
+        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
           <table className="min-w-full divide-y divide-slate-100 text-left text-xs">
-            <thead className="bg-slate-50/90 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+            <thead className="bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-3 py-2">When skipped</th>
                 <th className="px-3 py-2">Kind</th>
@@ -642,7 +643,7 @@ function AiSkippedMailsPanel({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-800">
-              {aiSkippedRows.map((row) => {
+              {rows.map((row) => {
                 const gmailUrl =
                   row.provider_thread_id && row.provider_thread_id.length > 0
                     ? `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(row.provider_thread_id)}`
@@ -692,7 +693,7 @@ function AiSkippedMailsPanel({
                         type="button"
                         disabled={aiSkippedClearingId === row.provider_message_id}
                         onClick={() => onClearSkip(row.provider_message_id)}
-                        className="text-[11px] font-semibold text-amber-800 hover:underline disabled:opacity-40"
+                        className="text-[11px] font-semibold text-brand-700 hover:underline disabled:opacity-40"
                       >
                         {aiSkippedClearingId === row.provider_message_id ? '…' : 'Re-try on next sync'}
                       </button>
@@ -705,7 +706,7 @@ function AiSkippedMailsPanel({
         </div>
       ) : null}
       {aiSkippedTotal > AI_SKIPPED_PAGE ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
           <button
             type="button"
             disabled={aiSkippedOffset <= 0 || aiSkippedLoading}
@@ -1024,8 +1025,25 @@ function MyEmailPageInner() {
   const historicalFetchAbortRef = useRef<AbortController | null>(null);
   /** Avoid re-applying the same `?historicalRun=` deep link on re-renders. */
   const historicalRunUrlHandledRef = useRef<string | null>(null);
+  /** Historical thread table: header “select all” indeterminate state. */
+  const historicalTableSelectAllRef = useRef<HTMLInputElement>(null);
+  /** AI-skipped panel table: header “select all”. */
+  const histSkippedPanelSelectAllRef = useRef<HTMLInputElement>(null);
   const [histDeletingAll, setHistDeletingAll] = useState(false);
   const [histRowDeletingId, setHistRowDeletingId] = useState<string | null>(null);
+  /** Historical results table: bulk selection (conversation_id). */
+  const [historicalThreadSelectedIds, setHistoricalThreadSelectedIds] = useState<string[]>([]);
+  /** Historical Search: show AI-skipped detail for the current date window. */
+  const [histAiSkippedPanelOpen, setHistAiSkippedPanelOpen] = useState(false);
+  const [histWindowSkippedRows, setHistWindowSkippedRows] = useState<AiSkippedMailItem[]>([]);
+  const [histWindowSkippedTotal, setHistWindowSkippedTotal] = useState(0);
+  const [histWindowSkippedOffset, setHistWindowSkippedOffset] = useState(0);
+  const [histWindowSkippedLoading, setHistWindowSkippedLoading] = useState(false);
+  const [histWindowSkippedSelectedIds, setHistWindowSkippedSelectedIds] = useState<string[]>([]);
+  const [histWindowSkipClearingId, setHistWindowSkipClearingId] = useState<string | null>(null);
+  const [histWindowSkippedBulkClearing, setHistWindowSkippedBulkClearing] = useState(false);
+  const [histWindowSkipSearch, setHistWindowSkipSearch] = useState('');
+  const HIST_WINDOW_SKIPPED_PAGE = 50;
   /** Mailbox row id for Historical Search (managers pick a team inbox; employees have one). */
   const [histMailboxId, setHistMailboxId] = useState('');
   const [historicalSavedRuns, setHistoricalSavedRuns] = useState<HistoricalSearchRunItem[]>([]);
@@ -1894,6 +1912,34 @@ function MyEmailPageInner() {
     }
   }, [token, aiSkippedMailboxId, aiSkippedOffset]);
 
+  const loadHistWindowSkippedMails = useCallback(async () => {
+    if (!token || !effectiveHistoricalMailboxId) return;
+    const bounds = localYmdRangeToIsoBounds(histStartDate, histEndDate);
+    if (!bounds) return;
+    setHistWindowSkippedLoading(true);
+    try {
+      const params = new URLSearchParams({
+        employee_id: effectiveHistoricalMailboxId,
+        limit: String(HIST_WINDOW_SKIPPED_PAGE),
+        offset: String(histWindowSkippedOffset),
+        window_start: bounds.startIso,
+        window_end: bounds.endIso,
+      });
+      const res = await apiFetch(`/self-tracking/ai-skipped-mails?${params}`, token);
+      if (!res.ok) {
+        throw new Error(await readApiErrorMessage(res, 'Could not load AI-skipped messages.'));
+      }
+      const data = (await res.json()) as { items?: AiSkippedMailItem[]; total?: number };
+      setHistWindowSkippedRows(Array.isArray(data.items) ? data.items : []);
+      setHistWindowSkippedTotal(typeof data.total === 'number' ? data.total : 0);
+    } catch (e) {
+      console.warn(e);
+      setError(e instanceof Error ? e.message : 'Could not load skipped messages for this window.');
+    } finally {
+      setHistWindowSkippedLoading(false);
+    }
+  }, [token, effectiveHistoricalMailboxId, histStartDate, histEndDate, histWindowSkippedOffset]);
+
   const deleteHistoricalSearchRunById = useCallback(
     async (id: string) => {
       if (!token) return false;
@@ -1960,11 +2006,96 @@ function MyEmailPageInner() {
     [token, aiSkippedMailboxId, loadAiSkippedMails],
   );
 
+  const clearHistWindowSkipEntry = useCallback(
+    async (providerMessageId: string) => {
+      if (!token || !effectiveHistoricalMailboxId) return;
+      setHistWindowSkipClearingId(providerMessageId);
+      setError(null);
+      try {
+        const params = new URLSearchParams({
+          employee_id: effectiveHistoricalMailboxId,
+          provider_message_id: providerMessageId,
+        });
+        const res = await apiFetch(`/self-tracking/ai-skipped-mails?${params}`, token, {
+          method: 'DELETE',
+        });
+        if (!res.ok) {
+          setError(await readApiErrorMessage(res, 'Could not clear skip.'));
+          return;
+        }
+        await loadHistWindowSkippedMails();
+        setSuccess('Skip removed — run Fetch from Gmail again for this range to re-classify.');
+      } finally {
+        setHistWindowSkipClearingId(null);
+      }
+    },
+    [token, effectiveHistoricalMailboxId, loadHistWindowSkippedMails],
+  );
+
+  const clearSelectedHistWindowSkips = useCallback(async () => {
+    if (!token || !effectiveHistoricalMailboxId || histWindowSkippedSelectedIds.length === 0) return;
+    const ids = [...histWindowSkippedSelectedIds];
+    if (
+      !window.confirm(
+        `Clear skip for ${ids.length} message(s)? On the next historical fetch, Inbox AI can re-evaluate them.`,
+      )
+    ) {
+      return;
+    }
+    setHistWindowSkippedBulkClearing(true);
+    setError(null);
+    try {
+      let ok = 0;
+      let fail = 0;
+      for (const providerMessageId of ids) {
+        const params = new URLSearchParams({
+          employee_id: effectiveHistoricalMailboxId,
+          provider_message_id: providerMessageId,
+        });
+        const res = await apiFetch(`/self-tracking/ai-skipped-mails?${params}`, token, {
+          method: 'DELETE',
+        });
+        if (res.ok) ok++;
+        else fail++;
+      }
+      setHistWindowSkippedSelectedIds([]);
+      if (fail > 0) {
+        setError(`${fail} message(s) could not be cleared (${ok} cleared).`);
+      } else {
+        setSuccess(`${ok} skip(s) cleared — run Fetch from Gmail again to import if AI agrees.`);
+      }
+      await loadHistWindowSkippedMails();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Bulk clear failed.');
+    } finally {
+      setHistWindowSkippedBulkClearing(false);
+    }
+  }, [
+    token,
+    effectiveHistoricalMailboxId,
+    histWindowSkippedSelectedIds,
+    loadHistWindowSkippedMails,
+  ]);
+
   useEffect(() => {
-    if (!showCEOOnlyChrome || ceoInboxMode !== 'live') return;
+    if (!showCEOOnlyChrome || ceoInboxMode !== 'live' || mailTab !== 'skipped') return;
     if (!token || !aiSkippedMailboxId) return;
     void loadAiSkippedMails();
-  }, [showCEOOnlyChrome, ceoInboxMode, token, aiSkippedMailboxId, aiSkippedOffset, loadAiSkippedMails]);
+  }, [
+    showCEOOnlyChrome,
+    ceoInboxMode,
+    mailTab,
+    token,
+    aiSkippedMailboxId,
+    aiSkippedOffset,
+    loadAiSkippedMails,
+  ]);
+
+  useEffect(() => {
+    if (ceoInboxMode === 'historical' && mailTab === 'skipped') {
+      setMailTab('action');
+    }
+  }, [ceoInboxMode, mailTab]);
 
   const applySavedHistoricalRun = useCallback(
     async (run: HistoricalSearchRunItem) => {
@@ -2270,11 +2401,12 @@ function MyEmailPageInner() {
     [token],
   );
 
-  const deleteAllHistoricalResults = useCallback(async () => {
-    if (!token || historicalRows.length === 0) return;
+  const deleteSelectedHistoricalThreads = useCallback(async () => {
+    if (!token || historicalThreadSelectedIds.length === 0) return;
+    const ids = [...historicalThreadSelectedIds];
     if (
       !window.confirm(
-        `Remove all ${historicalRows.length} threads shown from this search from the tracker? Stored email for those threads will be deleted.`,
+        `Remove ${ids.length} selected thread(s) from the tracker? Stored messages for those threads will be deleted from this app. Gmail is not changed.`,
       )
     ) {
       return;
@@ -2282,22 +2414,22 @@ function MyEmailPageInner() {
     setHistDeletingAll(true);
     setError(null);
     try {
-      const ids = historicalRows.map((c) => c.conversation_id);
       const { ok, fail } = await bulkDeleteConversationsById(ids, token, () => {});
+      setHistoricalThreadSelectedIds([]);
       if (fail > 0) {
         setError(`${fail} thread(s) could not be removed (${ok} removed).`);
         await refreshHistoricalWindowTable().catch(() => {});
       } else {
-        setHistoricalRows([]);
-        setHistoricalStats(null);
-        setSuccess('All listed threads were removed from the tracker.');
+        setHistoricalRows((rows) => rows.filter((c) => !ids.includes(c.conversation_id)));
+        setSuccess(`${ok} thread(s) removed from the tracker.`);
+        await refreshHistoricalWindowTable().catch(() => {});
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Bulk delete failed.');
     } finally {
       setHistDeletingAll(false);
     }
-  }, [token, historicalRows, refreshHistoricalWindowTable]);
+  }, [token, historicalThreadSelectedIds, refreshHistoricalWindowTable]);
 
   /** Department managers only — matches HEAD user in org (not every IC). */
   const managerMailboxes = useMemo(
@@ -2388,6 +2520,8 @@ function MyEmailPageInner() {
 
   const tabSourceRows = useMemo(() => {
     switch (mailTab) {
+      case 'skipped':
+        return [];
       case 'noise':
         return scopedConversations.filter((c) => c.priority === 'LOW');
       case 'action':
@@ -2422,6 +2556,25 @@ function MyEmailPageInner() {
     allTabStatus,
     allTabPriority,
   ]);
+
+  const searchFilteredSkippedRows = useMemo(() => {
+    const q = threadSearch.trim().toLowerCase();
+    if (!q) return aiSkippedRows;
+    return aiSkippedRows.filter((row) => {
+      const sub = (row.subject ?? '').toLowerCase();
+      const from = (row.from_email ?? '').toLowerCase();
+      const reason = (row.skip_reason ?? '').toLowerCase();
+      const kind = (row.skip_kind ?? '').toLowerCase();
+      const mid = (row.provider_message_id ?? '').toLowerCase();
+      return (
+        sub.includes(q) ||
+        from.includes(q) ||
+        reason.includes(q) ||
+        kind.includes(q) ||
+        mid.includes(q)
+      );
+    });
+  }, [aiSkippedRows, threadSearch]);
 
   const searchFilteredTabRows = useMemo(() => {
     const q = threadSearch.trim().toLowerCase();
@@ -2484,6 +2637,64 @@ function MyEmailPageInner() {
       );
     });
   }, [historicalRows, threadSearch]);
+
+  const histWindowSkippedFilteredRows = useMemo(() => {
+    const q = histWindowSkipSearch.trim().toLowerCase();
+    if (!q) return histWindowSkippedRows;
+    return histWindowSkippedRows.filter((row) => {
+      const sub = (row.subject ?? '').toLowerCase();
+      const from = (row.from_email ?? '').toLowerCase();
+      const reason = (row.skip_reason ?? '').toLowerCase();
+      const kind = (row.skip_kind ?? '').toLowerCase();
+      return sub.includes(q) || from.includes(q) || reason.includes(q) || kind.includes(q);
+    });
+  }, [histWindowSkippedRows, histWindowSkipSearch]);
+
+  useEffect(() => {
+    const allowed = new Set(historicalFilteredRows.map((c) => c.conversation_id));
+    setHistoricalThreadSelectedIds((prev) => prev.filter((id) => allowed.has(id)));
+  }, [historicalFilteredRows]);
+
+  useEffect(() => {
+    const allowed = new Set(histWindowSkippedFilteredRows.map((r) => r.provider_message_id));
+    setHistWindowSkippedSelectedIds((prev) => prev.filter((id) => allowed.has(id)));
+  }, [histWindowSkippedFilteredRows]);
+
+  useEffect(() => {
+    setHistWindowSkippedOffset(0);
+  }, [histStartDate, histEndDate, effectiveHistoricalMailboxId]);
+
+  useEffect(() => {
+    if (!histAiSkippedPanelOpen || !token || !effectiveHistoricalMailboxId) return;
+    if (!localYmdRangeToIsoBounds(histStartDate, histEndDate)) return;
+    void loadHistWindowSkippedMails();
+  }, [
+    histAiSkippedPanelOpen,
+    token,
+    effectiveHistoricalMailboxId,
+    histStartDate,
+    histEndDate,
+    histWindowSkippedOffset,
+    loadHistWindowSkippedMails,
+  ]);
+
+  useEffect(() => {
+    const el = historicalTableSelectAllRef.current;
+    if (!el) return;
+    const ids = historicalFilteredRows.map((c) => c.conversation_id);
+    const n = ids.filter((id) => historicalThreadSelectedIds.includes(id)).length;
+    el.indeterminate = n > 0 && n < ids.length;
+    el.checked = ids.length > 0 && n === ids.length;
+  }, [historicalFilteredRows, historicalThreadSelectedIds]);
+
+  useEffect(() => {
+    const el = histSkippedPanelSelectAllRef.current;
+    if (!el) return;
+    const ids = histWindowSkippedFilteredRows.map((r) => r.provider_message_id);
+    const n = ids.filter((id) => histWindowSkippedSelectedIds.includes(id)).length;
+    el.indeterminate = n > 0 && n < ids.length;
+    el.checked = ids.length > 0 && n === ids.length;
+  }, [histWindowSkippedFilteredRows, histWindowSkippedSelectedIds]);
 
   const pagedTabRows = useMemo(
     () => searchFilteredTabRowsSorted.slice(0, mailListPage * MAIL_PAGE_SIZE),
@@ -3497,14 +3708,257 @@ function MyEmailPageInner() {
                     <p className="text-lg font-bold text-emerald-700">{historicalStats.stored_relevant}</p>
                     <p className="text-[10px] font-medium uppercase tracking-wide text-emerald-600">AI: Relevant</p>
                   </div>
-                  <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setHistAiSkippedPanelOpen((open) => !open)}
+                    aria-pressed={histAiSkippedPanelOpen}
+                    title="Show or hide messages Inbox AI skipped in this date range"
+                    className={`rounded-lg border px-3 py-2 text-center transition hover:bg-slate-100/80 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1 ${
+                      histAiSkippedPanelOpen
+                        ? 'border-amber-300 bg-amber-50 shadow-sm'
+                        : 'border-slate-100 bg-slate-50'
+                    }`}
+                  >
                     <p className="text-lg font-bold text-slate-500">{historicalStats.skipped_irrelevant}</p>
-                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">AI: Skipped</p>
-                  </div>
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                      AI: Skipped {histAiSkippedPanelOpen ? '▼' : '— view'}
+                    </p>
+                  </button>
                   <div className="rounded-lg border border-brand-100 bg-brand-50 px-3 py-2 text-center">
                     <p className="text-lg font-bold text-brand-700">{historicalStats.conversations_created}</p>
                     <p className="text-[10px] font-medium uppercase tracking-wide text-brand-600">Conversations</p>
                   </div>
+                </div>
+              ) : null}
+
+              {histAiSkippedPanelOpen && !historicalLoading ? (
+                <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50/40 p-4 shadow-sm">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-amber-950">
+                        AI skipped (this date range)
+                      </p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-amber-900/85">
+                        These messages were not stored as tracked threads. Clear a skip if you want the next{' '}
+                        <strong className="font-semibold">Fetch from Gmail</strong> to try them again.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void loadHistWindowSkippedMails()}
+                      disabled={histWindowSkippedLoading || !effectiveHistoricalMailboxId}
+                      className="shrink-0 rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs font-semibold text-amber-950 shadow-sm hover:bg-amber-50 disabled:opacity-50"
+                    >
+                      {histWindowSkippedLoading ? 'Loading…' : 'Refresh'}
+                    </button>
+                  </div>
+                  {!effectiveHistoricalMailboxId ? (
+                    <p className="mt-3 text-sm text-amber-900/90">Choose a mailbox above to load skipped messages.</p>
+                  ) : !localYmdRangeToIsoBounds(histStartDate, histEndDate) ? (
+                    <p className="mt-3 text-sm text-amber-900/90">Select a valid start and end date.</p>
+                  ) : (
+                    <>
+                      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                        <input
+                          type="search"
+                          placeholder="Filter skipped by subject, sender, reason…"
+                          value={histWindowSkipSearch}
+                          onChange={(e) => setHistWindowSkipSearch(e.target.value)}
+                          className="w-full min-w-0 rounded-lg border border-amber-200/80 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:max-w-md"
+                        />
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <button
+                            type="button"
+                            disabled={histWindowSkippedFilteredRows.length === 0}
+                            onClick={() => {
+                              const ids = histWindowSkippedFilteredRows.map((r) => r.provider_message_id);
+                              setHistWindowSkippedSelectedIds((prev) => {
+                                const all = ids.length > 0 && ids.every((id) => prev.includes(id));
+                                if (all) return prev.filter((id) => !ids.includes(id));
+                                return [...new Set([...prev, ...ids])];
+                              });
+                            }}
+                            className="rounded-lg border border-amber-200 bg-white px-2.5 py-1.5 font-semibold text-amber-950 hover:bg-amber-100/60 disabled:opacity-40"
+                          >
+                            Select all
+                          </button>
+                          <button
+                            type="button"
+                            disabled={histWindowSkippedSelectedIds.length === 0}
+                            onClick={() => setHistWindowSkippedSelectedIds([])}
+                            className="rounded-lg border border-amber-200 bg-white px-2.5 py-1.5 font-semibold text-amber-950 hover:bg-amber-100/60 disabled:opacity-40"
+                          >
+                            Clear selection
+                          </button>
+                          <button
+                            type="button"
+                            disabled={
+                              histWindowSkippedSelectedIds.length === 0 ||
+                              histWindowSkippedBulkClearing ||
+                              !!histWindowSkipClearingId
+                            }
+                            onClick={() => void clearSelectedHistWindowSkips()}
+                            className="rounded-lg border border-brand-200 bg-white px-2.5 py-1.5 font-semibold text-brand-800 hover:bg-brand-50 disabled:opacity-40"
+                          >
+                            {histWindowSkippedBulkClearing
+                              ? 'Clearing…'
+                              : `Re-try selected (${histWindowSkippedSelectedIds.length})`}
+                          </button>
+                        </div>
+                      </div>
+                      {histWindowSkippedFilteredRows.length === 0 && !histWindowSkippedLoading ? (
+                        <p className="mt-3 rounded-lg border border-amber-100 bg-white/80 px-3 py-2 text-sm text-amber-950/90">
+                          {histWindowSkipSearch.trim()
+                            ? 'No skipped messages match your filter on this page.'
+                            : histWindowSkippedTotal === 0
+                              ? 'No AI-skipped messages recorded for this mailbox in this date window (or all were cleared).'
+                              : 'Nothing on this page — use Previous / Next.'}
+                        </p>
+                      ) : null}
+                      {histWindowSkippedFilteredRows.length > 0 ? (
+                        <div className="mt-3 overflow-x-auto rounded-xl border border-amber-100 bg-white">
+                          <table className="min-w-full divide-y divide-amber-100 text-left text-xs">
+                            <thead className="bg-amber-50/80 text-[10px] font-bold uppercase tracking-wide text-amber-900/70">
+                              <tr>
+                                <th className="w-10 px-2 py-2">
+                                  <input
+                                    ref={histSkippedPanelSelectAllRef}
+                                    type="checkbox"
+                                    className="h-4 w-4 rounded border-amber-300 text-brand-600"
+                                    aria-label="Select all skipped messages on this page"
+                                    onChange={() => {
+                                      const ids = histWindowSkippedFilteredRows.map((r) => r.provider_message_id);
+                                      setHistWindowSkippedSelectedIds((prev) => {
+                                        const all = ids.length > 0 && ids.every((id) => prev.includes(id));
+                                        if (all) return prev.filter((id) => !ids.includes(id));
+                                        return [...new Set([...prev, ...ids])];
+                                      });
+                                    }}
+                                  />
+                                </th>
+                                <th className="px-3 py-2">When skipped</th>
+                                <th className="px-3 py-2">Kind</th>
+                                <th className="px-3 py-2">From / subject</th>
+                                <th className="px-3 py-2">Why</th>
+                                <th className="px-3 py-2">Gmail</th>
+                                <th className="px-3 py-2 text-right">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-amber-50 text-slate-800">
+                              {histWindowSkippedFilteredRows.map((row) => {
+                                const gmailUrl =
+                                  row.provider_thread_id && row.provider_thread_id.length > 0
+                                    ? `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(row.provider_thread_id)}`
+                                    : null;
+                                return (
+                                  <tr key={`${row.employee_id}:${row.provider_message_id}`} className="align-top">
+                                    <td className="px-2 py-2.5">
+                                      <input
+                                        type="checkbox"
+                                        className="h-4 w-4 rounded border-amber-300 text-brand-600"
+                                        checked={histWindowSkippedSelectedIds.includes(row.provider_message_id)}
+                                        onChange={() => {
+                                          setHistWindowSkippedSelectedIds((prev) =>
+                                            prev.includes(row.provider_message_id)
+                                              ? prev.filter((id) => id !== row.provider_message_id)
+                                              : [...prev, row.provider_message_id],
+                                          );
+                                        }}
+                                        aria-label="Select this skipped message"
+                                      />
+                                    </td>
+                                    <td className="whitespace-nowrap px-3 py-2.5">
+                                      <RelWithAbsoluteDate iso={row.skipped_at} />
+                                    </td>
+                                    <td className="px-3 py-2.5">
+                                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+                                        {skipKindShortLabel(row.skip_kind)}
+                                      </span>
+                                    </td>
+                                    <td className="px-3 py-2.5">
+                                      <div className="max-w-[14rem] font-medium text-slate-900 sm:max-w-xs">
+                                        {clipStr(row.subject, 72) || '(No subject)'}
+                                      </div>
+                                      <div className="mt-0.5 text-[11px] text-slate-500">
+                                        {clipStr(row.from_email, 48) || '—'}
+                                        {row.sent_at ? (
+                                          <span className="ml-1 tabular-nums text-slate-400">
+                                            · {absoluteTime(row.sent_at)}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    </td>
+                                    <td className="max-w-xs px-3 py-2.5 text-[11px] leading-snug text-slate-600">
+                                      {clipStr(row.skip_reason, 220) || '—'}
+                                    </td>
+                                    <td className="whitespace-nowrap px-3 py-2.5">
+                                      {gmailUrl ? (
+                                        <a
+                                          href={gmailUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="font-semibold text-brand-600 hover:underline"
+                                        >
+                                          Open
+                                        </a>
+                                      ) : (
+                                        <span className="text-slate-400">—</span>
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2.5 text-right">
+                                      <button
+                                        type="button"
+                                        disabled={
+                                          histWindowSkipClearingId === row.provider_message_id ||
+                                          histWindowSkippedBulkClearing
+                                        }
+                                        onClick={() => void clearHistWindowSkipEntry(row.provider_message_id)}
+                                        className="text-[11px] font-semibold text-brand-700 hover:underline disabled:opacity-40"
+                                      >
+                                        {histWindowSkipClearingId === row.provider_message_id
+                                          ? '…'
+                                          : 'Re-try on next fetch'}
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : null}
+                      {histWindowSkippedTotal > HIST_WINDOW_SKIPPED_PAGE ? (
+                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-amber-950">
+                          <button
+                            type="button"
+                            disabled={histWindowSkippedOffset <= 0 || histWindowSkippedLoading}
+                            onClick={() =>
+                              setHistWindowSkippedOffset((o) => Math.max(0, o - HIST_WINDOW_SKIPPED_PAGE))
+                            }
+                            className="rounded-lg border border-amber-200 bg-white px-3 py-1.5 font-semibold text-amber-950 hover:bg-amber-50 disabled:opacity-40"
+                          >
+                            Previous
+                          </button>
+                          <button
+                            type="button"
+                            disabled={
+                              histWindowSkippedOffset + HIST_WINDOW_SKIPPED_PAGE >= histWindowSkippedTotal ||
+                              histWindowSkippedLoading
+                            }
+                            onClick={() => setHistWindowSkippedOffset((o) => o + HIST_WINDOW_SKIPPED_PAGE)}
+                            className="rounded-lg border border-amber-200 bg-white px-3 py-1.5 font-semibold text-amber-950 hover:bg-amber-50 disabled:opacity-40"
+                          >
+                            Next
+                          </button>
+                          <span className="text-amber-900/80">
+                            Showing {histWindowSkippedOffset + 1}–
+                            {Math.min(histWindowSkippedOffset + HIST_WINDOW_SKIPPED_PAGE, histWindowSkippedTotal)} of{' '}
+                            {histWindowSkippedTotal}
+                          </span>
+                        </div>
+                      ) : null}
+                    </>
+                  )}
                 </div>
               ) : null}
 
@@ -3518,14 +3972,41 @@ function MyEmailPageInner() {
                     className="w-full min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:max-w-md"
                   />
                   {historicalRows.length > 0 ? (
-                    <button
-                      type="button"
-                      disabled={histDeletingAll}
-                      onClick={() => void deleteAllHistoricalResults()}
-                      className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-900 hover:bg-red-100 disabled:opacity-50"
-                    >
-                      {histDeletingAll ? 'Removing…' : `Delete all ${historicalRows.length} from tracker`}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <button
+                        type="button"
+                        disabled={historicalFilteredRows.length === 0}
+                        onClick={() => {
+                          const ids = historicalFilteredRows.map((c) => c.conversation_id);
+                          setHistoricalThreadSelectedIds((prev) => {
+                            const all = ids.length > 0 && ids.every((id) => prev.includes(id));
+                            if (all) return prev.filter((id) => !ids.includes(id));
+                            return [...new Set([...prev, ...ids])];
+                          });
+                        }}
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 font-semibold text-slate-800 shadow-sm hover:bg-slate-50 disabled:opacity-40"
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        disabled={historicalThreadSelectedIds.length === 0}
+                        onClick={() => setHistoricalThreadSelectedIds([])}
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 font-semibold text-slate-800 shadow-sm hover:bg-slate-50 disabled:opacity-40"
+                      >
+                        Clear selection
+                      </button>
+                      <button
+                        type="button"
+                        disabled={
+                          historicalThreadSelectedIds.length === 0 || histDeletingAll || !!histRowDeletingId
+                        }
+                        onClick={() => void deleteSelectedHistoricalThreads()}
+                        className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 font-semibold text-red-900 hover:bg-red-100 disabled:opacity-50"
+                      >
+                        {histDeletingAll ? 'Removing…' : `Delete selected (${historicalThreadSelectedIds.length})`}
+                      </button>
+                    </div>
                   ) : null}
                 </div>
               ) : null}
@@ -3548,6 +4029,22 @@ function MyEmailPageInner() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-slate-100 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                        <th className="w-10 px-2 py-3">
+                          <input
+                            ref={historicalTableSelectAllRef}
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-slate-300 text-brand-600"
+                            aria-label="Select all threads in this filter"
+                            onChange={() => {
+                              const ids = historicalFilteredRows.map((c) => c.conversation_id);
+                              setHistoricalThreadSelectedIds((prev) => {
+                                const all = ids.length > 0 && ids.every((id) => prev.includes(id));
+                                if (all) return prev.filter((id) => !ids.includes(id));
+                                return [...new Set([...prev, ...ids])];
+                              });
+                            }}
+                          />
+                        </th>
                         <th className="px-3 py-3">Thread</th>
                         <th className="px-3 py-3">Status</th>
                         <th className="px-3 py-3">Priority</th>
@@ -3562,8 +4059,30 @@ function MyEmailPageInner() {
                           <tr
                             key={c.conversation_id}
                             className="cursor-pointer hover:bg-slate-50/90"
-                            onClick={() => router.push(conversationReadPath(c.conversation_id, pathname))}
+                            onClick={(e) => {
+                              if ((e.target as HTMLElement).closest('[data-hist-thread-check]')) return;
+                              router.push(conversationReadPath(c.conversation_id, pathname));
+                            }}
                           >
+                            <td
+                              className="px-2 py-3 align-top"
+                              data-hist-thread-check
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded border-slate-300 text-brand-600"
+                                checked={historicalThreadSelectedIds.includes(c.conversation_id)}
+                                onChange={() => {
+                                  setHistoricalThreadSelectedIds((prev) =>
+                                    prev.includes(c.conversation_id)
+                                      ? prev.filter((id) => id !== c.conversation_id)
+                                      : [...prev, c.conversation_id],
+                                  );
+                                }}
+                                aria-label={`Select thread ${conversationDisplayTitle(c)}`}
+                              />
+                            </td>
                             <ConversationSubjectCell c={c} />
                             <td className="px-3 py-3 align-top">
                               {statusBadge(c.follow_up_status)}
@@ -3655,24 +4174,6 @@ function MyEmailPageInner() {
             ))}
           </div>
 
-          {ceoInboxMode === 'live' && ownMailboxes.some((m) => m.gmail_connected) ? (
-            <div className="mt-8">
-              <AiSkippedMailsPanel
-                mailboxes={ownMailboxes}
-                aiSkippedMailboxId={aiSkippedMailboxId}
-                onMailboxChange={setAiSkippedMailboxId}
-                onRefresh={() => void loadAiSkippedMails()}
-                aiSkippedLoading={aiSkippedLoading}
-                aiSkippedTotal={aiSkippedTotal}
-                aiSkippedRows={aiSkippedRows}
-                aiSkippedOffset={aiSkippedOffset}
-                setAiSkippedOffset={setAiSkippedOffset}
-                onClearSkip={(id) => void clearAiSkipEntry(id)}
-                aiSkippedClearingId={aiSkippedClearingId}
-              />
-            </div>
-          ) : null}
-
           <div className="mt-8 flex flex-col gap-8">
           {/* ── Follow-ups: tabs + compact list + drawer ── */}
           <section className="order-2 rounded-2xl border border-slate-200/60 bg-white p-4 shadow-card sm:p-5">
@@ -3682,11 +4183,14 @@ function MyEmailPageInner() {
               </div>
               <input
                 type="search"
-                placeholder="Search subject, client, person, thread id…"
+                placeholder={
+                  mailTab === 'skipped'
+                    ? 'Search subject, sender, reason…'
+                    : 'Search subject, client, person, thread id…'
+                }
                 value={threadSearch}
                 onChange={(e) => setThreadSearch(e.target.value)}
                 className="w-full min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:max-w-xs"
-                title="Filters the current tab only; combine with tabs (Need your reply, All threads, etc.)."
               />
             </div>
 
@@ -3699,6 +4203,7 @@ function MyEmailPageInner() {
                   ['closed', 'Done'],
                   ['noise', 'Low / noise'],
                   ['all', 'All threads'],
+                  ...(ceoInboxMode === 'live' ? [['skipped', 'Skipped'] as const] : []),
                 ] as const
               ).map(([id, label]) => (
                 <button
@@ -3723,12 +4228,15 @@ function MyEmailPageInner() {
                   {id === 'cc' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({ccScopedRows.length})</span>
                   ) : null}
+                  {id === 'skipped' ? (
+                    <span className="ml-1.5 tabular-nums opacity-80">({aiSkippedTotal})</span>
+                  ) : null}
                 </button>
               ))}
             </div>
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-              {scopedPersonOptions.length > 1 ? (
+              {mailTab !== 'skipped' && scopedPersonOptions.length > 1 ? (
                 <select
                   value={filterMailbox}
                   onChange={(e) => setFilterMailbox(e.target.value)}
@@ -3768,7 +4276,7 @@ function MyEmailPageInner() {
               ) : null}
             </div>
 
-            {searchFilteredTabRows.length > 0 ? (
+            {searchFilteredTabRows.length > 0 && mailTab !== 'skipped' ? (
               <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-50 pt-4">
                 <button
                   type="button"
@@ -3790,7 +4298,30 @@ function MyEmailPageInner() {
               </div>
             ) : null}
 
-            {scopedConversations.length === 0 ? (
+            {mailTab === 'skipped' && ceoInboxMode === 'live' ? (
+              <div className="mt-6">
+                {!ownMailboxes.some((m) => m.gmail_connected) ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center text-sm text-slate-600">
+                    Connect Gmail on a mailbox card below to load skipped-message history.
+                  </div>
+                ) : (
+                  <SkippedMailsTabTable
+                    mailboxes={ownMailboxes}
+                    rows={searchFilteredSkippedRows}
+                    unfilteredPageCount={aiSkippedRows.length}
+                    aiSkippedMailboxId={aiSkippedMailboxId}
+                    onMailboxChange={setAiSkippedMailboxId}
+                    onRefresh={() => void loadAiSkippedMails()}
+                    aiSkippedLoading={aiSkippedLoading}
+                    aiSkippedTotal={aiSkippedTotal}
+                    aiSkippedOffset={aiSkippedOffset}
+                    setAiSkippedOffset={setAiSkippedOffset}
+                    onClearSkip={(id) => void clearAiSkipEntry(id)}
+                    aiSkippedClearingId={aiSkippedClearingId}
+                  />
+                )}
+              </div>
+            ) : scopedConversations.length === 0 ? (
               <div className="mt-6 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center text-sm text-slate-600">
                 {scopeMailboxIds.size === 0
                   ? 'No mailboxes in this view yet.'

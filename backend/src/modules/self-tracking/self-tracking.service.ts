@@ -778,6 +778,7 @@ export class SelfTrackingService {
     employeeId: string,
     limit = 40,
     offset = 0,
+    window?: { startIso: string; endIso: string } | null,
   ): Promise<{ total: number; items: AiSkippedMailItem[] }> {
     const id = employeeId?.trim();
     if (!id) {
@@ -790,6 +791,83 @@ export class SelfTrackingService {
     }
     const lim = Math.min(Math.max(1, limit), 100);
     const off = Math.max(0, offset);
+
+    const mapRow = (r: {
+      employee_id: string;
+      provider_message_id: string;
+      skipped_at: string;
+      skip_kind: string | null;
+      skip_reason: string | null;
+      subject: string | null;
+      from_email: string | null;
+      sent_at: string | null;
+      provider_thread_id: string | null;
+    }): AiSkippedMailItem => ({
+      employee_id: r.employee_id,
+      provider_message_id: r.provider_message_id,
+      skipped_at: r.skipped_at,
+      skip_kind: r.skip_kind ?? 'legacy',
+      skip_reason: r.skip_reason,
+      subject: r.subject,
+      from_email: r.from_email,
+      sent_at: r.sent_at,
+      provider_thread_id: r.provider_thread_id,
+    });
+
+    const win = window?.startIso?.trim() && window?.endIso?.trim()
+      ? { start: window.startIso.trim(), end: window.endIso.trim() }
+      : null;
+
+    /** Historical Search window: merge rows with sent_at in range and rows with null sent_at but skipped_at in range. */
+    if (win) {
+      const MAX_FETCH = 4000;
+      const sel =
+        'employee_id, provider_message_id, skipped_at, skip_kind, skip_reason, subject, from_email, sent_at, provider_thread_id';
+
+      const { data: withSent, error: e1 } = await this.supabase
+        .from('email_ingestion_skips')
+        .select(sel)
+        .eq('employee_id', id)
+        .not('sent_at', 'is', null)
+        .gte('sent_at', win.start)
+        .lte('sent_at', win.end)
+        .order('skipped_at', { ascending: false })
+        .limit(MAX_FETCH);
+
+      const { data: noSent, error: e2 } = await this.supabase
+        .from('email_ingestion_skips')
+        .select(sel)
+        .eq('employee_id', id)
+        .is('sent_at', null)
+        .gte('skipped_at', win.start)
+        .lte('skipped_at', win.end)
+        .order('skipped_at', { ascending: false })
+        .limit(MAX_FETCH);
+
+      if (e1) {
+        this.logger.warn(`listAiSkippedMails (window sent_at): ${e1.message}`);
+        throw new InternalServerErrorException(e1.message);
+      }
+      if (e2) {
+        this.logger.warn(`listAiSkippedMails (window skipped_at): ${e2.message}`);
+        throw new InternalServerErrorException(e2.message);
+      }
+
+      type Row = Parameters<typeof mapRow>[0];
+      const byMsg = new Map<string, Row>();
+      for (const r of [...(withSent ?? []), ...(noSent ?? [])] as Row[]) {
+        byMsg.set(r.provider_message_id, r);
+      }
+      const merged = [...byMsg.values()].sort(
+        (a, b) => new Date(b.skipped_at).getTime() - new Date(a.skipped_at).getTime(),
+      );
+      const total = merged.length;
+      const slice = merged.slice(off, off + lim);
+      return {
+        total,
+        items: slice.map(mapRow),
+      };
+    }
 
     const { count, error: cErr } = await this.supabase
       .from('email_ingestion_skips')
@@ -814,31 +892,11 @@ export class SelfTrackingService {
       throw new InternalServerErrorException(error.message);
     }
 
-    const rows = (data ?? []) as Array<{
-      employee_id: string;
-      provider_message_id: string;
-      skipped_at: string;
-      skip_kind: string | null;
-      skip_reason: string | null;
-      subject: string | null;
-      from_email: string | null;
-      sent_at: string | null;
-      provider_thread_id: string | null;
-    }>;
+    const rows = (data ?? []) as Array<Parameters<typeof mapRow>[0]>;
 
     return {
       total: count ?? rows.length,
-      items: rows.map((r) => ({
-        employee_id: r.employee_id,
-        provider_message_id: r.provider_message_id,
-        skipped_at: r.skipped_at,
-        skip_kind: r.skip_kind ?? 'legacy',
-        skip_reason: r.skip_reason,
-        subject: r.subject,
-        from_email: r.from_email,
-        sent_at: r.sent_at,
-        provider_thread_id: r.provider_thread_id,
-      })),
+      items: rows.map(mapRow),
     };
   }
 }

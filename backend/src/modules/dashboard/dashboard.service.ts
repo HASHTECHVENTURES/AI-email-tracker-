@@ -832,9 +832,35 @@ ${dataBlock}`;
       .select('department_id, full_name, email')
       .eq('company_id', companyId)
       .eq('role', 'HEAD');
-    const headByDept = new Map(
-      (heads ?? []).map((h) => [h.department_id as string, h as { full_name: string | null; email: string }]),
-    );
+    const headByDept = new Map<string, { full_name: string | null; email: string }>();
+    for (const h of heads ?? []) {
+      const did = (h as { department_id: string | null }).department_id;
+      if (did) {
+        headByDept.set(did, h as { full_name: string | null; email: string });
+      }
+    }
+    const { data: mems, error: memHeadErr } = await this.supabase
+      .from('manager_department_memberships')
+      .select('department_id, user_id')
+      .eq('company_id', companyId);
+    if (!memHeadErr && mems?.length) {
+      const uids = [...new Set((mems as { user_id: string }[]).map((m) => m.user_id))];
+      const { data: urows } = await this.supabase
+        .from('users')
+        .select('id, full_name, email')
+        .in('id', uids);
+      const userMap = new Map(
+        (urows ?? []).map((u: { id: string; full_name: string | null; email: string }) => [u.id, u]),
+      );
+      for (const m of mems as { department_id: string; user_id: string }[]) {
+        if (!headByDept.has(m.department_id)) {
+          const u = userMap.get(m.user_id);
+          if (u) {
+            headByDept.set(m.department_id, { full_name: u.full_name, email: u.email });
+          }
+        }
+      }
+    }
 
     const { data: allDepts } = await this.supabase
       .from('departments')
@@ -1159,6 +1185,24 @@ ${dataBlock}`;
       if (did && em) managerDeptEmail.add(`${did}:${em}`);
       const link = row.linked_employee_id as string | null | undefined;
       if (link) managerByLinkedId.add(link);
+    }
+    const { data: mgrMems, error: mgrMemErr } = await this.supabase
+      .from('manager_department_memberships')
+      .select('department_id, user_id')
+      .eq('company_id', companyId);
+    if (!mgrMemErr && mgrMems?.length) {
+      const uids = [...new Set((mgrMems as { user_id: string }[]).map((r) => r.user_id))];
+      const { data: mgrUsers } = await this.supabase.from('users').select('id, email').in('id', uids);
+      const emailByUser = new Map(
+        (mgrUsers ?? []).map((u: { id: string; email: string }) => [
+          u.id,
+          u.email.trim().toLowerCase(),
+        ]),
+      );
+      for (const m of mgrMems as { department_id: string; user_id: string }[]) {
+        const em = emailByUser.get(m.user_id);
+        if (em && m.department_id) managerDeptEmail.add(`${m.department_id}:${em}`);
+      }
     }
     type EmpRow = { id: string; name: string; email: string; department_id: string };
     return ((data ?? []) as EmpRow[]).map((e) => {

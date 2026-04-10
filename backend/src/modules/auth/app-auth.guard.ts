@@ -87,6 +87,7 @@ export class AppAuthGuard implements CanActivate {
         companyName: null,
         role: 'PLATFORM_ADMIN',
         departmentId: null,
+        managedDepartmentIds: [],
         linkedEmployeeId: null,
       };
       return true;

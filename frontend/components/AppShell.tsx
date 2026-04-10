@@ -2,8 +2,9 @@
 
 import type { ComponentProps, MouseEvent, ReactNode } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { useAuth } from '@/lib/auth-context';
 
 type AppShellProps = {
   role: string;
@@ -149,6 +150,9 @@ export function AppShell({
   ceoDashboardScopeTriggerMobile,
 }: AppShellProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { me, managerActiveDepartmentId, setManagerActiveDepartmentId } = useAuth();
+  const managedTeams = me?.managed_departments ?? [];
   const [locHash, setLocHash] = useState('');
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -183,6 +187,8 @@ export function AppShell({
   const managerMessagesActive = pathname === '/manager-messages';
   const brandTitle = companyName?.trim() || 'AI Auto Mail';
   const personLine = userDisplayName?.trim() || null;
+  const showTeamSwitcher =
+    isHead && !isPlatformAdmin && (managedTeams.length > 1);
 
   return (
     <div className="min-h-screen bg-surface text-slate-900">
@@ -197,6 +203,32 @@ export function AppShell({
             </p>
             <p className="mt-1 text-xs text-slate-500">Follow-up workspace</p>
           </div>
+
+          {showTeamSwitcher ? (
+            <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50/90 px-3 py-2.5">
+              <label
+                htmlFor="app-shell-active-team"
+                className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500"
+              >
+                Active team
+              </label>
+              <select
+                id="app-shell-active-team"
+                className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                value={managerActiveDepartmentId ?? managedTeams[0]?.id ?? ''}
+                onChange={(e) => {
+                  setManagerActiveDepartmentId(e.target.value);
+                  router.refresh();
+                }}
+              >
+                {managedTeams.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
 
           {/* Scroll lives on this wrapper (not <nav>) so overflow-y does not clip link text on the inline axis. */}
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]">
@@ -320,6 +352,31 @@ export function AppShell({
             >
               {brandTitle}
             </p>
+            {showTeamSwitcher ? (
+              <div className="mt-2">
+                <label
+                  htmlFor="app-shell-active-team-mobile"
+                  className="sr-only"
+                >
+                  Active team
+                </label>
+                <select
+                  id="app-shell-active-team-mobile"
+                  className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-800"
+                  value={managerActiveDepartmentId ?? managedTeams[0]?.id ?? ''}
+                  onChange={(e) => {
+                    setManagerActiveDepartmentId(e.target.value);
+                    router.refresh();
+                  }}
+                >
+                  {managedTeams.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      Team: {d.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
             <nav
               className="app-shell-mobile-nav-links mt-2 flex flex-wrap gap-1.5"
               aria-label="Main mobile"

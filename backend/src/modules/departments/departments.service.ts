@@ -79,6 +79,34 @@ export class DepartmentsService {
     companyId: string,
     departmentId: string,
   ): Promise<DepartmentManagerSummary | null> {
+    const { data: mem, error: memErr } = await this.supabase
+      .from('manager_department_memberships')
+      .select('user_id')
+      .eq('company_id', companyId)
+      .eq('department_id', departmentId)
+      .limit(1)
+      .maybeSingle();
+
+    if (memErr) {
+      this.logger.warn(`getDepartmentManager memberships: ${memErr.message}`);
+    }
+
+    const memUserId = (mem as { user_id?: string } | null)?.user_id;
+    if (memUserId) {
+      const { data: u, error } = await this.supabase
+        .from('users')
+        .select('id, email, full_name')
+        .eq('id', memUserId)
+        .eq('company_id', companyId)
+        .eq('role', 'HEAD')
+        .maybeSingle();
+      if (error) {
+        this.logger.error('Failed to load department manager', error.message);
+        throw error;
+      }
+      return (u as DepartmentManagerSummary | null) ?? null;
+    }
+
     const { data, error } = await this.supabase
       .from('users')
       .select('id, email, full_name')
@@ -87,7 +115,7 @@ export class DepartmentsService {
       .eq('role', 'HEAD')
       .maybeSingle();
     if (error) {
-      this.logger.error('Failed to load department manager', error.message);
+      this.logger.error('Failed to load department manager (legacy)', error.message);
       throw error;
     }
     return (data as DepartmentManagerSummary | null) ?? null;
@@ -157,6 +185,16 @@ export class DepartmentsService {
         this.logger.error('Failed to insert manager user row', insErr?.message ?? 'unknown');
         throw new Error('MANAGER_PROFILE_CREATE_FAILED');
       }
+      const uid = (insertedUser as { id: string }).id;
+      const { error: memInsErr } = await this.supabase.from('manager_department_memberships').insert({
+        user_id: uid,
+        department_id: departmentId,
+        company_id: companyId,
+      });
+      if (memInsErr) {
+        this.logger.error('Failed to insert manager_department_memberships', memInsErr.message);
+        throw memInsErr;
+      }
       return insertedUser as {
         id: string;
         email: string;
@@ -166,10 +204,31 @@ export class DepartmentsService {
       };
     }
 
+    const existingRow = user as {
+      id: string;
+      department_id: string | null;
+    };
+
+    const { error: memUpsertErr } = await this.supabase.from('manager_department_memberships').upsert(
+      {
+        user_id: existingRow.id,
+        department_id: departmentId,
+        company_id: companyId,
+      },
+      { onConflict: 'user_id,department_id' },
+    );
+    if (memUpsertErr) {
+      this.logger.error('Failed to upsert manager_department_memberships', memUpsertErr.message);
+      throw memUpsertErr;
+    }
+
     const { data: updated, error: updErr } = await this.supabase
       .from('users')
-      .update({ role: 'HEAD', department_id: departmentId })
-      .eq('id', (user as { id: string }).id)
+      .update({
+        role: 'HEAD',
+        ...(existingRow.department_id ? {} : { department_id: departmentId }),
+      })
+      .eq('id', existingRow.id)
       .eq('company_id', companyId)
       .select('id, email, full_name, role, department_id')
       .single();

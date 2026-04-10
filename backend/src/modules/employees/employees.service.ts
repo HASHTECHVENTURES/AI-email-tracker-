@@ -481,9 +481,9 @@ export class EmployeesService {
     return data !== null;
   }
 
-  async assertCanInitiateGmailOAuth(user: AuthedRequestUser, employeeId: string): Promise<void> {
-    if (user.role === 'EMPLOYEE') {
-      if (!user.linkedEmployeeId || user.linkedEmployeeId !== employeeId) {
+  async assertCanInitiateGmailOAuth(ctx: RequestContext, employeeId: string): Promise<void> {
+    if (ctx.role === 'EMPLOYEE') {
+      if (!ctx.employeeId || ctx.employeeId !== employeeId) {
         throw new ForbiddenException('You can only connect Gmail for your own mailbox');
       }
     }
@@ -496,11 +496,11 @@ export class EmployeesService {
       throw new BadRequestException('Employee not found');
     }
     const row = data as { company_id: string; department_id: string };
-    if (row.company_id !== user.companyId) {
+    if (row.company_id !== ctx.companyId) {
       throw new ForbiddenException('Employee is not in your company');
     }
-    if (user.role === 'HEAD') {
-      if (!user.departmentId || row.department_id !== user.departmentId) {
+    if (ctx.role === 'HEAD') {
+      if (!ctx.departmentId || row.department_id !== ctx.departmentId) {
         throw new ForbiddenException('You can only connect Gmail for employees in your department');
       }
     }

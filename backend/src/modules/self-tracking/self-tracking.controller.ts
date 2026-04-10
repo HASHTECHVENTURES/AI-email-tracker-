@@ -218,6 +218,9 @@ export class SelfTrackingController {
     @Query('employee_id') employeeId?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    /** Optional: restrict to skips whose message time (or skip time if unknown) falls in this window (ISO). */
+    @Query('window_start') windowStart?: string,
+    @Query('window_end') windowEnd?: string,
   ) {
     const user = req.user;
     if (!user) throw new UnauthorizedException();
@@ -231,7 +234,16 @@ export class SelfTrackingController {
     const o = Number(offset ?? '0');
     const lim = Number.isFinite(n) ? n : 40;
     const off = Number.isFinite(o) ? o : 0;
-    return this.selfTrackingService.listAiSkippedMails(ctx, user.email, eid, lim, off);
+    const ws = windowStart?.trim();
+    const we = windowEnd?.trim();
+    const window =
+      ws && we
+        ? {
+            startIso: ws,
+            endIso: we,
+          }
+        : null;
+    return this.selfTrackingService.listAiSkippedMails(ctx, user.email, eid, lim, off, window);
   }
 
   /** Remove one skip so the next sync can re-evaluate that Gmail message. */

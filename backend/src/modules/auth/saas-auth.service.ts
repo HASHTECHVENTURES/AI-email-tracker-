@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
@@ -22,7 +22,28 @@ interface CompanyRow {
 
 @Injectable()
 export class SaasAuthService {
+  private readonly logger = new Logger(SaasAuthService.name);
+
   constructor(@Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient) {}
+
+  /** Labels for the team switcher (HEAD). */
+  async getManagedDepartmentsSummary(
+    companyId: string,
+    departmentIds: string[],
+  ): Promise<{ id: string; name: string }[]> {
+    if (departmentIds.length === 0) return [];
+    const { data, error } = await this.supabase
+      .from('departments')
+      .select('id, name')
+      .eq('company_id', companyId)
+      .in('id', departmentIds)
+      .order('name', { ascending: true });
+    if (error) {
+      this.logger.warn(`getManagedDepartmentsSummary: ${error.message}`);
+      return [];
+    }
+    return (data ?? []) as { id: string; name: string }[];
+  }
 
   async findProfileByAuthId(authUserId: string): Promise<AuthedRequestUser | null> {
     const { data, error } = await this.supabase
@@ -55,6 +76,39 @@ export class SaasAuthService {
       }
     }
 
+    let managedDepartmentIds: string[] = [];
+    let resolvedDepartmentId: string | null = row.department_id ?? null;
+
+    if (row.role === 'HEAD') {
+      const { data: memRows, error: memErr } = await this.supabase
+        .from('manager_department_memberships')
+        .select('department_id')
+        .eq('user_id', row.id);
+
+      const fromMem: string[] =
+        !memErr && memRows
+          ? (memRows as { department_id: string }[]).map((m) => m.department_id)
+          : [];
+      if (memErr) {
+        this.logger.warn(`manager_department_memberships load: ${memErr.message}`);
+      }
+
+      const idSet = new Set<string>(fromMem);
+      if (row.department_id) {
+        idSet.add(row.department_id);
+      }
+      managedDepartmentIds = [...idSet].sort();
+
+      if (managedDepartmentIds.length > 0) {
+        resolvedDepartmentId =
+          row.department_id && idSet.has(row.department_id)
+            ? row.department_id
+            : (managedDepartmentIds[0] ?? null);
+      } else {
+        resolvedDepartmentId = row.department_id;
+      }
+    }
+
     return {
       id: row.id,
       email: row.email,
@@ -62,7 +116,8 @@ export class SaasAuthService {
       companyId: row.company_id,
       companyName,
       role: row.role,
-      departmentId: row.department_id ?? null,
+      departmentId: resolvedDepartmentId,
+      managedDepartmentIds,
       linkedEmployeeId,
     };
   }
@@ -140,6 +195,7 @@ export class SaasAuthService {
         companyName: trimmedCompany,
         role: row.role,
         departmentId: row.department_id ?? null,
+        managedDepartmentIds: [],
         linkedEmployeeId: row.linked_employee_id ?? null,
       },
       created: true,

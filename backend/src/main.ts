@@ -53,7 +53,7 @@ async function bootstrap() {
       return cb(new Error(`CORS blocked: ${origin}`), false);
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-manager-department-id'],
     credentials: true,
   });
   const port = Number(process.env.PORT ?? 3000);

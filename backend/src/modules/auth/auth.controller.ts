@@ -18,10 +18,29 @@ import { PublicRoute } from '../common/public-route.decorator';
 import { AllowPendingOnboarding } from '../common/allow-pending-onboarding.decorator';
 import { OauthStateService } from './oauth-state.service';
 import { AuditLogService } from '../common/audit-log.service';
+import { getRequestContext, type RequestContext } from '../common/request-context';
 import {
   getGoogleOAuthCredentials,
   getGoogleRedirectUri,
 } from '../common/google-oauth-credentials';
+
+function mePayload(
+  u: NonNullable<Request['user']>,
+  managedDepartments: { id: string; name: string }[],
+) {
+  return {
+    id: u.id,
+    email: u.email,
+    full_name: u.fullName,
+    company_id: u.companyId,
+    company_name: u.companyName,
+    role: u.role,
+    department_id: u.departmentId,
+    managed_department_ids: u.managedDepartmentIds ?? [],
+    managed_departments: managedDepartments,
+    linked_employee_id: u.linkedEmployeeId,
+  };
+}
 
 @Controller('auth')
 export class AuthController {
@@ -38,18 +57,16 @@ export class AuthController {
   async status(@Req() req: Request) {
     if (req.user) {
       const u = req.user;
+      let managed: { id: string; name: string }[] = [];
+      if (u.role === 'HEAD' && u.managedDepartmentIds?.length) {
+        managed = await this.saasAuthService.getManagedDepartmentsSummary(
+          u.companyId,
+          u.managedDepartmentIds,
+        );
+      }
       return {
         needs_onboarding: false,
-        user: {
-          id: u.id,
-          email: u.email,
-          full_name: u.fullName,
-          company_id: u.companyId,
-          company_name: u.companyName,
-          role: u.role,
-          department_id: u.departmentId,
-          linked_employee_id: u.linkedEmployeeId,
-        },
+        user: mePayload(u, managed),
       };
     }
     return {
@@ -64,16 +81,14 @@ export class AuthController {
       throw new UnauthorizedException('User profile not loaded');
     }
     const u = req.user;
-    return {
-      id: u.id,
-      email: u.email,
-      full_name: u.fullName,
-      company_id: u.companyId,
-      company_name: u.companyName,
-      role: u.role,
-      department_id: u.departmentId,
-      linked_employee_id: u.linkedEmployeeId,
-    };
+    let managed: { id: string; name: string }[] = [];
+    if (u.role === 'HEAD' && u.managedDepartmentIds?.length) {
+      managed = await this.saasAuthService.getManagedDepartmentsSummary(
+        u.companyId,
+        u.managedDepartmentIds,
+      );
+    }
+    return mePayload(u, managed);
   }
 
   @Post('onboarding')
@@ -97,19 +112,17 @@ export class AuthController {
       companyName,
     );
 
+    let managed: { id: string; name: string }[] = [];
+    if (user.role === 'HEAD' && user.managedDepartmentIds?.length) {
+      managed = await this.saasAuthService.getManagedDepartmentsSummary(
+        user.companyId,
+        user.managedDepartmentIds,
+      );
+    }
     return {
       ok: true,
       created,
-      user: {
-        id: user.id,
-        email: user.email,
-        full_name: user.fullName,
-        company_id: user.companyId,
-        company_name: user.companyName,
-        role: user.role,
-        department_id: user.departmentId,
-        linked_employee_id: user.linkedEmployeeId,
-      },
+      user: mePayload(user, managed),
     };
   }
 
@@ -128,7 +141,7 @@ export class AuthController {
       );
     }
     const normalizedEmployeeId = employeeId.trim();
-    await this.employeesService.assertCanInitiateGmailOAuth(req.user, normalizedEmployeeId);
+    await this.employeesService.assertCanInitiateGmailOAuth(getRequestContext(req), normalizedEmployeeId);
     const state = await this.oauthStateService.createState({
       employeeId: normalizedEmployeeId,
       companyId: req.user.companyId,
@@ -202,7 +215,13 @@ export class AuthController {
       if (!actor || actor.companyId !== payload.company_id) {
         throw new UnauthorizedException('invalid_actor_context');
       }
-      await this.employeesService.assertCanInitiateGmailOAuth(actor, payload.employee_id);
+      const oauthCtx: RequestContext = {
+        companyId: actor.companyId,
+        role: actor.role,
+        employeeId: actor.role === 'EMPLOYEE' ? actor.linkedEmployeeId ?? undefined : undefined,
+        departmentId: actor.role === 'HEAD' ? actor.departmentId ?? undefined : undefined,
+      };
+      await this.employeesService.assertCanInitiateGmailOAuth(oauthCtx, payload.employee_id);
 
       const validEmployee = await this.employeesService.employeeExists(payload.employee_id);
       if (!validEmployee) {

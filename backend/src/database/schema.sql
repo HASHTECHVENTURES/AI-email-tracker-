@@ -36,6 +36,29 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_company_id ON users (company_id);
 
+-- HEAD users may manage multiple departments; see manager_department_memberships.
+CREATE TABLE IF NOT EXISTS manager_department_memberships (
+  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  department_id UUID NOT NULL REFERENCES departments (id) ON DELETE CASCADE,
+  company_id UUID NOT NULL REFERENCES companies (id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, department_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_manager_dept_memberships_company
+  ON manager_department_memberships (company_id);
+
+CREATE INDEX IF NOT EXISTS idx_manager_dept_memberships_dept
+  ON manager_department_memberships (department_id);
+
+ALTER TABLE manager_department_memberships ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS service_role_all_manager_department_memberships ON manager_department_memberships;
+CREATE POLICY service_role_all_manager_department_memberships
+  ON manager_department_memberships FOR ALL
+  USING (auth.role() = 'service_role')
+  WITH CHECK (auth.role() = 'service_role');
+
 CREATE TABLE IF NOT EXISTS employees (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
   name TEXT NOT NULL,

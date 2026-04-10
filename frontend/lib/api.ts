@@ -49,6 +49,20 @@ export function apiUrl(path: string): string {
   return `${base}${p}`;
 }
 
+/** Active team for department managers (HEAD). Sent on API requests when set in localStorage. */
+export const MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY = 'manager_active_department_id';
+
+function managerDepartmentHeader(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const v = localStorage.getItem(MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY)?.trim();
+    if (!v) return {};
+    return { 'x-manager-department-id': v };
+  } catch {
+    return {};
+  }
+}
+
 export function apiBase(): string {
   if (typeof window !== 'undefined' && shouldUseLocalDevProxy()) {
     return `${window.location.origin}/api-backend`;
@@ -67,6 +81,7 @@ export async function apiFetch(path: string, accessToken: string, init?: Request
       ...init,
       cache,
       headers: {
+        ...managerDepartmentHeader(),
         ...init?.headers,
         Authorization: `Bearer ${accessToken}`,
         ...(init?.body && typeof init.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
@@ -110,6 +125,7 @@ export async function apiPostSse(
     const res = await fetch(url, {
       method: 'POST',
       headers: {
+        ...managerDepartmentHeader(),
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
