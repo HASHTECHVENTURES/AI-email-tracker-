@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
+import { isGeminiEnvConfigured } from '../common/env';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 
 export type AiMode = 'AUTO' | 'MANUAL' | 'OFF';
@@ -7,8 +8,15 @@ export type AiMode = 'AUTO' | 'MANUAL' | 'OFF';
 export interface SystemSettings {
   ai_enabled: boolean;
   ai_mode: AiMode;
-  /** Gemini-based relevance during Gmail ingest (vs heuristics only). Independent of ai_enabled. */
+  /** Gemini-based relevance during Gmail ingest. Independent of ai_enabled. */
   email_ai_relevance_enabled: boolean;
+  /**
+   * CEO acknowledged My Email dialog: import all mail in the tracking window when Inbox AI cannot run
+   * (no key, settings off, or per-mailbox AI off). Without this, messages are not stored unless Gemini classifies them.
+   */
+  email_ingest_without_ai_confirmed: boolean;
+  /** Server has GEMINI_API_KEY (or equivalent) so Inbox AI relevance can run when settings allow. */
+  gemini_api_key_configured: boolean;
   /** Scheduled + manual Gmail fetch / ingestion cycles. When false, no mailboxes are crawled. */
   email_crawl_enabled: boolean;
   /** AI for HEAD users (dept reports, dashboard snapshot) and team mailboxes (not portal-linked). */
@@ -59,6 +67,8 @@ export class SettingsService {
         ai_enabled: true,
         ai_mode: 'AUTO',
         email_ai_relevance_enabled: true,
+        email_ingest_without_ai_confirmed: false,
+        gemini_api_key_configured: isGeminiEnvConfigured(),
         email_crawl_enabled: true,
         ai_for_managers_enabled: true,
         ai_for_employees_enabled: true,
@@ -77,6 +87,8 @@ export class SettingsService {
       ai_enabled: mode !== 'OFF' && map.get('ai_enabled') !== 'false',
       ai_mode: validModes.includes(mode) ? mode : 'AUTO',
       email_ai_relevance_enabled: map.get('email_ai_relevance_enabled') !== 'false',
+      email_ingest_without_ai_confirmed: map.get('email_ingest_without_ai_confirmed') === 'true',
+      gemini_api_key_configured: isGeminiEnvConfigured(),
       email_crawl_enabled: map.get('email_crawl_enabled') !== 'false',
       ai_for_managers_enabled: map.get('ai_for_managers_enabled') !== 'false',
       ai_for_employees_enabled: map.get('ai_for_employees_enabled') !== 'false',
@@ -141,6 +153,7 @@ export class SettingsService {
           { key: 'email_ai_relevance_enabled', value: 'true' },
           { key: 'ai_for_managers_enabled', value: 'true' },
           { key: 'ai_for_employees_enabled', value: 'true' },
+          { key: 'email_ingest_without_ai_confirmed', value: 'false' },
         );
       } else {
         pairs.push(
@@ -149,6 +162,7 @@ export class SettingsService {
           { key: 'email_ai_relevance_enabled', value: 'false' },
           { key: 'ai_for_managers_enabled', value: 'false' },
           { key: 'ai_for_employees_enabled', value: 'false' },
+          { key: 'email_ingest_without_ai_confirmed', value: 'false' },
         );
       }
     }
@@ -307,7 +321,7 @@ export class SettingsService {
       process.env.SMTP_USER?.trim() &&
       process.env.SMTP_PASS?.trim(),
     );
-    const aiModelConfigured = Boolean(process.env.GEMINI_API_KEY?.trim());
+    const aiModelConfigured = isGeminiEnvConfigured();
     const nextIngestionMs = runtime.nextIngestionAt
       ? new Date(runtime.nextIngestionAt).getTime()
       : NaN;

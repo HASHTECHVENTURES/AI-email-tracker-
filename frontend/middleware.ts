@@ -83,6 +83,7 @@ export async function middleware(request: NextRequest) {
     const protectedPaths = [
       '/admin',
       '/dashboard',
+      '/conversation',
       '/departments',
       '/employees',
       '/ai-reports',
@@ -120,6 +121,7 @@ export const config = {
     '/admin/:path*',
     '/dashboard',
     '/dashboard/:path*',
+    '/conversation/:path*',
     '/departments/:path*',
     '/employees/:path*',
     '/ai-reports/:path*',

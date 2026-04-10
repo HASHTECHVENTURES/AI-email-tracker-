@@ -15,6 +15,6 @@ import { IngestionCronService } from './ingestion-cron.service';
   imports: [AuthModule, EmployeesModule, ConversationsModule, SettingsModule, DashboardModule, CompanyPolicyModule],
   controllers: [EmailIngestionController],
   providers: [supabaseProvider, GmailService, EmailIngestionService, IngestionCronService],
-  exports: [EmailIngestionService],
+  exports: [EmailIngestionService, GmailService],
 })
 export class EmailIngestionModule {}

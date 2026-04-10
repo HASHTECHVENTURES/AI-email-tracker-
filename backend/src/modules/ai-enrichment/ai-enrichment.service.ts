@@ -13,20 +13,33 @@ interface EmailRow {
 }
 
 const SYSTEM_PROMPT = `You are an email conversation analyzer for a business follow-up monitoring system.
+Your job is to READ the actual email content — subject, body, and sender — and produce a meaningful analysis.
+
 Analyze the email thread below and return ONLY a valid JSON object with no additional text:
 
 {
-  "priority": "HIGH | MEDIUM | LOW",
-  "summary": "1-2 sentence summary of the conversation and what action is needed",
-  "confidence": 0.0 to 1.0
+  "priority": "HIGH" | "MEDIUM" | "LOW",
+  "summary": "A clear, actionable summary of what this email thread is about and what response is needed. Example: 'Client John asking about Q2 project timeline — needs delivery date confirmation' or 'Invoice #4521 from Acme Corp for $2,400 — payment due April 15'",
+  "contact_name": "The real human name of the external person (client/vendor/partner), extracted from email signature, greeting, or From header. Use the actual name, not the email address.",
+  "confidence": 0.0 to 1.0,
+  "is_automated": true | false
 }
 
 Priority rules:
-- HIGH: genuine urgent business or support requests, angry tone, escalations, payment/billing issues, legal/compliance, repeated follow-ups on real work, deadlines tied to deliverables or contracts
-- MEDIUM: a real person expects a reply about work, projects, orders, or support — standard business questions
-- LOW: informational/FYI, thank-you notes, auto-replies, newsletters, and especially unsolicited product selling, retail-style promotions, marketing banners, "buy now / learn more / shop" style offers, product catalogs, or decorative images with no specific question — even if the subject line says "urgent" or "ASAP"
+- HIGH: urgent business requests, escalations, angry tone, payment disputes, legal/compliance, repeated follow-ups, deadlines
+- MEDIUM: a real person expects a reply about work, projects, orders, support, meetings, partnerships
+- LOW: informational/FYI, thank-you notes, auto-replies, newsletters, marketing, automated notifications, system-generated emails, cold sales pitches, promotional content — even if subject says "urgent"
 
-Critical: Subject-line words like "urgent" or "important" alone do NOT justify HIGH or MEDIUM if the body is marketing, a sales pitch, or generic promotional content. Those must be LOW.
+Summary rules:
+- DO NOT just repeat the subject line. READ the email body and explain what the conversation is actually about.
+- Include specific details: names, amounts, dates, project names, action items.
+- If the email needs a reply, say what kind of reply is needed.
+- If it's automated/marketing, say so clearly: "Automated billing notification from Zoom" or "Marketing newsletter from HackerNoon".
+
+Contact name rules:
+- Extract the real person's name from the email content (signature block, greeting like "Hi, I'm John", From header name).
+- If it's an automated sender (noreply@, billing@, etc.), return the company name instead.
+- Never return just an email address if a real name is available.
 
 Return ONLY the JSON object. No markdown, no explanation.`;
 
@@ -43,32 +56,14 @@ export class AiEnrichmentService {
       this.logger.warn('GEMINI_API_KEY not set — AI enrichment will use fallback values');
     }
     const genAI = new GoogleGenerativeAI(apiKey ?? '');
-    this.model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const modelName = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+    this.model = genAI.getGenerativeModel({ model: modelName });
+    this.logger.log(`AI enrichment model: ${modelName}`);
   }
 
-  shouldEnrich(conversation: {
-    follow_up_required: boolean;
-    priority: string | null;
-    summary: string | null;
-    follow_up_status: string;
-    delay_hours: number;
-    sla_hours: number;
-  }): boolean {
-    if (!conversation.follow_up_required) {
-      return false;
-    }
-
-    const summary = (conversation.summary ?? '').trim();
-    if (summary.length < 12) return true;
-
-    if (conversation.follow_up_status === 'MISSED') return true;
-
-    const sla = Math.max(1, conversation.sla_hours);
-    if (conversation.delay_hours >= sla * 0.85) return true;
-
-    if (conversation.priority === 'MEDIUM' && conversation.delay_hours > 2) return true;
-
-    return false;
+  /** True when the API key is configured and AI can actually run. */
+  get isAvailable(): boolean {
+    return Boolean(process.env.GEMINI_API_KEY);
   }
 
   /** Run Gemini on raw thread text (e.g. tests or tooling). */
@@ -112,28 +107,43 @@ export class AiEnrichmentService {
     return emails
       .map((email) => {
         const role = email.direction === 'INBOUND' ? 'Client' : 'Employee';
-        const body = (email.body_text ?? '').slice(0, 400);
+        const body = (email.body_text ?? '').slice(0, 1500);
         return `${role} (${email.from_email}):\nSubject: ${email.subject}\n${body}`;
       })
       .join('\n\n---\n\n');
   }
 
-  private async callGemini(threadText: string): Promise<AiOutput> {
+  private async callGemini(threadText: string, retries = 2): Promise<AiOutput> {
     if (!process.env.GEMINI_API_KEY) {
       return this.fallback();
     }
 
-    try {
-      const prompt = `${SYSTEM_PROMPT}\n\n--- EMAIL THREAD ---\n\n${threadText}`;
-      const result = await this.model.generateContent(prompt);
-      const response = result.response;
-      const text = response.text();
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const prompt = `${SYSTEM_PROMPT}\n\n--- EMAIL THREAD ---\n\n${threadText}`;
+        const result = await this.model.generateContent(prompt);
+        const response = result.response;
+        const text = response.text();
+        return this.parseResponse(text);
+      } catch (err) {
+        const msg = (err as Error).message ?? String(err);
+        const is429 = /429|quota|rate.limit/i.test(msg);
 
-      return this.parseResponse(text);
-    } catch (err) {
-      this.logger.error('Gemini API call failed', (err as Error).message);
-      return this.fallback();
+        if (is429 && attempt < retries) {
+          const secMatch = msg.match(/retry in (\d+(\.\d+)?)\s*s/i);
+          const msMatch = !secMatch ? msg.match(/retry in (\d+(\.\d+)?)\s*ms/i) : null;
+          let waitSec = secMatch ? Math.ceil(Number(secMatch[1])) : msMatch ? Math.ceil(Number(msMatch[1]) / 1000) : 60;
+          waitSec = Math.max(1, Math.min(waitSec, 120));
+          this.logger.warn(`Rate limited — waiting ${waitSec}s before retry (attempt ${attempt + 1}/${retries})`);
+          await new Promise((r) => setTimeout(r, waitSec * 1000));
+          continue;
+        }
+
+        this.logger.error(`Gemini API call failed (attempt ${attempt + 1}): ${msg.slice(0, 200)}`);
+        return this.fallback();
+      }
     }
+    return this.fallback();
   }
 
   private parseResponse(text: string): AiOutput {
@@ -158,7 +168,13 @@ export class AiEnrichmentService {
         ? Math.max(0, Math.min(1, parsed.confidence))
         : 0.5;
 
-      return { priority, summary, confidence };
+      const contact_name = typeof parsed.contact_name === 'string' && parsed.contact_name.length > 0
+        ? parsed.contact_name.slice(0, 200)
+        : undefined;
+
+      const is_automated = typeof parsed.is_automated === 'boolean' ? parsed.is_automated : undefined;
+
+      return { priority, summary, confidence, contact_name, is_automated };
     } catch {
       this.logger.warn('Failed to parse Gemini response, using fallback');
       return this.fallback();
@@ -166,18 +182,28 @@ export class AiEnrichmentService {
   }
 
   private async updateConversation(conversationId: string, output: AiOutput): Promise<void> {
+    const updatePayload: Record<string, unknown> = {
+      priority: output.is_automated ? 'LOW' : output.priority,
+      summary: output.summary,
+      confidence: output.confidence,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (output.contact_name) {
+      updatePayload.client_name = output.contact_name;
+    }
+
     const { error } = await this.supabase
       .from('conversations')
-      .update({
-        priority: output.priority,
-        summary: output.summary,
-        confidence: output.confidence,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq('conversation_id', conversationId);
 
     if (error) {
       this.logger.error(`Failed to update AI fields for ${conversationId}`, error.message);
+    } else {
+      this.logger.log(
+        `AI wrote summary for ${conversationId}: "${output.summary?.slice(0, 80)}..." | priority=${output.priority} | contact=${output.contact_name ?? 'n/a'} | automated=${output.is_automated ?? false}`,
+      );
     }
   }
 

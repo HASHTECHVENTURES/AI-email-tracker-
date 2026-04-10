@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
@@ -12,6 +12,9 @@ type Me = { role: string; company_name?: string | null };
 type Settings = {
   ai_enabled: boolean;
   email_ai_relevance_enabled: boolean;
+  email_ingest_without_ai_confirmed: boolean;
+  gemini_api_key_configured: boolean;
+  company_admin_ai_enabled?: boolean;
   email_crawl_enabled: boolean;
   ai_for_managers_enabled: boolean;
   ai_for_employees_enabled: boolean;
@@ -58,6 +61,13 @@ type DiagnosticsPayload = {
     sent_at: string;
     ingested_at: string;
   }>;
+  inbox_ai_relevance: {
+    gemini_key_configured: boolean;
+    platform_company_ai_enabled: boolean;
+    ceo_email_ai_relevance_enabled: boolean;
+    mailboxes_ai_off: { name: string; email: string }[];
+    would_run_for_all_mailboxes: boolean;
+  };
   checklist: string[];
 };
 
@@ -79,8 +89,17 @@ export default function SettingsPage() {
   const [diagError, setDiagError] = useState<string | null>(null);
   const [syncLoading, setSyncLoading] = useState(false);
   const [platformAdmin, setPlatformAdmin] = useState(false);
+  /** Avoids showing master toggles as OFF before GET /settings returns (was a visible flash). */
+  const [settingsLoadState, setSettingsLoadState] = useState<'pending' | 'ready' | 'failed'>('pending');
+  const hadSuccessfulSettingsFetch = useRef(false);
+  const settingsLoadStateRef = useRef(settingsLoadState);
+  useEffect(() => {
+    settingsLoadStateRef.current = settingsLoadState;
+  }, [settingsLoadState]);
 
   const load = useCallback(async (token: string) => {
+    if (settingsLoadStateRef.current === 'failed') setError(null);
+    setSettingsLoadState((s) => (s === 'failed' ? 'pending' : s));
     const [sRes, rRes, sysRes] = await Promise.all([
       apiFetch('/settings', token),
       apiFetch('/settings/runtime', token),
@@ -88,9 +107,12 @@ export default function SettingsPage() {
     ]);
     if (sRes.ok) {
       const s = (await sRes.json()) as Settings;
+      hadSuccessfulSettingsFetch.current = true;
       setSettings({
         ...s,
         email_ai_relevance_enabled: s.email_ai_relevance_enabled !== false,
+        email_ingest_without_ai_confirmed: s.email_ingest_without_ai_confirmed === true,
+        gemini_api_key_configured: s.gemini_api_key_configured !== false,
         email_crawl_enabled: s.email_crawl_enabled !== false,
         ai_for_managers_enabled: s.ai_for_managers_enabled !== false,
         ai_for_employees_enabled: s.ai_for_employees_enabled !== false,
@@ -98,6 +120,14 @@ export default function SettingsPage() {
         email_crawl_employee_mailboxes_enabled: s.email_crawl_employee_mailboxes_enabled !== false,
       });
       setSlaDraft(String(s.default_sla_hours ?? 24));
+      setSettingsLoadState('ready');
+    } else {
+      setSettingsLoadState((prev) => (prev === 'pending' ? 'failed' : prev));
+      setError(
+        hadSuccessfulSettingsFetch.current
+          ? 'Could not refresh settings. Your saved values are unchanged.'
+          : 'Could not load company settings.',
+      );
     }
     if (rRes.ok) setRuntime((await rRes.json()) as Runtime);
     if (sysRes.ok) {
@@ -320,62 +350,91 @@ export default function SettingsPage() {
           >
             Platform administration
           </Link>
-          <p className="mt-1 text-sm text-violet-800/90">
-            All companies, registration KPIs, add/delete tenants, and per-company AI / email kill switches.
-          </p>
         </section>
       ) : null}
 
-      <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
+      <section
+        className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]"
+        aria-busy={settingsLoadState === 'pending'}
+      >
         <h2 className="text-base font-semibold text-slate-900">Email (Gmail fetch)</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Company-wide switch: scheduled sync, manual ingestion, and all team / employee mailbox crawls. When off, no new mail is fetched anywhere.{' '}
-          <strong className="font-medium text-slate-600">Department managers</strong> can still pause individual mailboxes on the{' '}
-          <strong className="font-medium text-slate-600">Employees</strong> page without changing this.
-        </p>
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
-          <span className="text-sm font-medium text-slate-700">{masterEmailOn ? 'On' : 'Off'}</span>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
+          <span className="text-sm font-medium text-slate-700">
+            {settingsLoadState === 'pending' ? (
+              <span className="text-slate-400">Loading…</span>
+            ) : settingsLoadState === 'failed' ? (
+              <span className="text-amber-800">—</span>
+            ) : (
+              <>{masterEmailOn ? 'On' : 'Off'}</>
+            )}
+          </span>
           {isCeo ? (
-            <button
-              type="button"
-              role="switch"
-              aria-checked={masterEmailOn}
-              disabled={savingMasterEmail}
-              onClick={() => void setMasterEmail(!masterEmailOn)}
-              className={`relative h-8 w-14 rounded-full transition-colors ${masterEmailOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterEmail ? 'opacity-50' : ''}`}
-            >
-              <span
-                className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${masterEmailOn ? 'left-7' : 'left-1'}`}
+            settingsLoadState === 'pending' ? (
+              <div
+                className="h-8 w-14 animate-pulse rounded-full bg-slate-200"
+                aria-hidden
+                title="Loading settings"
               />
-            </button>
+            ) : settingsLoadState === 'failed' ? (
+              <span className="text-xs text-red-600">Load failed</span>
+            ) : (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={masterEmailOn}
+                disabled={savingMasterEmail}
+                onClick={() => void setMasterEmail(!masterEmailOn)}
+                className={`relative h-8 w-14 rounded-full transition-colors ${masterEmailOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterEmail ? 'opacity-50' : ''}`}
+              >
+                <span
+                  className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${masterEmailOn ? 'left-7' : 'left-1'}`}
+                />
+              </button>
+            )
           ) : (
             <span className="text-xs text-slate-400">CEO only</span>
           )}
         </div>
       </section>
 
-      <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
+      <section
+        className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]"
+        aria-busy={settingsLoadState === 'pending'}
+      >
         <h2 className="text-base font-semibold text-slate-900">AI</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Company-wide switch: Inbox AI classification, thread enrichment (Gemini), AI for manager and employee mailboxes, and CEO executive reports (Reports page — managers do not get this). When off, follow-up timing still runs on{' '}
-          <strong className="font-medium text-slate-600">rules</strong> if email sync is on. Managers can pause AI per mailbox on{' '}
-          <strong className="font-medium text-slate-600">Employees</strong>.
-        </p>
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
-          <span className="text-sm font-medium text-slate-700">{masterAiOn ? 'On' : 'Off'}</span>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
+          <span className="text-sm font-medium text-slate-700">
+            {settingsLoadState === 'pending' ? (
+              <span className="text-slate-400">Loading…</span>
+            ) : settingsLoadState === 'failed' ? (
+              <span className="text-amber-800">—</span>
+            ) : (
+              <>{masterAiOn ? 'On' : 'Off'}</>
+            )}
+          </span>
           {isCeo ? (
-            <button
-              type="button"
-              role="switch"
-              aria-checked={masterAiOn}
-              disabled={savingMasterAi}
-              onClick={() => void setMasterAi(!masterAiOn)}
-              className={`relative h-8 w-14 rounded-full transition-colors ${masterAiOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterAi ? 'opacity-50' : ''}`}
-            >
-              <span
-                className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${masterAiOn ? 'left-7' : 'left-1'}`}
+            settingsLoadState === 'pending' ? (
+              <div
+                className="h-8 w-14 animate-pulse rounded-full bg-slate-200"
+                aria-hidden
+                title="Loading settings"
               />
-            </button>
+            ) : settingsLoadState === 'failed' ? (
+              <span className="text-xs text-red-600">Load failed</span>
+            ) : (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={masterAiOn}
+                disabled={savingMasterAi}
+                onClick={() => void setMasterAi(!masterAiOn)}
+                className={`relative h-8 w-14 rounded-full transition-colors ${masterAiOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterAi ? 'opacity-50' : ''}`}
+              >
+                <span
+                  className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${masterAiOn ? 'left-7' : 'left-1'}`}
+                />
+              </button>
+            )
           ) : (
             <span className="text-xs text-slate-400">CEO only</span>
           )}
@@ -397,7 +456,7 @@ export default function SettingsPage() {
               max={168}
               value={slaDraft}
               onChange={(e) => setSlaDraft(e.target.value)}
-              disabled={!isCeo}
+              disabled={!isCeo || settingsLoadState !== 'ready'}
               className="w-28 rounded-lg border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50"
             />
           </div>
@@ -405,7 +464,7 @@ export default function SettingsPage() {
             <button
               type="button"
               onClick={() => void saveSla()}
-              disabled={savingSla}
+              disabled={savingSla || settingsLoadState !== 'ready'}
               className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
               {savingSla ? 'Saving…' : 'Save'}
@@ -418,7 +477,7 @@ export default function SettingsPage() {
 
       <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
         <h2 className="text-base font-semibold text-slate-900">Ingestion</h2>
-        {!masterEmailOn ? (
+        {settingsLoadState === 'ready' && !masterEmailOn ? (
           <p className="mt-2 text-sm text-amber-800">
             Company email master is off — scheduled cycles skip Gmail until the CEO turns it back on.
           </p>
@@ -439,7 +498,7 @@ export default function SettingsPage() {
             <button
               type="button"
               onClick={() => void runGmailSyncNow()}
-              disabled={syncLoading}
+              disabled={syncLoading || settingsLoadState !== 'ready'}
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
             >
               {syncLoading ? 'Running sync…' : 'Run Gmail sync now'}
@@ -481,6 +540,43 @@ export default function SettingsPage() {
                   </li>
                 </ul>
               </div>
+              {diag.inbox_ai_relevance ? (
+                <div className="rounded-lg border border-indigo-100 bg-indigo-50/60 p-3 text-slate-800">
+                  <p className="font-medium text-indigo-950">Inbox AI (Gemini) — “should we care about this email?”</p>
+                  <p className="mt-1 text-xs text-slate-600">
+                    All of the below must be OK for each mailbox so Gemini can classify incoming mail (including recent
+                    thread context). If Inbox AI cannot run, use My Email to confirm importing without AI or fix the red
+                    items below.
+                  </p>
+                  <ul className="mt-2 space-y-1.5 text-xs">
+                    <li className="flex flex-wrap gap-x-2">
+                      <span className={diag.inbox_ai_relevance.gemini_key_configured ? 'text-emerald-700' : 'text-red-700'}>
+                        {diag.inbox_ai_relevance.gemini_key_configured ? '✓' : '✗'} API key on server
+                      </span>
+                      <span className="text-slate-500">(GEMINI_API_KEY or alternates in .env)</span>
+                    </li>
+                    <li className={diag.inbox_ai_relevance.platform_company_ai_enabled ? 'text-emerald-700' : 'text-red-700'}>
+                      {diag.inbox_ai_relevance.platform_company_ai_enabled ? '✓' : '✗'} Platform Admin → company AI enabled
+                    </li>
+                    <li className={diag.inbox_ai_relevance.ceo_email_ai_relevance_enabled ? 'text-emerald-700' : 'text-red-700'}>
+                      {diag.inbox_ai_relevance.ceo_email_ai_relevance_enabled ? '✓' : '✗'} CEO Settings → AI master ON (includes Inbox AI)
+                    </li>
+                    {diag.inbox_ai_relevance.mailboxes_ai_off.length > 0 ? (
+                      <li className="text-amber-900">
+                        ✗ AI OFF on {diag.inbox_ai_relevance.mailboxes_ai_off.length} mailbox(es):{' '}
+                        {diag.inbox_ai_relevance.mailboxes_ai_off.map((m) => m.name || m.email).join(', ')} — turn AI on under Employees
+                      </li>
+                    ) : (
+                      <li className="text-emerald-700">✓ All mailboxes have AI enabled</li>
+                    )}
+                  </ul>
+                  <p className="mt-2 text-xs font-medium text-indigo-900">
+                    {diag.inbox_ai_relevance.would_run_for_all_mailboxes
+                      ? 'Gemini inbox relevance can run for every mailbox on the next sync.'
+                      : 'Fix the red/amber items above, then run sync again.'}
+                  </p>
+                </div>
+              ) : null}
               <div>
                 <p className="font-medium text-slate-900">Totals</p>
                 <p className="mt-1 text-slate-600">
@@ -506,7 +602,9 @@ export default function SettingsPage() {
                       <p className="text-xs text-slate-500">
                         OAuth: {m.has_oauth_token ? 'yes' : 'no'} · Paused: {m.tracking_paused ? 'yes' : 'no'} · Messages:{' '}
                         {m.email_message_count} · Conversations: {m.conversation_count}
-                        {m.tracking_start_at ? ` · Tracking start: ${new Date(m.tracking_start_at).toLocaleString()}` : ''}
+                        {m.tracking_start_at
+                          ? ` · Tracking since (inbox window): ${new Date(m.tracking_start_at).toLocaleString()}`
+                          : ''}
                         {m.mail_sync_start_date
                           ? ` · Gmail fetch “after”: ${new Date(m.mail_sync_start_date).toLocaleString()} (set at Connect Gmail — only newer mail is listed)`
                           : ''}

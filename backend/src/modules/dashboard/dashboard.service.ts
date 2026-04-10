@@ -38,6 +38,7 @@ export interface ConversationListItem {
   employee_id: string;
   employee_name: string;
   provider_thread_id: string;
+  client_name: string | null;
   client_email: string | null;
   follow_up_status: string;
   priority: string;
@@ -62,6 +63,7 @@ interface ConversationDbRow {
   conversation_id: string;
   employee_id: string;
   provider_thread_id: string;
+  client_name: string | null;
   client_email: string | null;
   follow_up_status: string;
   priority: string;
@@ -83,7 +85,12 @@ export interface ConversationFilters {
   companyId: string;
   status?: string;
   employeeId?: string;
+  /** When set (non-empty), restricts to these mailboxes; takes precedence over `employeeId`. */
+  employeeIds?: string[];
+  /** Single department (e.g. HEAD scope). */
   departmentId?: string;
+  /** Multiple departments (CEO); OR of dept-tagged threads + team mailboxes in those depts. Takes precedence over `departmentId`. */
+  departmentIds?: string[];
   priority?: string;
   lifecycle?: string;
 }
@@ -134,7 +141,12 @@ export interface SimplifiedDashboardResponse {
     employee_added: boolean;
     waiting_for_sync: boolean;
   };
-  employee_filter_options: { id: string; name: string }[];
+  employee_filter_options: {
+    id: string;
+    name: string;
+    department_name: string | null;
+    is_manager: boolean;
+  }[];
   my_followups?: { missed: number; pending: number; done: number };
   /** Populated for CEO only — department vs manager vs thread pressure. */
   ceo_department_rollups?: CeoDepartmentRollup[];
@@ -154,7 +166,7 @@ export class DashboardService {
   ) {
     const apiKey = process.env.GEMINI_API_KEY;
     const genAI = new GoogleGenerativeAI(apiKey ?? '');
-    this.aiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    this.aiModel = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash' });
   }
 
   async getGlobalMetrics(companyId: string, departmentId?: string): Promise<GlobalMetrics> {
@@ -236,15 +248,41 @@ export class DashboardService {
     let query = this.supabase
       .from('conversations')
       .select(
-        'conversation_id, employee_id, company_id, department_id, provider_thread_id, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, updated_at',
+        'conversation_id, employee_id, company_id, department_id, provider_thread_id, client_name, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, updated_at',
       )
       .eq('company_id', filters.companyId)
       .eq('is_ignored', false)
       .order('updated_at', { ascending: false });
 
-    if (filters.departmentId) query = query.eq('department_id', filters.departmentId);
+    if (filters.departmentIds && filters.departmentIds.length > 0) {
+      const deptIds = filters.departmentIds;
+      const allEmp: string[] = [];
+      for (const d of deptIds) {
+        const inDept = await this.getEmployeeIdsInDepartment(filters.companyId, d);
+        allEmp.push(...inDept);
+      }
+      const uniqEmp = [...new Set(allEmp)];
+      if (uniqEmp.length > 0) {
+        query = query.or(`department_id.in.(${deptIds.join(',')}),employee_id.in.(${uniqEmp.join(',')})`);
+      } else {
+        query = query.in('department_id', deptIds);
+      }
+    } else if (filters.departmentId) {
+      const inDept = await this.getEmployeeIdsInDepartment(filters.companyId, filters.departmentId);
+      if (inDept.length > 0) {
+        query = query.or(
+          `department_id.eq.${filters.departmentId},employee_id.in.(${inDept.join(',')})`,
+        );
+      } else {
+        query = query.eq('department_id', filters.departmentId);
+      }
+    }
     if (filters.status) query = query.eq('follow_up_status', filters.status);
-    if (filters.employeeId) query = query.eq('employee_id', filters.employeeId);
+    if (filters.employeeIds && filters.employeeIds.length > 0) {
+      query = query.in('employee_id', filters.employeeIds);
+    } else if (filters.employeeId) {
+      query = query.eq('employee_id', filters.employeeId);
+    }
     if (filters.priority) query = query.eq('priority', filters.priority);
     if (filters.lifecycle) query = query.eq('lifecycle_status', filters.lifecycle);
     const { data, error } = await query;
@@ -273,6 +311,7 @@ export class DashboardService {
         employee_id: r.employee_id,
         employee_name: emp?.name ?? r.employee_id,
         provider_thread_id: r.provider_thread_id,
+        client_name: r.client_name,
         client_email: r.client_email,
         follow_up_status: r.follow_up_status,
         priority: r.priority,
@@ -694,8 +733,14 @@ ${dataBlock}`;
    *
    * Effective department = conversation.department_id ?? employee.department_id (threads often only set on employee).
    * Emits one rollup per bucket that has threads (including unknown UUIDs and unassigned).
+   * @param filterDepartmentIds When set (CEO scope), rollups only include these departments’ effective buckets.
+   * @param filterEmployeeIds When set, only threads owned by these employee row ids.
    */
-  async getCeoDepartmentRollups(companyId: string): Promise<CeoDepartmentRollup[]> {
+  async getCeoDepartmentRollups(
+    companyId: string,
+    filterDepartmentIds?: string[],
+    filterEmployeeIds?: string[],
+  ): Promise<CeoDepartmentRollup[]> {
     const { data: convoRows, error: cErr } = await this.supabase
       .from('conversations')
       .select('department_id, employee_id, follow_up_status, priority')
@@ -706,7 +751,7 @@ ${dataBlock}`;
       return [];
     }
 
-    const raw = (convoRows ?? []) as Array<{
+    let raw = (convoRows ?? []) as Array<{
       department_id: string | null;
       employee_id: string;
       follow_up_status: string;
@@ -732,6 +777,21 @@ ${dataBlock}`;
       } else {
         empDeptById = new Map((emps ?? []).map((e: { id: string; department_id: string | null }) => [e.id, e.department_id]));
       }
+    }
+
+    if (filterDepartmentIds && filterDepartmentIds.length > 0) {
+      const allowDept = new Set(filterDepartmentIds);
+      raw = raw.filter((r) => {
+        const fromConv = normDept(r.department_id);
+        const fromEmp = normDept(empDeptById.get(r.employee_id) ?? null);
+        const eff = fromConv ?? fromEmp ?? null;
+        return eff != null && allowDept.has(eff);
+      });
+    }
+
+    if (filterEmployeeIds && filterEmployeeIds.length > 0) {
+      const allow = new Set(filterEmployeeIds);
+      raw = raw.filter((r) => allow.has(r.employee_id));
     }
 
     type Row = { department_id: string | null; follow_up_status: string; priority: string };
@@ -789,8 +849,13 @@ ${dataBlock}`;
     const rollups: CeoDepartmentRollup[] = [];
     const knownDeptId = new Set(allDeptRows.map((d) => d.id));
 
+    const deptRowsForRollup =
+      filterDepartmentIds && filterDepartmentIds.length > 0
+        ? allDeptRows.filter((d) => filterDepartmentIds.includes(d.id))
+        : allDeptRows;
+
     /** Every department in the org directory — include zeros so CEO always sees department + manager columns. */
-    for (const d of allDeptRows) {
+    for (const d of deptRowsForRollup) {
       const list = byDept.get(d.id) ?? [];
       const missed = list.filter((x) => x.follow_up_status === 'MISSED').length;
       const pending = list.filter((x) => x.follow_up_status === 'PENDING').length;
@@ -811,6 +876,14 @@ ${dataBlock}`;
     }
 
     /** Conversation buckets whose department_id is not in `departments` (legacy / sync drift). */
+    if (filterDepartmentIds && filterDepartmentIds.length > 0) {
+      return rollups.sort((a, b) => {
+        if (b.need_attention_count !== a.need_attention_count) return b.need_attention_count - a.need_attention_count;
+        if (b.missed !== a.missed) return b.missed - a.missed;
+        return a.department_name.localeCompare(b.department_name);
+      });
+    }
+
     for (const id of rollupDeptIds) {
       if (knownDeptId.has(id)) continue;
       const list = byDept.get(id) ?? [];
@@ -863,32 +936,68 @@ ${dataBlock}`;
   async getDashboard(
     companyId: string,
     scope: { departmentId?: string; employeeId?: string; role: EmployeeRole },
-    filters?: { status?: string; employeeId?: string; priority?: string },
+    filters?: {
+      status?: string;
+      employeeId?: string;
+      employeeIds?: string[];
+      priority?: string;
+      /** Legacy CEO single-department query param. */
+      departmentId?: string;
+      departmentIds?: string[];
+    },
     actorEmail?: string,
   ): Promise<SimplifiedDashboardResponse> {
     const scopedEmployeeId = scope.role === 'EMPLOYEE' ? scope.employeeId : undefined;
+    const ceoEmployeeIds =
+      scope.role === 'CEO' && filters?.employeeIds && filters.employeeIds.length > 0
+        ? filters.employeeIds
+        : undefined;
     const filterEmployee =
-      scope.role === 'EMPLOYEE' ? scopedEmployeeId : filters?.employeeId ?? scopedEmployeeId;
+      ceoEmployeeIds && scope.role === 'CEO'
+        ? undefined
+        : scope.role === 'EMPLOYEE'
+          ? scopedEmployeeId
+          : filters?.employeeId ?? scopedEmployeeId;
+
+    const ceoDeptIdsRaw =
+      scope.role === 'CEO' && filters?.departmentIds && filters.departmentIds.length > 0
+        ? filters.departmentIds
+        : scope.role === 'CEO' && filters?.departmentId?.trim()
+          ? [filters.departmentId.trim()]
+          : undefined;
+
+    const scopedDepartmentIdHead = scope.role === 'HEAD' ? scope.departmentId : undefined;
 
     const reportPromise =
       scope.role === 'CEO' ? this.getLastAiReport(companyId, { scope: 'EXECUTIVE' }) : Promise.resolve(null);
 
     const rollupsPromise =
-      scope.role === 'CEO' ? this.getCeoDepartmentRollups(companyId) : Promise.resolve(undefined);
+      scope.role === 'CEO'
+        ? this.getCeoDepartmentRollups(companyId, ceoDeptIdsRaw, ceoEmployeeIds)
+        : Promise.resolve(undefined);
 
     const [report, all, onboarding, employeeFilterOptions, ceo_department_rollups, actorEmployeeId] = await Promise.all([
       reportPromise,
       this.getConversationsList({
         companyId,
-        departmentId: scope.departmentId,
+        departmentId: scopedDepartmentIdHead,
+        departmentIds: scope.role === 'CEO' ? ceoDeptIdsRaw : undefined,
         employeeId: filterEmployee,
+        employeeIds: ceoEmployeeIds,
         status: filters?.status,
         priority: filters?.priority,
       }),
       this.getOnboardingSnapshot(companyId),
       scope.role === 'EMPLOYEE'
-        ? Promise.resolve([] as { id: string; name: string }[])
-        : this.getEmployeeFilterOptions(companyId),
+        ? Promise.resolve(
+            [] as {
+              id: string;
+              name: string;
+              department_name: string | null;
+              is_manager: boolean;
+            }[],
+          )
+        : this.getEmployeeFilterOptions(companyId, undefined, scope.role === 'CEO' ? ceoDeptIdsRaw : undefined),
       rollupsPromise,
       scope.role === 'EMPLOYEE' || !actorEmail
         ? Promise.resolve<string | null>(null)
@@ -947,6 +1056,22 @@ ${dataBlock}`;
     return out;
   }
 
+  /** Team mailboxes in a department — used to scope conversations when thread rows lack `department_id`. */
+  private async getEmployeeIdsInDepartment(companyId: string, departmentId: string): Promise<string[]> {
+    const { data, error } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('department_id', departmentId)
+      .or('mailbox_type.is.null,mailbox_type.eq.TEAM');
+    if (error) {
+      this.logger.warn(`getEmployeeIdsInDepartment: ${error.message}`);
+      return [];
+    }
+    const ids = (data ?? []) as { id: string }[];
+    return [...new Set(ids.map((r) => r.id))];
+  }
+
   private async getEmployeeIdByEmail(companyId: string, email: string): Promise<string | null> {
     const normalized = email.trim().toLowerCase();
     if (!normalized) return null;
@@ -964,18 +1089,64 @@ ${dataBlock}`;
     return row?.id ?? null;
   }
 
-  private async getEmployeeFilterOptions(companyId: string): Promise<{ id: string; name: string }[]> {
-    const { data, error } = await this.supabase
+  private async getEmployeeFilterOptions(
+    companyId: string,
+    departmentId?: string,
+    departmentIds?: string[],
+  ): Promise<
+    { id: string; name: string; department_name: string | null; is_manager: boolean }[]
+  > {
+    let q = this.supabase
       .from('employees')
-      .select('id, name')
+      .select('id, name, email, department_id')
       .eq('company_id', companyId)
       .or('mailbox_type.is.null,mailbox_type.eq.TEAM')
       .order('name', { ascending: true });
+    if (departmentIds && departmentIds.length > 0) {
+      q = q.in('department_id', departmentIds);
+    } else if (departmentId) {
+      q = q.eq('department_id', departmentId);
+    }
+    const [{ data, error }, deptsRes, headsRes] = await Promise.all([
+      q,
+      this.supabase.from('departments').select('id, name').eq('company_id', companyId),
+      this.supabase
+        .from('users')
+        .select('email, department_id, linked_employee_id')
+        .eq('company_id', companyId)
+        .eq('role', 'HEAD'),
+    ]);
     if (error) {
       this.logger.warn(`getEmployeeFilterOptions: ${error.message}`);
       return [];
     }
-    return (data ?? []) as { id: string; name: string }[];
+    const deptNameById = new Map(
+      (deptsRes.data ?? []).map((r) => [r.id as string, (r.name as string) ?? '']),
+    );
+    const managerDeptEmail = new Set<string>();
+    const managerByLinkedId = new Set<string>();
+    for (const row of headsRes.data ?? []) {
+      const did = row.department_id as string | null;
+      const em = (row.email as string | undefined)?.trim().toLowerCase();
+      if (did && em) managerDeptEmail.add(`${did}:${em}`);
+      const link = row.linked_employee_id as string | null | undefined;
+      if (link) managerByLinkedId.add(link);
+    }
+    type EmpRow = { id: string; name: string; email: string; department_id: string };
+    return ((data ?? []) as EmpRow[]).map((e) => {
+      const em = (e.email ?? '').trim().toLowerCase();
+      const dn = e.department_id ? (deptNameById.get(e.department_id) ?? null) : null;
+      const is_manager = Boolean(
+        managerByLinkedId.has(e.id) ||
+          (e.department_id && em && managerDeptEmail.has(`${e.department_id}:${em}`)),
+      );
+      return {
+        id: e.id,
+        name: e.name,
+        department_name: dn,
+        is_manager,
+      };
+    });
   }
 
   private async getOnboardingSnapshot(companyId: string): Promise<{

@@ -1,6 +1,6 @@
 'use client';
 
-import type { MouseEvent, ReactNode } from 'react';
+import type { ComponentProps, MouseEvent, ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
@@ -23,6 +23,10 @@ type AppShellProps = {
   onRefresh?: () => void;
   onSignOut: () => void;
   children: ReactNode;
+  /** CEO dashboard only: opens the command-center scope panel (desktop sidebar, under main links). */
+  ceoDashboardScopeTriggerDesktop?: ReactNode;
+  /** CEO dashboard only: compact control in the mobile nav strip. */
+  ceoDashboardScopeTriggerMobile?: ReactNode;
 };
 
 function isManagerRole(role: string): boolean {
@@ -40,6 +44,10 @@ function navMobileClass(active: boolean): string {
   return active
     ? 'inline-flex shrink-0 rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm'
     : 'inline-flex shrink-0 rounded-lg border border-slate-200/80 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50';
+}
+
+function SafeLink(props: ComponentProps<typeof Link>) {
+  return <Link suppressHydrationWarning {...props} />;
 }
 
 /**
@@ -137,6 +145,8 @@ export function AppShell({
   onRefresh,
   onSignOut,
   children,
+  ceoDashboardScopeTriggerDesktop,
+  ceoDashboardScopeTriggerMobile,
 }: AppShellProps) {
   const pathname = usePathname();
   const [locHash, setLocHash] = useState('');
@@ -191,84 +201,90 @@ export function AppShell({
             <nav aria-label="Main">
               <div className="flex flex-col gap-1.5 pb-1">
               {isPlatformAdmin ? (
-                <Link href="/admin" className={navItemClass(pathname === '/admin')}>
+                <SafeLink href="/admin" className={navItemClass(pathname === '/admin')}>
                   Platform admin
-                </Link>
+                </SafeLink>
               ) : (
-                <Link href="/dashboard" className={navItemClass(pathname === '/dashboard')}>
+                <SafeLink href="/dashboard" className={navItemClass(pathname === '/dashboard')}>
                   Dashboard
-                </Link>
+                </SafeLink>
               )}
 
               {showMyEmail ? (
                 <>
-                  <Link
+                  <SafeLink
                     href="/my-email"
                     className={navItemClass(myEmailHome)}
                     onClick={(e) => onMyEmailHashNavClick(e, pathname, 'ceo')}
                   >
                     My Email
-                  </Link>
-                  <Link
+                  </SafeLink>
+                  <SafeLink
                     href="/my-email#manager-mailboxes"
                     className={navItemClass(managerMailFocus)}
                     onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
                   >
                     Manager mail
-                  </Link>
+                  </SafeLink>
                 </>
               ) : null}
 
               {isEmployee ? (
-                <Link href="/messages" className={navItemClass(pathname === '/messages')}>
+                <SafeLink href="/messages" className={navItemClass(pathname === '/messages')}>
                   Messages & alerts
-                </Link>
+                </SafeLink>
               ) : null}
 
               {showOrg && isCeo ? (
                 <>
-                  <Link href="/departments" className={navItemClass(pathname === '/departments')}>
+                  <SafeLink href="/departments" className={navItemClass(pathname === '/departments')}>
                     Departments
-                  </Link>
-                  <Link href="/employees" className={navItemClass(pathname === '/employees')}>
+                  </SafeLink>
+                  <SafeLink href="/employees" className={navItemClass(pathname === '/employees')}>
                     Employees
-                  </Link>
-                  <Link href="/ai-reports" className={navItemClass(pathname === '/ai-reports')}>
+                  </SafeLink>
+                  <SafeLink href="/ai-reports" className={navItemClass(pathname === '/ai-reports')}>
                     Reports
-                  </Link>
+                  </SafeLink>
                 </>
               ) : null}
 
               {showOrg && isHead ? (
-                <Link href="/employees" className={navItemClass(pathname === '/employees')}>
+                <SafeLink href="/employees" className={navItemClass(pathname === '/employees')}>
                   Team
-                </Link>
+                </SafeLink>
               ) : null}
 
               {showOrg && isHead ? (
-                <Link href="/my-mail" className={navItemClass(pathname === '/my-mail')}>
+                <SafeLink href="/my-mail" className={navItemClass(pathname === '/my-mail')}>
                   My mail
-                </Link>
+                </SafeLink>
               ) : null}
 
               {showOrg && isHead ? (
                 <>
-                  <Link href="/manager-messages" className={navItemClass(managerMessagesActive)}>
+                  <SafeLink href="/manager-messages" className={navItemClass(managerMessagesActive)}>
                     Conversations
-                  </Link>
-                  <Link href="/departments#team-members" className={navItemClass(deptAlertsFocus)}>
+                  </SafeLink>
+                  <SafeLink href="/departments#team-members" className={navItemClass(deptAlertsFocus)}>
                     Alerts
-                  </Link>
+                  </SafeLink>
                 </>
               ) : null}
 
               {!isPlatformAdmin ? (
-                <Link href="/settings" className={navItemClass(pathname === '/settings')}>
+                <SafeLink href="/settings" className={navItemClass(pathname === '/settings')}>
                   Settings
-                </Link>
+                </SafeLink>
               ) : null}
             </div>
             </nav>
+
+            {pathname === '/dashboard' && ceoDashboardScopeTriggerDesktop ? (
+              <div className="mt-4 border-t border-slate-100 pt-4">
+                {ceoDashboardScopeTriggerDesktop}
+              </div>
+            ) : null}
           </div>
 
           <div className="mt-auto shrink-0 border-t border-slate-100 pt-4">
@@ -305,74 +321,77 @@ export function AppShell({
               aria-label="Main mobile"
             >
               {isPlatformAdmin ? (
-                <Link href="/admin" className={navMobileClass(pathname === '/admin')}>
+                <SafeLink href="/admin" className={navMobileClass(pathname === '/admin')}>
                   Admin
-                </Link>
+                </SafeLink>
               ) : (
-                <Link href="/dashboard" className={navMobileClass(pathname === '/dashboard')}>
+                <SafeLink href="/dashboard" className={navMobileClass(pathname === '/dashboard')}>
                   Dashboard
-                </Link>
+                </SafeLink>
               )}
               {showMyEmail ? (
                 <>
-                  <Link
+                  <SafeLink
                     href="/my-email"
                     className={navMobileClass(myEmailHome)}
                     onClick={(e) => onMyEmailHashNavClick(e, pathname, 'ceo')}
                   >
                     My Email
-                  </Link>
-                  <Link
+                  </SafeLink>
+                  <SafeLink
                     href="/my-email#manager-mailboxes"
                     className={navMobileClass(managerMailFocus)}
                     onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
                   >
                     Manager mail
-                  </Link>
+                  </SafeLink>
                 </>
               ) : null}
               {isEmployee ? (
-                <Link href="/messages" className={navMobileClass(pathname === '/messages')}>
+                <SafeLink href="/messages" className={navMobileClass(pathname === '/messages')}>
                   Messages
-                </Link>
+                </SafeLink>
               ) : null}
               {showOrg && isCeo ? (
                 <>
-                  <Link href="/departments" className={navMobileClass(pathname === '/departments')}>
+                  <SafeLink href="/departments" className={navMobileClass(pathname === '/departments')}>
                     Departments
-                  </Link>
-                  <Link href="/employees" className={navMobileClass(pathname === '/employees')}>
+                  </SafeLink>
+                  <SafeLink href="/employees" className={navMobileClass(pathname === '/employees')}>
                     Employees
-                  </Link>
-                  <Link href="/ai-reports" className={navMobileClass(pathname === '/ai-reports')}>
+                  </SafeLink>
+                  <SafeLink href="/ai-reports" className={navMobileClass(pathname === '/ai-reports')}>
                     Reports
-                  </Link>
+                  </SafeLink>
                 </>
               ) : null}
               {showOrg && isHead ? (
-                <Link href="/employees" className={navMobileClass(pathname === '/employees')}>
+                <SafeLink href="/employees" className={navMobileClass(pathname === '/employees')}>
                   Team
-                </Link>
+                </SafeLink>
               ) : null}
               {showOrg && isHead ? (
-                <Link href="/my-mail" className={navMobileClass(pathname === '/my-mail')}>
+                <SafeLink href="/my-mail" className={navMobileClass(pathname === '/my-mail')}>
                   My mail
-                </Link>
+                </SafeLink>
               ) : null}
               {showOrg && isHead ? (
                 <>
-                  <Link href="/manager-messages" className={navMobileClass(managerMessagesActive)}>
+                  <SafeLink href="/manager-messages" className={navMobileClass(managerMessagesActive)}>
                     Conversations
-                  </Link>
-                  <Link href="/departments#team-members" className={navMobileClass(deptAlertsFocus)}>
+                  </SafeLink>
+                  <SafeLink href="/departments#team-members" className={navMobileClass(deptAlertsFocus)}>
                     Alerts
-                  </Link>
+                  </SafeLink>
                 </>
               ) : null}
               {!isPlatformAdmin ? (
-                <Link href="/settings" className={navMobileClass(pathname === '/settings')}>
+                <SafeLink href="/settings" className={navMobileClass(pathname === '/settings')}>
                   Settings
-                </Link>
+                </SafeLink>
+              ) : null}
+              {pathname === '/dashboard' && ceoDashboardScopeTriggerMobile ? (
+                <>{ceoDashboardScopeTriggerMobile}</>
               ) : null}
             </nav>
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">

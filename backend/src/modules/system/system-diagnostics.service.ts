@@ -2,7 +2,9 @@ import { ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { RequestContext } from '../common/request-context';
+import { isGeminiEnvConfigured } from '../common/env';
 import { SettingsService } from '../settings/settings.service';
+import { CompanyPolicyService } from '../company-policy/company-policy.service';
 
 type RecentIngestedRow = {
   employee_id: string;
@@ -37,6 +39,7 @@ export class SystemDiagnosticsService {
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
     private readonly settingsService: SettingsService,
+    private readonly companyPolicyService: CompanyPolicyService,
   ) {}
 
   async run(ctx: RequestContext): Promise<{
@@ -51,6 +54,14 @@ export class SystemDiagnosticsService {
     totals: { email_messages: number; conversations: number };
     mailboxes: MailboxDiagnostic[];
     recent_ingested_messages: RecentIngestedRow[];
+    /** Gates for Gemini during ingest — same logic as `EmailIngestionService` `allowGeminiRelevance` (per mailbox also needs `ai_enabled`). */
+    inbox_ai_relevance: {
+      gemini_key_configured: boolean;
+      platform_company_ai_enabled: boolean;
+      ceo_email_ai_relevance_enabled: boolean;
+      mailboxes_ai_off: { name: string; email: string }[];
+      would_run_for_all_mailboxes: boolean;
+    };
     checklist: string[];
   }> {
     if (ctx.role === 'EMPLOYEE') {
@@ -59,6 +70,10 @@ export class SystemDiagnosticsService {
 
     const settings = await this.settingsService.getAll();
     const ingestion_runtime = await this.settingsService.getRuntimeStatus();
+    const companyFlags = await this.companyPolicyService.getFlags(ctx.companyId);
+    const geminiKeyOk = isGeminiEnvConfigured();
+    const platformAiOk = companyFlags.admin_ai_enabled;
+    const ceoInboxAiOk = settings.email_ai_relevance_enabled;
 
     let empQuery = this.supabase
       .from('employees')
@@ -183,17 +198,22 @@ export class SystemDiagnosticsService {
 
       if (hasOAuth && (ec ?? 0) === 0 && !blockers.some((b) => b.includes('crawl'))) {
         hints.push(
-          'No rows in email_messages yet for this mailbox — Gmail may have returned no new IDs (cursor, query filters) or ingest has not run since connect.',
+          'No rows in email_messages yet for this mailbox — ingest may not have run, the Gmail window/query returned nothing yet, or every message was skipped (before tracking start or not relevant to store).',
         );
         if (sync?.start_date) {
           hints.push(
-            `Gmail list uses after:${Math.floor(new Date(sync.start_date).getTime() / 1000)} (from mail_sync_state.start_date, set when Gmail was connected). Only messages in Inbox/Sent after that instant are fetched — send yourself a new test mail after that time, or check Promotions/Social (excluded by query).`,
+            `Gmail list uses after:${Math.floor(new Date(sync.start_date).getTime() / 1000)} (mail_sync_state.start_date — tracking start if set, otherwise connect time). Multi-page walks use a stored page token so older mail in that window is not skipped. Only Inbox/Sent after that instant match the query — check Promotions/Social if mail is missing.`,
           );
         }
       }
       if ((ec ?? 0) > 0 && (cc ?? 0) === 0) {
         hints.push(
-          'Messages are ingested but there are no conversations — likely filtered as not relevant (rules/Inbox AI) or only outbound mail.',
+          'Stored messages exist but no conversations — run recompute if needed, check for outbound-only rows, or threads still building. (Only relevance-kept mail is stored.)',
+        );
+      }
+      if (e.ai_enabled === false) {
+        hints.push(
+          'Mailbox AI is OFF for this row — Inbox Gemini relevance is skipped. New mail is stored only if the CEO confirmed “import without Inbox AI” on My Email.',
         );
       }
 
@@ -224,19 +244,32 @@ export class SystemDiagnosticsService {
       .order('ingested_at', { ascending: false })
       .limit(15);
 
+    const mailboxesAiOff = rows
+      .filter((r) => r.ai_enabled === false)
+      .map((r) => ({ name: r.name, email: r.email }));
+    const wouldRunForAll =
+      geminiKeyOk &&
+      platformAiOk &&
+      ceoInboxAiOk &&
+      mailboxesAiOff.length === 0;
+
     const checklist = [
-      'Deploy latest API (Gmail Updates + public-domain heuristic fixes).',
-      'Settings → company Email master ON.',
-      'Employees → mailbox Email fetch ON for that person.',
+      'Inbox Gemini — API host: set GEMINI_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY / GOOGLE_API_KEY). Without it, use My Email → confirm “import without Inbox AI” to store mail.',
+      'Inbox Gemini — Platform Admin → Admin → your company → AI enabled ON (companies.admin_ai_enabled).',
+      'Inbox Gemini — Settings (CEO) → AI master ON (includes email_ai_relevance_enabled).',
+      'Inbox Gemini — Employees → each mailbox: AI ON (employees.ai_enabled). If OFF, ingest needs CEO confirmation on My Email.',
+      'Inbox Gemini sees full message context (including Gmail category labels as a hint in the prompt) — relevance is model-decided, not pre-filtered by rules.',
+      'Settings → company Email (Gmail fetch) master ON.',
+      'Employees → mailbox Email fetch ON for that person (not paused).',
       'Tracking start must be BEFORE the test email’s sent time (timezone matters).',
-      'Railway: DISABLE_INGESTION_CRON must not be "true".',
-      'After changing settings, wait ~2 minutes or trigger GET /email-ingestion/run (CEO) once.',
+      'Host: DISABLE_INGESTION_CRON must not be "true" for scheduled sync.',
+      'After changing settings, wait ~2 minutes or use Settings → Run Gmail sync now (CEO).',
     ];
 
     return {
       generated_at: new Date().toISOString(),
       environment: {
-        gemini_configured: Boolean(process.env.GEMINI_API_KEY?.trim()),
+        gemini_configured: geminiKeyOk,
         ingestion_cron_disabled: process.env.DISABLE_INGESTION_CRON === 'true',
         node_env: process.env.NODE_ENV ?? null,
       },
@@ -248,6 +281,13 @@ export class SystemDiagnosticsService {
       },
       mailboxes,
       recent_ingested_messages: (recent ?? []) as RecentIngestedRow[],
+      inbox_ai_relevance: {
+        gemini_key_configured: geminiKeyOk,
+        platform_company_ai_enabled: platformAiOk,
+        ceo_email_ai_relevance_enabled: ceoInboxAiOk,
+        mailboxes_ai_off: mailboxesAiOff,
+        would_run_for_all_mailboxes: wouldRunForAll,
+      },
       checklist,
     };
   }

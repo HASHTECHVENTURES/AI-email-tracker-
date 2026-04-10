@@ -29,12 +29,18 @@ export interface EmailMessage {
   employeeId: string;
   direction: 'INBOUND' | 'OUTBOUND';
   fromEmail: string;
+  /** Human display name parsed from `From` header when available. */
+  fromName?: string | null;
+  /** Reply target parsed from `Reply-To` header; falls back to fromEmail when absent. */
+  replyToEmail?: string | null;
   toEmails: string[];
   subject: string;
   bodyText: string;
   sentAt: Date;
   /** Gmail label IDs — used for noise filtering (CATEGORY_PROMOTIONS etc.) */
   labelIds?: string[];
+  /** Set after Gemini inbox relevance — persisted on `email_messages.relevance_reason`. */
+  relevanceReason?: string | null;
 }
 
 export interface ConversationSnapshot {
@@ -59,6 +65,8 @@ export interface AiOutput {
   priority: Priority;
   summary: string;
   confidence: number;
+  contact_name?: string;
+  is_automated?: boolean;
 }
 
 export interface MailSyncState {

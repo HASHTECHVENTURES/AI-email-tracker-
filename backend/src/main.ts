@@ -3,7 +3,7 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
-import { assertRequiredEnv } from './modules/common/env';
+import { assertRequiredEnv, isGeminiEnvConfigured } from './modules/common/env';
 import rateLimit from 'express-rate-limit';
 import type { Request } from 'express';
 
@@ -15,6 +15,11 @@ function isGoogleOAuthCallback(req: Request): boolean {
 
 async function bootstrap() {
   assertRequiredEnv();
+  // Helps verify Railway/env: logs whether the *running* process sees a Gemini key (value is never logged).
+  // If this says "not set" but Variables has GEMINI_API_KEY, redeploy or attach vars to this service.
+  console.log(
+    `[bootstrap] Gemini env: ${isGeminiEnvConfigured() ? 'configured (Inbox AI can use API key)' : 'NOT SET — add GEMINI_API_KEY to this service and redeploy'}`,
+  );
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   // Railway / reverse proxies: correct client IP for rate limits and forwarded proto.
   app.set('trust proxy', 1);
@@ -31,6 +36,8 @@ async function bootstrap() {
     // Local dev, LAN, optional FRONTEND_URL / CORS_ORIGINS, and Railway-hosted HTTPS apps.
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
+      // Any local dev port (Next default 3001, or custom) — avoids "Failed to fetch" from strict CORS.
+      if (/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return cb(null, true);
       const extras =
         process.env.CORS_ORIGINS?.split(',')
           .map((s) => s.trim())

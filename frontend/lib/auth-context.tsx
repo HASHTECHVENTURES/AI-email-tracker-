@@ -54,7 +54,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   const loadProfile = useCallback(async (accessToken: string) => {
-    const meRes = await apiFetch('/auth/me', accessToken);
+    let meRes: Response;
+    try {
+      meRes = await apiFetch('/auth/me', accessToken);
+    } catch {
+      setError('Cannot reach API server. Check backend URL or whether backend is running.');
+      setMe(null);
+      return;
+    }
     if (!meRes.ok) {
       if (meRes.status === 401) {
         const supabase = createClient();

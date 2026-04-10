@@ -33,10 +33,28 @@ export class DashboardController {
     @Req() req: Request,
     @Query('status') status?: string,
     @Query('employee_id') filterEmployeeId?: string,
+    /** CEO only — comma-separated employee row ids; scopes KPIs / rollups to those mailboxes (omit = all in view). */
+    @Query('employee_ids') filterEmployeeIdsRaw?: string,
     @Query('priority') priority?: string,
+    /** CEO only — legacy single department (use `department_ids` for multiple). */
+    @Query('department_id') filterDepartmentId?: string,
+    /** CEO only — comma-separated department ids; union of teams in KPIs / rollups. */
+    @Query('department_ids') filterDepartmentIdsRaw?: string,
   ) {
     const ctx = getRequestContext(req);
     const u = req.user!;
+    const ceoDepartmentIds =
+      u.role === 'CEO' && filterDepartmentIdsRaw?.trim()
+        ? [...new Set(filterDepartmentIdsRaw.split(',').map((s) => s.trim()).filter(Boolean))]
+        : undefined;
+    const ceoDepartment =
+      u.role === 'CEO' && !ceoDepartmentIds?.length && filterDepartmentId?.trim()
+        ? filterDepartmentId.trim()
+        : undefined;
+    const ceoEmployeeIds =
+      u.role === 'CEO' && filterEmployeeIdsRaw?.trim()
+        ? [...new Set(filterEmployeeIdsRaw.split(',').map((s) => s.trim()).filter(Boolean))]
+        : undefined;
     return this.dashboardService.getDashboard(
       ctx.companyId,
       {
@@ -46,7 +64,14 @@ export class DashboardController {
       },
       u.role === 'EMPLOYEE'
         ? { status, priority }
-        : { status, employeeId: filterEmployeeId, priority },
+        : {
+            status,
+            employeeId: ceoEmployeeIds?.length ? undefined : filterEmployeeId,
+            employeeIds: ceoEmployeeIds?.length ? ceoEmployeeIds : undefined,
+            priority,
+            departmentId: ceoDepartment,
+            departmentIds: ceoDepartmentIds?.length ? ceoDepartmentIds : undefined,
+          },
       u.email,
     );
   }

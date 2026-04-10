@@ -86,6 +86,11 @@ CREATE TABLE IF NOT EXISTS mail_sync_state (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Applied via migrations/015_mail_sync_list_resume.sql on existing DBs:
+-- ALTER TABLE mail_sync_state ADD COLUMN IF NOT EXISTS gmail_list_page_token TEXT;
+-- ADD COLUMN IF NOT EXISTS gmail_list_query_after_epoch BIGINT;
+-- ADD COLUMN IF NOT EXISTS backfill_max_sent_at TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS email_messages (
   provider_message_id TEXT PRIMARY KEY,
   provider_thread_id TEXT NOT NULL,
@@ -93,11 +98,14 @@ CREATE TABLE IF NOT EXISTS email_messages (
   company_id UUID REFERENCES companies (id) ON DELETE CASCADE,
   direction TEXT NOT NULL,
   from_email TEXT NOT NULL,
+  from_name TEXT,
+  reply_to_email TEXT,
   to_emails TEXT[] NOT NULL,
   subject TEXT NOT NULL,
   body_text TEXT NOT NULL,
   sent_at TIMESTAMPTZ NOT NULL,
-  ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  relevance_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS conversations (
@@ -181,6 +189,24 @@ CREATE INDEX IF NOT EXISTS idx_email_messages_ingested_at
 
 CREATE INDEX IF NOT EXISTS idx_email_messages_company_id
   ON email_messages(company_id);
+
+CREATE TABLE IF NOT EXISTS email_ingestion_skips (
+  employee_id UUID NOT NULL REFERENCES employees (id) ON DELETE CASCADE,
+  provider_message_id TEXT NOT NULL,
+  skipped_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (employee_id, provider_message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_ingestion_skips_employee
+  ON email_ingestion_skips (employee_id);
+
+ALTER TABLE email_ingestion_skips ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS service_role_all_email_ingestion_skips ON email_ingestion_skips;
+CREATE POLICY service_role_all_email_ingestion_skips
+  ON email_ingestion_skips FOR ALL
+  USING (auth.role() = 'service_role')
+  WITH CHECK (auth.role() = 'service_role');
 
 CREATE INDEX IF NOT EXISTS idx_conversations_employee_status_updated
   ON conversations(employee_id, follow_up_status, updated_at DESC);

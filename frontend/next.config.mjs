@@ -16,6 +16,7 @@ const devDocumentNoStore = [
   '/admin/:path*',
   '/dashboard',
   '/dashboard/:path*',
+  '/conversation/:path*',
   '/departments/:path*',
   '/employees',
   '/employees/:path*',
@@ -55,6 +56,21 @@ const nextConfig = {
         source: '/favicon.ico',
         destination: '/favicon.svg',
         permanent: false,
+      },
+    ];
+  },
+
+  /**
+   * Local dev: browser calls same-origin `/api-backend/*` → Nest on :3000.
+   * Avoids "Failed to fetch" from cross-origin / mixed-content when Next is :3001 and API is :3000.
+   * See `lib/api.ts` (`shouldUseLocalDevProxy`). Production uses `NEXT_PUBLIC_API_URL` to a public API.
+   */
+  async rewrites() {
+    const backend = process.env.BACKEND_PROXY_URL?.trim() || 'http://127.0.0.1:3000';
+    return [
+      {
+        source: '/api-backend/:path*',
+        destination: `${backend.replace(/\/$/, '')}/:path*`,
       },
     ];
   },

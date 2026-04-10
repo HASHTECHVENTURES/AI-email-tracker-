@@ -16,6 +16,20 @@ function hasGoogleOAuthRedirect(): boolean {
   return Boolean(process.env.RAILWAY_PUBLIC_DOMAIN?.trim());
 }
 
+/** Google AI / Gemini — same sources as GET /settings `gemini_api_key_configured`. */
+export function getGeminiApiKeyFromEnv(): string {
+  return (
+    process.env.GEMINI_API_KEY?.trim() ||
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
+    process.env.GOOGLE_API_KEY?.trim() ||
+    ''
+  );
+}
+
+export function isGeminiEnvConfigured(): boolean {
+  return Boolean(getGeminiApiKeyFromEnv());
+}
+
 export function assertRequiredEnv(): void {
   const missing = REQUIRED_ENV_VARS.filter((key) => !process.env[key]?.trim());
   if (missing.length > 0) {

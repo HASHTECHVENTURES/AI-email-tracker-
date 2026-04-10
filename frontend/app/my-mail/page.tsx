@@ -128,10 +128,9 @@ function ManagerMyMailInner() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [slaDraftById, setSlaDraftById] = useState<Record<string, string>>({});
-  const [trackingDraftById, setTrackingDraftById] = useState<Record<string, string>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [slaSavingId, setSlaSavingId] = useState<string | null>(null);
-  const [trackingSavingId, setTrackingSavingId] = useState<string | null>(null);
+  const [togglePauseLoadingId, setTogglePauseLoadingId] = useState<string | null>(null);
   const [addingMyMailbox, setAddingMyMailbox] = useState(false);
 
   const [filterStatus, setFilterStatus] = useState('');
@@ -352,52 +351,25 @@ function ManagerMyMailInner() {
     }
   }
 
-  function trackingInputValue(mb: Mailbox): string {
-    if (trackingDraftById[mb.id] !== undefined) {
-      return trackingDraftById[mb.id];
-    }
-    return mb.tracking_start_at ? toDatetimeLocalValue(mb.tracking_start_at) : '';
-  }
-
-  async function saveMailboxTrackingStart(mb: Mailbox) {
+  async function toggleTrackingPause(mb: Mailbox, pause: boolean) {
     if (!token) return;
+    setTogglePauseLoadingId(mb.id);
     setError(null);
-    const raw = trackingInputValue(mb).trim();
-    if (!raw) {
-      setError('Choose a date and time for when tracking should start.');
-      return;
-    }
-    const parsed = new Date(raw);
-    if (Number.isNaN(parsed.getTime())) {
-      setError('That date and time is not valid.');
-      return;
-    }
-    setTrackingSavingId(mb.id);
     try {
       const res = await apiFetch(
-        `/employees/${encodeURIComponent(mb.id)}/tracking-start`,
+        `/employees/${encodeURIComponent(mb.id)}/tracking-pause`,
         token,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({ tracking_start_at: parsed.toISOString() }),
-        },
+        { method: 'PATCH', body: JSON.stringify({ paused: pause }) },
       );
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        setError(
-          (j as { message?: string }).message ?? 'Could not save tracking start',
-        );
+        setError((j as { message?: string }).message ?? 'Could not update tracking status');
         return;
       }
-      setTrackingDraftById((prev) => {
-        const next = { ...prev };
-        delete next[mb.id];
-        return next;
-      });
-      setSuccess('Tracking start time updated.');
+      setSuccess(pause ? 'Tracking paused.' : 'Tracking enabled — live monitoring is ON.');
       await loadAll(token);
     } finally {
-      setTrackingSavingId(null);
+      setTogglePauseLoadingId(null);
     }
   }
 
@@ -519,21 +491,11 @@ function ManagerMyMailInner() {
                     key={mb.id}
                     mb={mb}
                     ceoEmailNorm={headEmailNorm}
-                    trackingValue={trackingInputValue(mb)}
-                    slaValue={mailboxSlaInputValue(mb)}
-                    onTrackingChange={(v) =>
-                      setTrackingDraftById((p) => ({ ...p, [mb.id]: v }))
-                    }
-                    onSlaChange={(v) => setSlaDraftById((p) => ({ ...p, [mb.id]: v }))}
-                    onSaveTrackingStart={() => void saveMailboxTrackingStart(mb)}
-                    onSaveSla={() => void saveMailboxSla(mb)}
                     onConnectGmail={() => void connectGmail(mb.id)}
                     onRemove={() => void removeMailbox(mb)}
-                    trackingSaving={trackingSavingId === mb.id}
-                    slaSaving={slaSavingId === mb.id}
+                    onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
                     removing={deletingId === mb.id}
-                    relativeTime={relativeTime}
-                    absoluteTime={absoluteTime}
+                    togglePauseLoading={togglePauseLoadingId === mb.id}
                   />
                 ))}
               </div>

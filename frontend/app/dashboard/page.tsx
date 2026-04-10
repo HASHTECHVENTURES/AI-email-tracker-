@@ -1,15 +1,17 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth, type AuthMe as Me } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
+import { CeoDashboardScopePanel } from '@/components/CeoDashboardScopePanel';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { TimeGreeting } from '@/components/TimeGreeting';
 import { Badge } from '@/components/Badge';
+import { conversationReadPath } from '@/lib/conversation-read';
 import { ReassignModal } from '@/components/ReassignModal';
 import { TeamAlertReplyModal } from '@/components/TeamAlertReplyModal';
 
@@ -42,6 +44,18 @@ type ConversationRow = {
   updated_at?: string;
 };
 
+type CeoDepartmentRollup = {
+  department_id: string;
+  department_name: string;
+  manager_name: string | null;
+  manager_email: string | null;
+  total_threads: number;
+  missed: number;
+  pending: number;
+  done: number;
+  need_attention_count: number;
+};
+
 type DashboardPayload = {
   needs_attention: ConversationRow[];
   ai_insights: {
@@ -61,8 +75,23 @@ type DashboardPayload = {
     employee_added: boolean;
     waiting_for_sync: boolean;
   };
-  employee_filter_options: { id: string; name: string }[];
+  employee_filter_options: { id: string; name: string; department_name?: string | null; is_manager?: boolean }[];
   my_followups?: { missed: number; pending: number; done: number };
+  ceo_department_rollups?: CeoDepartmentRollup[];
+};
+
+type CeoDeptDirectoryRow = {
+  id: string;
+  name: string;
+  manager: { full_name: string | null; email: string } | null;
+};
+
+type CeoOrgEmployeeRow = {
+  id: string;
+  name: string;
+  email: string;
+  department_id: string | null;
+  department_name: string;
 };
 
 type TeamAlertItem = {
@@ -141,6 +170,67 @@ function TeamHealthDot({ health }: { health: TeamHealth }) {
   );
 }
 
+/** CEO command center: slide-over for departments / managers / people filters (opened from sidebar). */
+function CeoScopeSlideOver({
+  open,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-[1px]"
+        aria-hidden
+        onClick={onClose}
+      />
+      <aside
+        className="fixed inset-y-0 right-0 z-[101] flex w-full max-w-md flex-col border-l border-slate-200/80 bg-white shadow-2xl shadow-slate-900/15"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ceo-scope-panel-title"
+      >
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+          <h2 id="ceo-scope-panel-title" className="min-w-0 truncate text-sm font-bold text-slate-900">
+            Managers & teammates
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Close
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">{children}</div>
+      </aside>
+    </>
+  );
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const { me, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
@@ -151,7 +241,15 @@ export default function DashboardPage() {
   const [filterStatus, setFilterStatus] = useState('');
   const [filterEmployee, setFilterEmployee] = useState('');
   const [filterPriority, setFilterPriority] = useState('');
-  const [modal, setModal] = useState<ConversationRow | null>(null);
+  /** CEO: multi-select departments; empty = whole company. */
+  const [filterDepartmentIds, setFilterDepartmentIds] = useState<string[]>([]);
+  const [ceoDeptOptions, setCeoDeptOptions] = useState<CeoDeptDirectoryRow[]>([]);
+  /** CEO: multi-select mailboxes; empty = all people in current dept / company slice. */
+  const [ceoEmployeeIds, setCeoEmployeeIds] = useState<string[]>([]);
+  const [ceoScopePanelOpen, setCeoScopePanelOpen] = useState(false);
+  const [ceoOrgEmployees, setCeoOrgEmployees] = useState<CeoOrgEmployeeRow[]>([]);
+  const [ceoOrgEmployeesLoading, setCeoOrgEmployeesLoading] = useState(false);
+  const ceoScopeRestoredRef = useRef(false);
   const [reassignTarget, setReassignTarget] = useState<ConversationRow | null>(null);
   /** Per-row resolve: a single boolean disabled every Resolve on the page. */
   const [resolvingConversationId, setResolvingConversationId] = useState<string | null>(null);
@@ -194,14 +292,26 @@ export default function DashboardPage() {
     ) : null;
 
   const buildDashboardPath = useCallback(() => {
-    if (me?.role === 'CEO') return '/dashboard';
     const qs = new URLSearchParams();
     if (filterStatus) qs.set('status', filterStatus);
     if (filterPriority) qs.set('priority', filterPriority);
-    if (filterEmployee && me?.role !== 'EMPLOYEE') qs.set('employee_id', filterEmployee);
+    if (me?.role === 'CEO') {
+      const deptQs = [...filterDepartmentIds].sort();
+      if (deptQs.length > 0) qs.set('department_ids', deptQs.join(','));
+      const ids = [...ceoEmployeeIds].sort();
+      if (ids.length > 0) qs.set('employee_ids', ids.join(','));
+    } else if (filterEmployee && me?.role !== 'EMPLOYEE') {
+      qs.set('employee_id', filterEmployee);
+    }
     const q = qs.toString();
     return `/dashboard${q ? `?${q}` : ''}`;
-  }, [filterStatus, filterPriority, filterEmployee, me?.role]);
+  }, [filterStatus, filterPriority, filterEmployee, filterDepartmentIds, ceoEmployeeIds, me?.role]);
+
+  const applyCeoScope = useCallback((departmentIds: string[], employeeIds: string[]) => {
+    setFilterDepartmentIds([...new Set(departmentIds)]);
+    setCeoEmployeeIds([...new Set(employeeIds)]);
+    setCeoScopePanelOpen(false);
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!token) return;
@@ -281,7 +391,123 @@ export default function DashboardPage() {
     if (!me || !token) return;
     const id = window.setTimeout(() => void refresh(), 180);
     return () => clearTimeout(id);
-  }, [me, token, refresh, filterStatus, filterPriority, filterEmployee]);
+  }, [me, token, refresh, filterStatus, filterPriority, filterEmployee, filterDepartmentIds, ceoEmployeeIds]);
+
+  useEffect(() => {
+    if (me?.role !== 'CEO') {
+      ceoScopeRestoredRef.current = false;
+      return;
+    }
+    if (typeof window === 'undefined' || ceoScopeRestoredRef.current) return;
+    ceoScopeRestoredRef.current = true;
+    try {
+      const raw = sessionStorage.getItem('ai_et_ceo_dashboard_scope_v1');
+      if (raw) {
+        const j = JSON.parse(raw) as {
+          departmentId?: unknown;
+          departmentIds?: unknown;
+          employeeIds?: unknown;
+        };
+        let deptIds: string[] = [];
+        if (Array.isArray(j.departmentIds)) {
+          deptIds = [
+            ...new Set(j.departmentIds.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)),
+          ];
+        } else if (typeof j.departmentId === 'string' && j.departmentId.trim()) {
+          deptIds = [j.departmentId.trim()];
+        }
+        let empIds: string[] = [];
+        if (Array.isArray(j.employeeIds)) {
+          empIds = [
+            ...new Set(j.employeeIds.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)),
+          ];
+        }
+        setFilterDepartmentIds(deptIds);
+        setCeoEmployeeIds(empIds);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [me?.role]);
+
+  useEffect(() => {
+    if (me?.role !== 'CEO' || typeof window === 'undefined') return;
+    try {
+      sessionStorage.setItem(
+        'ai_et_ceo_dashboard_scope_v1',
+        JSON.stringify({
+          departmentIds: filterDepartmentIds,
+          employeeIds: ceoEmployeeIds,
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [me?.role, filterDepartmentIds, ceoEmployeeIds]);
+
+  useEffect(() => {
+    if (me?.role !== 'CEO' || !dash?.employee_filter_options) return;
+    const allowed = new Set(dash.employee_filter_options.map((e) => e.id));
+    setCeoEmployeeIds((prev) => {
+      const next = prev.filter((id) => allowed.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [dash?.employee_filter_options, me?.role]);
+
+  useEffect(() => {
+    if (me?.role !== 'CEO' || ceoDeptOptions.length === 0) return;
+    const allowed = new Set(ceoDeptOptions.map((d) => d.id));
+    setFilterDepartmentIds((prev) => {
+      const next = prev.filter((id) => allowed.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [ceoDeptOptions, me?.role]);
+
+  useEffect(() => {
+    if (!token || me?.role !== 'CEO') {
+      setCeoDeptOptions([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const r = await apiFetch('/departments', token);
+      if (!r.ok || cancelled) return;
+      const rows = (await r.json()) as CeoDeptDirectoryRow[];
+      setCeoDeptOptions(Array.isArray(rows) ? rows : []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, me?.role]);
+
+  useEffect(() => {
+    if (!token || me?.role !== 'CEO') {
+      setCeoOrgEmployees([]);
+      setCeoOrgEmployeesLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setCeoOrgEmployeesLoading(true);
+    void (async () => {
+      const r = await apiFetch('/employees', token);
+      if (!r.ok || cancelled) {
+        if (!cancelled) setCeoOrgEmployeesLoading(false);
+        return;
+      }
+      const rows = (await r.json()) as CeoOrgEmployeeRow[];
+      if (!cancelled) {
+        setCeoOrgEmployees(Array.isArray(rows) ? rows : []);
+        setCeoOrgEmployeesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, me?.role]);
+
+  useEffect(() => {
+    if (me?.role !== 'CEO') setFilterDepartmentIds([]);
+  }, [me?.role]);
 
   useEffect(() => {
     if (!me || !token) return;
@@ -317,7 +543,6 @@ export default function DashboardPage() {
         setError((j.message as string) || 'Could not update');
         return;
       }
-      setModal(null);
       await refresh();
     } finally {
       setResolvingConversationId(null);
@@ -343,7 +568,6 @@ export default function DashboardPage() {
         setError(await readApiErrorMessage(res, 'Could not delete this thread.'));
         return;
       }
-      setModal(null);
       await refresh();
     } finally {
       setDeletingConversationId(null);
@@ -482,23 +706,67 @@ export default function DashboardPage() {
 
   const titleEyebrow = <TimeGreeting fullName={me.full_name} email={me.email} />;
 
+  const ceoPanelProps = {
+    panelOpen: ceoScopePanelOpen,
+    departmentOptions: ceoDeptOptions,
+    orgEmployees: ceoOrgEmployees,
+    selectedDepartmentIds: filterDepartmentIds,
+    selectedEmployeeIds: ceoEmployeeIds,
+    onApply: applyCeoScope,
+    loadingEmployees: ceoOrgEmployeesLoading,
+  };
+
+  const ceoScopeTriggersDesktop = isCeo ? (
+    <button
+      type="button"
+      onClick={() => setCeoScopePanelOpen(true)}
+      title="Managers & teammates — tap to load the dashboard"
+      className="block w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium text-slate-600 hover:bg-white/80 hover:text-slate-900"
+    >
+      Choose scope
+    </button>
+  ) : undefined;
+
+  const ceoScopeTriggersMobile = isCeo ? (
+    <button
+      type="button"
+      onClick={() => setCeoScopePanelOpen(true)}
+      title="Managers & teammates — dashboard scope"
+      className="inline-flex shrink-0 rounded-lg border border-slate-200/80 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+    >
+      Scope
+    </button>
+  ) : undefined;
+
+  const ceoScopeSlideOver = isCeo ? (
+    <CeoScopeSlideOver open={ceoScopePanelOpen} onClose={() => setCeoScopePanelOpen(false)}>
+      <div aria-label="Dashboard scope">
+        <CeoDashboardScopePanel {...ceoPanelProps} />
+      </div>
+    </CeoScopeSlideOver>
+  ) : null;
+
   if (!dash) {
     return (
-      <AppShell
-        role={me.role}
-        companyName={me.company_name ?? null}
-        userDisplayName={me.full_name?.trim() || me.email}
-        titleEyebrow={titleEyebrow}
-        title={isEmployee ? 'My follow-ups' : isHead ? 'Workspace' : 'Command center'}
-        subtitle={dashboardSubtitle}
-        lastSyncLabel={lastSyncLabel}
-        nextIngestionCountdownLabel={nextSyncLabelForRole}
-        isActive={status?.is_active}
-        aiBriefingsEnabled={status == null ? undefined : status.ai_status}
-        mailboxCrawlEnabled={status == null ? undefined : status.email_crawl_enabled !== false}
-        onRefresh={() => void refresh()}
-        onSignOut={() => void ctxSignOut()}
-      >
+      <>
+        {ceoScopeSlideOver}
+        <AppShell
+          role={me.role}
+          companyName={me.company_name ?? null}
+          userDisplayName={me.full_name?.trim() || me.email}
+          titleEyebrow={titleEyebrow}
+          title={isEmployee ? 'My follow-ups' : isHead ? 'Workspace' : 'Command center'}
+          subtitle={dashboardSubtitle}
+          lastSyncLabel={lastSyncLabel}
+          nextIngestionCountdownLabel={nextSyncLabelForRole}
+          isActive={status?.is_active}
+          aiBriefingsEnabled={status == null ? undefined : status.ai_status}
+          mailboxCrawlEnabled={status == null ? undefined : status.email_crawl_enabled !== false}
+          onRefresh={() => void refresh()}
+          onSignOut={() => void ctxSignOut()}
+          ceoDashboardScopeTriggerDesktop={ceoScopeTriggersDesktop}
+          ceoDashboardScopeTriggerMobile={ceoScopeTriggersMobile}
+        >
         {authFlashBanner}
         {error ? (
           <div
@@ -522,7 +790,8 @@ export default function DashboardPage() {
         ) : (
           <PageSkeleton />
         )}
-      </AppShell>
+        </AppShell>
+      </>
     );
   }
 
@@ -570,7 +839,7 @@ export default function DashboardPage() {
           <option value="MEDIUM">Medium</option>
           <option value="LOW">Low</option>
         </select>
-        {!isEmployee ? (
+        {!isEmployee && !isCeo ? (
           <select
             value={filterEmployee}
             onChange={(e) => setFilterEmployee(e.target.value)}
@@ -631,6 +900,13 @@ export default function DashboardPage() {
                     <div className="flex flex-wrap justify-end gap-2">
                       <button
                         type="button"
+                        onClick={() => router.push(conversationReadPath(c.conversation_id, '/dashboard'))}
+                        className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        Read mail
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => window.open(c.open_gmail_link, '_blank', 'noopener,noreferrer')}
                         className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                       >
@@ -671,6 +947,7 @@ export default function DashboardPage() {
 
   return (
     <>
+      {ceoScopeSlideOver}
       <AppShell
         role={me.role}
         companyName={me.company_name ?? null}
@@ -685,6 +962,8 @@ export default function DashboardPage() {
         mailboxCrawlEnabled={status == null ? undefined : status.email_crawl_enabled !== false}
         onRefresh={() => void refresh()}
         onSignOut={() => void ctxSignOut()}
+        ceoDashboardScopeTriggerDesktop={ceoScopeTriggersDesktop}
+        ceoDashboardScopeTriggerMobile={ceoScopeTriggersMobile}
       >
         {authFlashBanner}
         {isCeo ? (
@@ -712,6 +991,80 @@ export default function DashboardPage() {
                 </div>
               ))}
             </section>
+
+            {(dash.ceo_department_rollups?.length ?? 0) > 0 ? (
+              <section className={cardClass}>
+                <div className="mb-5 border-b border-slate-100 pb-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Org load</p>
+                  <h2 className="mt-1 text-xl font-bold text-slate-950">
+                    {filterDepartmentIds.length > 0 ? 'Department pressure (filtered)' : 'Department pressure'}
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Need-attention volume by department — bar length is relative to the busiest team in view.
+                  </p>
+                </div>
+                <div className="space-y-4">
+                  {(() => {
+                    const rollups = dash.ceo_department_rollups ?? [];
+                    const maxAttn = Math.max(1, ...rollups.map((r) => r.need_attention_count));
+                    return rollups.map((r) => {
+                      const attnPct = Math.min(100, Math.round((r.need_attention_count / maxAttn) * 100));
+                      const total = Math.max(1, r.total_threads);
+                      const donePct = Math.round((r.done / total) * 100);
+                      const pendPct = Math.round((r.pending / total) * 100);
+                      const missedPct = Math.round((r.missed / total) * 100);
+                      return (
+                        <div key={r.department_id} className="rounded-xl border border-slate-100 bg-slate-50/50 px-4 py-3">
+                          <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="font-semibold text-slate-900">{r.department_name}</p>
+                              <p className="text-xs text-slate-500">
+                                {r.manager_name?.trim()
+                                  ? `Manager: ${r.manager_name.trim()}`
+                                  : r.manager_email
+                                    ? `Manager: ${r.manager_email}`
+                                    : 'No manager assigned'}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 gap-3 text-xs tabular-nums text-slate-600">
+                              <span title="Needs attention">
+                                <span className="font-semibold text-violet-700">{r.need_attention_count}</span> attn
+                              </span>
+                              <span>
+                                <span className="font-semibold text-red-600">{r.missed}</span> missed
+                              </span>
+                              <span>
+                                <span className="font-semibold text-amber-700">{r.pending}</span> pend
+                              </span>
+                              <span>
+                                <span className="font-semibold text-emerald-700">{r.done}</span> done
+                              </span>
+                            </div>
+                          </div>
+                          <div className="mt-3 space-y-1.5">
+                            <div className="h-2 overflow-hidden rounded-full bg-slate-200/80">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-violet-600 to-brand-600 transition-[width] duration-300"
+                                style={{ width: `${attnPct}%` }}
+                                title={`Need attention: ${r.need_attention_count}`}
+                              />
+                            </div>
+                            <div className="flex h-1.5 overflow-hidden rounded-full bg-slate-200/60">
+                              <div className="bg-emerald-500" style={{ width: `${donePct}%` }} title={`Done ${r.done}`} />
+                              <div className="bg-amber-400" style={{ width: `${pendPct}%` }} title={`Pending ${r.pending}`} />
+                              <div className="bg-red-500" style={{ width: `${missedPct}%` }} title={`Missed ${r.missed}`} />
+                            </div>
+                            <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                              Bottom blend: done · pending · missed (by thread count)
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </section>
+            ) : null}
 
             {dash.onboarding?.show ? (
               <section className={cardClass}>
@@ -780,7 +1133,7 @@ export default function DashboardPage() {
                             <td className="px-4 py-4 pl-5 align-top">
                               <button
                                 type="button"
-                                onClick={() => setModal(c)}
+                                onClick={() => router.push(conversationReadPath(c.conversation_id, '/dashboard'))}
                                 className="text-left font-semibold text-slate-950 hover:text-brand-600"
                               >
                                 {c.client_email ?? '—'}
@@ -810,6 +1163,13 @@ export default function DashboardPage() {
                             </td>
                             <td className="px-4 py-4 pr-5 text-right align-top">
                               <div className="flex flex-wrap justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => router.push(conversationReadPath(c.conversation_id, '/dashboard'))}
+                                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300"
+                                >
+                                  Read mail
+                                </button>
                                 <a
                                   href={c.open_gmail_link}
                                   target="_blank"
@@ -1109,7 +1469,7 @@ export default function DashboardPage() {
                       <td className="px-4 py-3">
                         <button
                           type="button"
-                          onClick={() => setModal(c)}
+                          onClick={() => router.push(conversationReadPath(c.conversation_id, '/dashboard'))}
                           className="text-left font-semibold text-slate-900 hover:text-brand-600"
                         >
                           {c.client_email ?? '—'}
@@ -1141,6 +1501,13 @@ export default function DashboardPage() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex flex-wrap justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => router.push(conversationReadPath(c.conversation_id, '/dashboard'))}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300"
+                          >
+                            Read mail
+                          </button>
                           <a
                             href={c.open_gmail_link}
                             target="_blank"
@@ -1284,55 +1651,6 @@ export default function DashboardPage() {
             void refresh();
           }}
         />
-      ) : null}
-
-      {modal ? (
-        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setModal(null)}>
-          <div className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-6 shadow-sm" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-gray-900">{modal.client_email ?? 'Conversation'}</h3>
-            <p className="mt-1 text-sm text-gray-500">{modal.employee_name}</p>
-            <p className="mt-3 text-sm text-gray-700">{modal.reason || modal.short_reason}</p>
-            {modal.summary ? <p className="mt-3 text-sm text-gray-600">{modal.summary}</p> : null}
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => window.open(modal.open_gmail_link, '_blank', 'noopener,noreferrer')}
-                className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                Open Gmail
-              </button>
-              <button
-                type="button"
-                onClick={() => void markDone(modal.conversation_id)}
-                disabled={
-                  resolvingConversationId === modal.conversation_id ||
-                  deletingConversationId === modal.conversation_id
-                }
-                className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-2 text-sm font-semibold text-white hover:opacity-95 disabled:opacity-50"
-              >
-                {resolvingConversationId === modal.conversation_id ? 'Resolving…' : 'Resolve'}
-              </button>
-              <button
-                type="button"
-                onClick={() => void deleteThread(modal.conversation_id, modal.client_email)}
-                disabled={
-                  resolvingConversationId === modal.conversation_id ||
-                  deletingConversationId === modal.conversation_id
-                }
-                className="rounded-xl border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
-              >
-                {deletingConversationId === modal.conversation_id ? 'Deleting…' : 'Delete thread'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setModal(null)}
-                className="ml-auto rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
       ) : null}
 
       {isEmployee && token ? (

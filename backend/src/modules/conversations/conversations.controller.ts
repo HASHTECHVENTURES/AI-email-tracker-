@@ -24,7 +24,41 @@ export class ConversationsController {
   ) {}
 
   @Get('recompute')
-  async recompute(@Req() req: Request) {
+  async recompute(
+    @Req() req: Request,
+    @Query('all_threads') allThreads?: string,
+    @Query('company_id') companyIdQuery?: string,
+  ) {
+    const allCompanyThreads = allThreads === '1' || allThreads === 'true';
+
+    if (allCompanyThreads) {
+      let companyId: string;
+      if (req.internalApiAuth) {
+        const fromQuery = companyIdQuery?.trim();
+        const fromEnv = process.env.DEFAULT_COMPANY_ID?.trim();
+        companyId = fromQuery || fromEnv || '';
+        if (!companyId) {
+          throw new BadRequestException(
+            'For internal all_threads recompute, pass company_id=… or set DEFAULT_COMPANY_ID in env.',
+          );
+        }
+      } else {
+        const ctx = getRequestContext(req);
+        if (ctx.role !== 'CEO') {
+          throw new ForbiddenException('Only CEO can recompute all threads for your company');
+        }
+        companyId = ctx.companyId;
+      }
+      const result = await this.conversationsService.recomputeAllForCompany(companyId);
+      return {
+        status: 'completed',
+        scope: 'all_threads',
+        company_id: companyId,
+        timestamp: new Date().toISOString(),
+        ...result,
+      };
+    }
+
     if (!req.internalApiAuth) {
       const ctx = getRequestContext(req);
       if (ctx.role !== 'CEO') {
@@ -32,7 +66,12 @@ export class ConversationsController {
       }
     }
     const result = await this.conversationsService.recomputeRecent();
-    return { status: 'completed', timestamp: new Date().toISOString(), ...result };
+    return {
+      status: 'completed',
+      scope: 'stale_threads',
+      timestamp: new Date().toISOString(),
+      ...result,
+    };
   }
 
   @Get()
@@ -44,6 +83,35 @@ export class ConversationsController {
       employeeId: ctx.role === 'EMPLOYEE' ? ctx.employeeId : employeeId,
     });
     return { total: conversations.length, conversations };
+  }
+
+  /** Full ingested bodies for the thread (same mailbox sync as Gmail). */
+  @Get(':id/messages')
+  async threadMessages(@Req() req: Request, @Param('id') id: string) {
+    const ctx = getRequestContext(req);
+    const conversationId = decodeURIComponent(id);
+    const row = await this.conversationsService.getConversationScopeRow(ctx.companyId, conversationId);
+    if (!row) throw new NotFoundException('Conversation not found');
+    enforceConversationAccess(ctx, row);
+    const portal = await this.conversationsService.getPortalThreadContext(ctx.companyId, conversationId);
+    if (!portal) throw new NotFoundException('Conversation not found');
+    const { conv } = portal;
+    const messages = await this.conversationsService.listIngestedThreadMessages(ctx.companyId, conversationId);
+    return {
+      conversation_id: conversationId,
+      thread: {
+        client_email: conv.client_email,
+        client_name: conv.client_name,
+        employee_name: portal.employee_name,
+        open_gmail_link: portal.open_gmail_link,
+        short_reason: conv.short_reason,
+        reason: conv.reason,
+        summary: conv.summary,
+        follow_up_status: conv.follow_up_status,
+        priority: conv.priority,
+      },
+      messages,
+    };
   }
 
   @Post(':id/done')

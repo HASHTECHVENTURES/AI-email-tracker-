@@ -29,6 +29,15 @@ module.exports = {
       maxWidth: {
         content: '72rem',
       },
+      keyframes: {
+        'bulk-delete-sheen': {
+          '0%': { transform: 'translateX(-120%)' },
+          '100%': { transform: 'translateX(320%)' },
+        },
+      },
+      animation: {
+        'bulk-delete-sheen': 'bulk-delete-sheen 1.15s ease-in-out infinite',
+      },
     },
   },
   plugins: [],

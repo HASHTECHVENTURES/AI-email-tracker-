@@ -65,6 +65,7 @@ export interface OrgEmployeeDto {
 
 export interface EmployeeMessageDto {
   provider_message_id: string;
+  provider_thread_id: string;
   subject: string;
   from_email: string;
   sent_at: string;
@@ -171,8 +172,8 @@ export class EmployeesService {
         created_by: userId,
         is_active: true,
         ai_enabled: true,
-        tracking_paused: false,
-        tracking_start_at: startIso,
+        tracking_paused: true,
+        tracking_start_at: null,
       })
       .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at')
       .single();
@@ -279,8 +280,8 @@ export class EmployeesService {
         created_by: user.id,
         is_active: true,
         ai_enabled: true,
-        tracking_paused: false,
-        tracking_start_at: startIso,
+        tracking_paused: true,
+        tracking_start_at: null,
         mailbox_type: 'TEAM',
       })
       .select(
@@ -299,8 +300,8 @@ export class EmployeesService {
           created_by: user.id,
           is_active: true,
           ai_enabled: true,
-          tracking_paused: false,
-          tracking_start_at: startIso,
+          tracking_paused: true,
+          tracking_start_at: null,
         })
         .select(
           'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
@@ -507,10 +508,68 @@ export class EmployeesService {
 
   /** Call after Gmail OAuth succeeds so ingestion has a cursor. */
   async ensureMailSyncAfterOAuth(employeeId: string): Promise<void> {
-    await this.ensureMailSyncState(employeeId, new Date().toISOString());
+    const { data: emp } = await this.supabase
+      .from('employees')
+      .select('tracking_start_at, sla_hours_default')
+      .eq('id', employeeId)
+      .maybeSingle();
+
+    const { data: existing } = await this.supabase
+      .from('mail_sync_state')
+      .select('last_processed_at, last_gmail_history_id')
+      .eq('employee_id', employeeId)
+      .maybeSingle();
+
+    const nowIso = new Date().toISOString();
+    const empRow = emp as { tracking_start_at: string | null } | null;
+    const startIso =
+      empRow?.tracking_start_at && empRow.tracking_start_at.trim()
+        ? new Date(empRow.tracking_start_at.trim()).toISOString()
+        : nowIso;
+
+    const ex = existing as {
+      last_processed_at: string | null;
+      last_gmail_history_id: string | null;
+    } | null;
+
+    let lastProcessed: string | null = ex?.last_processed_at ?? null;
+    if (lastProcessed) {
+      const lp = new Date(lastProcessed);
+      const sd = new Date(startIso);
+      if (lp < sd) lastProcessed = null;
+    }
+
+    const { error } = await this.supabase.from('mail_sync_state').upsert(
+      {
+        employee_id: employeeId,
+        start_date: startIso,
+        last_processed_at: lastProcessed,
+        last_gmail_history_id: ex?.last_gmail_history_id ?? null,
+        gmail_list_page_token: null,
+        gmail_list_query_after_epoch: null,
+        backfill_max_sent_at: null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'employee_id' },
+    );
+    if (error) {
+      this.logger.warn(`ensureMailSyncAfterOAuth: ${error.message}`);
+    }
+
+    const empGate = emp as { tracking_start_at: string | null; sla_hours_default?: number | null } | null;
+    const updateFields: Record<string, unknown> = {
+      gmail_status: 'CONNECTED',
+      tracking_paused: false,
+    };
+    if (!empGate?.tracking_start_at) {
+      updateFields.tracking_start_at = nowIso;
+    }
+    if (!empGate?.sla_hours_default || empGate.sla_hours_default <= 0) {
+      updateFields.sla_hours_default = 24;
+    }
     await this.supabase
       .from('employees')
-      .update({ gmail_status: 'CONNECTED' })
+      .update(updateFields)
       .eq('id', employeeId);
   }
 
@@ -520,6 +579,9 @@ export class EmployeesService {
         employee_id: employeeId,
         start_date: startIso,
         last_processed_at: null,
+        gmail_list_page_token: null,
+        gmail_list_query_after_epoch: null,
+        backfill_max_sent_at: null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'employee_id' },
@@ -852,7 +914,7 @@ export class EmployeesService {
     }
     const { data: row, error } = await this.supabase
       .from('employees')
-      .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at')
+      .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused')
       .eq('company_id', ctx.companyId)
       .eq('id', employeeId)
       .maybeSingle();
@@ -868,12 +930,16 @@ export class EmployeesService {
         throw new ForbiddenException('You can only update SLA for employees in your department');
       }
     }
+    const shouldRunIngestion = Boolean((row as EmployeeDbRow).tracking_start_at) && roundedSla > 0;
     const { data: updated, error: updErr } = await this.supabase
       .from('employees')
-      .update({ sla_hours_default: roundedSla })
+      .update({
+        sla_hours_default: roundedSla,
+        tracking_paused: shouldRunIngestion ? false : true,
+      })
       .eq('company_id', ctx.companyId)
       .eq('id', employeeId)
-      .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at')
+      .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused')
       .single();
     if (updErr) {
       this.logger.error('Failed to update employee SLA', updErr.message);
@@ -914,7 +980,7 @@ export class EmployeesService {
     const safeLimit = Math.min(Math.max(limit, 1), 50);
     const { data: messages, error: msgErr } = await this.supabase
       .from('email_messages')
-      .select('provider_message_id, subject, from_email, sent_at')
+      .select('provider_message_id, provider_thread_id, subject, from_email, sent_at')
       .eq('company_id', ctx.companyId)
       .eq('employee_id', employeeId)
       .eq('direction', 'INBOUND')
@@ -994,6 +1060,136 @@ export class EmployeesService {
     return { total: count ?? items.length, items };
   }
 
+  /**
+   * Ingested messages on or after each mailbox's `tracking_start_at` (or all time if unset).
+   * Used by CEO My Email to show every synced message in the tracking window, not only conversations.
+   */
+  async listSyncedMailInTrackingWindow(
+    ctx: RequestContext,
+    opts: {
+      employeeIds: string[];
+      trackingStartByEmployee: Map<string, string | null>;
+      limit: number;
+      offset: number;
+      /** Cap per-mailbox fetch when merging (avoid huge merges). */
+      perMailboxCap?: number;
+    },
+  ): Promise<{ total: number; items: MailArchiveItem[] }> {
+    const uniqueIds = [...new Set(opts.employeeIds)].filter(Boolean);
+    if (uniqueIds.length === 0) {
+      return { total: 0, items: [] };
+    }
+
+    const { data: validRows, error: vErr } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', ctx.companyId)
+      .in('id', uniqueIds);
+    if (vErr) {
+      this.logger.error('listSyncedMailInTrackingWindow: validate', vErr.message);
+      throw vErr;
+    }
+    const valid = new Set((validRows ?? []).map((r: { id: string }) => r.id));
+    const safeIds = uniqueIds.filter((id) => valid.has(id));
+    if (safeIds.length === 0) {
+      return { total: 0, items: [] };
+    }
+
+    const safeLimit = Math.min(500, Math.max(1, opts.limit));
+    const safeOffset = Math.max(0, opts.offset);
+    const perCap = Math.min(
+      2000,
+      Math.max(safeLimit + safeOffset + 25, opts.perMailboxCap ?? 800),
+    );
+
+    const FAR_PAST = '1970-01-01T00:00:00.000Z';
+
+    const countResults = await Promise.all(
+      safeIds.map(async (employeeId) => {
+        const rawStart = opts.trackingStartByEmployee.get(employeeId) ?? null;
+        const startIso =
+          rawStart && !Number.isNaN(new Date(rawStart).getTime())
+            ? new Date(rawStart).toISOString()
+            : FAR_PAST;
+        const { count, error } = await this.supabase
+          .from('email_messages')
+          .select('provider_message_id', { count: 'exact', head: true })
+          .eq('company_id', ctx.companyId)
+          .eq('employee_id', employeeId)
+          .gte('sent_at', startIso);
+        if (error) {
+          this.logger.error(`listSyncedMailInTrackingWindow count ${employeeId}`, error.message);
+          throw error;
+        }
+        return count ?? 0;
+      }),
+    );
+    const total = countResults.reduce((a, b) => a + b, 0);
+
+    const rowsBatches = await Promise.all(
+      safeIds.map(async (employeeId) => {
+        const rawStart = opts.trackingStartByEmployee.get(employeeId) ?? null;
+        const startIso =
+          rawStart && !Number.isNaN(new Date(rawStart).getTime())
+            ? new Date(rawStart).toISOString()
+            : FAR_PAST;
+        const { data, error } = await this.supabase
+          .from('email_messages')
+          .select(
+            'provider_message_id, provider_thread_id, subject, from_email, direction, body_text, sent_at, employee_id',
+          )
+          .eq('company_id', ctx.companyId)
+          .eq('employee_id', employeeId)
+          .gte('sent_at', startIso)
+          .order('sent_at', { ascending: false })
+          .limit(perCap);
+        if (error) {
+          this.logger.error(`listSyncedMailInTrackingWindow fetch ${employeeId}`, error.message);
+          throw error;
+        }
+        return (data ?? []) as Array<{
+          provider_message_id: string;
+          provider_thread_id: string;
+          subject: string;
+          from_email: string;
+          direction: string;
+          body_text: string;
+          sent_at: string;
+          employee_id: string;
+        }>;
+      }),
+    );
+
+    const flat = rowsBatches.flat();
+    flat.sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime());
+    const nameById = new Map<string, string>();
+    if (safeIds.length > 0) {
+      const { data: emps } = await this.supabase
+        .from('employees')
+        .select('id, name')
+        .eq('company_id', ctx.companyId)
+        .in('id', safeIds);
+      for (const e of (emps ?? []) as Array<{ id: string; name: string }>) {
+        nameById.set(e.id, e.name);
+      }
+    }
+
+    const sliced = flat.slice(safeOffset, safeOffset + safeLimit);
+    const items: MailArchiveItem[] = sliced.map((m) => ({
+      provider_message_id: m.provider_message_id,
+      provider_thread_id: m.provider_thread_id,
+      subject: m.subject || '(no subject)',
+      from_email: m.from_email,
+      direction: m.direction,
+      sent_at: m.sent_at,
+      employee_id: m.employee_id,
+      employee_name: nameById.get(m.employee_id) ?? 'Unknown',
+      body_preview: (m.body_text ?? '').slice(0, 1500),
+    }));
+
+    return { total, items };
+  }
+
   private async resolveMailArchiveEmployeeIds(
     ctx: RequestContext,
     filterEmployeeId?: string,
@@ -1054,7 +1250,7 @@ export class EmployeesService {
     }
     const { data: row, error } = await this.supabase
       .from('employees')
-      .select('id, department_id, company_id')
+      .select('id, department_id, company_id, sla_hours_default')
       .eq('company_id', ctx.companyId)
       .eq('id', employeeId)
       .maybeSingle();
@@ -1073,15 +1269,57 @@ export class EmployeesService {
     const iso = parsed.toISOString();
     const { data: updated, error: updErr } = await this.supabase
       .from('employees')
-      .update({ tracking_start_at: iso })
+      .update({
+        tracking_start_at: iso,
+        tracking_paused:
+          Number((row as { sla_hours_default?: number | null }).sla_hours_default ?? 0) > 0
+            ? false
+            : true,
+      })
       .eq('company_id', ctx.companyId)
       .eq('id', employeeId)
-      .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at')
+      .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused')
       .single();
     if (updErr) {
       this.logger.error('Failed to update tracking start', updErr.message);
       throw updErr;
     }
+
+    /**
+     * Hard rebaseline:
+     * - clear prior stored thread/message state for this mailbox
+     * - clear skip ledger so messages in the new window are re-evaluated by Inbox AI (or unfiltered import if CEO confirmed)
+     * This guarantees "from selected datetime, read again and decide what enters portal".
+     */
+    const { error: delConvErr } = await this.supabase
+      .from('conversations')
+      .delete()
+      .eq('company_id', ctx.companyId)
+      .eq('employee_id', employeeId);
+    if (delConvErr) {
+      this.logger.error('Failed to clear conversations for tracking rebaseline', delConvErr.message);
+      throw delConvErr;
+    }
+
+    const { error: delMsgErr } = await this.supabase
+      .from('email_messages')
+      .delete()
+      .eq('company_id', ctx.companyId)
+      .eq('employee_id', employeeId);
+    if (delMsgErr) {
+      this.logger.error('Failed to clear email messages for tracking rebaseline', delMsgErr.message);
+      throw delMsgErr;
+    }
+
+    const { error: delSkipsErr } = await this.supabase
+      .from('email_ingestion_skips')
+      .delete()
+      .eq('employee_id', employeeId);
+    if (delSkipsErr) {
+      this.logger.error('Failed to clear ingestion skips for tracking rebaseline', delSkipsErr.message);
+      throw delSkipsErr;
+    }
+
     await this.supabase
       .from('mail_sync_state')
       .upsert(
@@ -1089,6 +1327,9 @@ export class EmployeesService {
           employee_id: employeeId,
           start_date: iso,
           last_processed_at: null,
+          gmail_list_page_token: null,
+          gmail_list_query_after_epoch: null,
+          backfill_max_sent_at: null,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'employee_id' },
@@ -1251,6 +1492,38 @@ export class EmployeesService {
     };
   }
 
+  async setTrackingPaused(
+    ctx: RequestContext,
+    employeeId: string,
+    paused: boolean,
+  ): Promise<void> {
+    const updateFields: Record<string, unknown> = { tracking_paused: paused };
+    if (!paused) {
+      const { data: emp } = await this.supabase
+        .from('employees')
+        .select('tracking_start_at, sla_hours_default')
+        .eq('company_id', ctx.companyId)
+        .eq('id', employeeId)
+        .maybeSingle();
+      const row = emp as { tracking_start_at: string | null; sla_hours_default: number | null } | null;
+      if (!row?.tracking_start_at) {
+        updateFields.tracking_start_at = new Date().toISOString();
+      }
+      if (!row?.sla_hours_default || row.sla_hours_default <= 0) {
+        updateFields.sla_hours_default = 24;
+      }
+    }
+    const { error } = await this.supabase
+      .from('employees')
+      .update(updateFields)
+      .eq('company_id', ctx.companyId)
+      .eq('id', employeeId);
+    if (error) {
+      this.logger.error('setTrackingPaused', error.message);
+      throw new InternalServerErrorException(error.message);
+    }
+  }
+
   async getTrackingState(
     companyId: string,
     employeeId: string,
@@ -1374,6 +1647,7 @@ export class EmployeesService {
         ai_enabled: true,
         tracking_paused: false,
         tracking_start_at: startIso,
+        sla_hours_default: 24,
         mailbox_type: 'SELF',
       })
       .select('id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at')
@@ -1450,5 +1724,22 @@ export class EmployeesService {
       .eq('id', employeeId)
       .maybeSingle();
     return (data as { mailbox_type?: string } | null)?.mailbox_type ?? 'TEAM';
+  }
+
+  /**
+   * Legacy cleanup: previously deleted stored rows that matched removed rule-based filters.
+   * Rule-based ingestion filters are gone — this is a no-op (API kept for compatibility).
+   */
+  async pruneNoiseStoredMessages(
+    ctx: RequestContext,
+    _opts?: { employeeIds?: string[]; maxMessages?: number },
+  ): Promise<{
+    deleted: number;
+    skipsUpserted: number;
+    batches: number;
+    threadKeys: Array<{ companyId: string; employeeId: string; threadId: string }>;
+  }> {
+    this.logger.debug(`pruneNoiseStoredMessages: no-op (company=${ctx.companyId})`);
+    return { deleted: 0, skipsUpserted: 0, batches: 0, threadKeys: [] };
   }
 }

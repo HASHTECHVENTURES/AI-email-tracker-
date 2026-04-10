@@ -34,6 +34,31 @@ const BASE_QUERY_FILTERS = [
   '-is:muted',
 ].join(' ');
 
+/** Gmail list query for inbox/sent incremental sync (shared by pagination + single-page fetch). */
+export function buildGmailInboxListQuery(afterTimestamp: Date | null): string {
+  const parts: string[] = [BASE_QUERY_FILTERS];
+  if (afterTimestamp) {
+    const epochSeconds = Math.floor(afterTimestamp.getTime() / 1000);
+    parts.push(`after:${epochSeconds}`);
+  }
+  return parts.join(' ');
+}
+
+/**
+ * Historical backfill: only messages whose internal date falls in [afterDate, beforeDate] (inclusive-ish).
+ * Gmail `q` uses Unix seconds for after/before.
+ */
+export function buildGmailHistoricalWindowQuery(afterDate: Date, beforeDate: Date): string {
+  const parts: string[] = [BASE_QUERY_FILTERS];
+  const afterSec = Math.floor(afterDate.getTime() / 1000);
+  const beforeSec = Math.ceil(beforeDate.getTime() / 1000);
+  parts.push(`after:${afterSec}`);
+  if (beforeSec > afterSec) {
+    parts.push(`before:${beforeSec}`);
+  }
+  return parts.join(' ');
+}
+
 @Injectable()
 export class GmailService {
   private readonly logger = new Logger(GmailService.name);
@@ -55,27 +80,29 @@ export class GmailService {
     return google.gmail({ version: 'v1', auth: oauth2 });
   }
 
-  async fetchNewMessageIds(
+  /**
+   * One page of message IDs. Use `pageToken` to continue the same list walk (same `q` as first request).
+   */
+  async listMessageIdsPage(
     employeeId: string,
-    afterTimestamp: Date | null,
-    maxResults = 20,
-  ): Promise<string[]> {
+    query: string,
+    opts: { maxResults: number; pageToken?: string | null },
+  ): Promise<{ ids: string[]; nextPageToken: string | null }> {
     const gmail = await this.getGmailClient(employeeId);
-
-    const parts: string[] = [BASE_QUERY_FILTERS];
-    if (afterTimestamp) {
-      const epochSeconds = Math.floor(afterTimestamp.getTime() / 1000);
-      parts.push(`after:${epochSeconds}`);
-    }
-    const query = parts.join(' ');
 
     try {
       const response = await retryWithBackoff(
-        () => gmail.users.messages.list({ userId: 'me', q: query, maxResults }),
+        () =>
+          gmail.users.messages.list({
+            userId: 'me',
+            q: query,
+            maxResults: opts.maxResults,
+            pageToken: opts.pageToken ?? undefined,
+          }),
         {
           operationName: `gmail.list(${employeeId})`,
           attempts: 3,
-          timeoutMs: 10_000,
+          timeoutMs: 15_000,
           onRetry: (attempt, err, delayMs) => {
             this.logger.warn(
               `Retrying gmail.users.messages.list attempt ${attempt + 1} in ${delayMs}ms: ${(err as Error).message}`,
@@ -84,11 +111,23 @@ export class GmailService {
         },
       );
 
-      return (response.data.messages ?? []).map((m) => m.id!).filter(Boolean);
+      const ids = (response.data.messages ?? []).map((m) => m.id!).filter(Boolean);
+      const nextPageToken = response.data.nextPageToken ?? null;
+      return { ids, nextPageToken };
     } catch (err) {
       this.logger.error(`Failed to list messages for employee ${employeeId}`, (err as Error).message);
       throw err;
     }
+  }
+
+  async fetchNewMessageIds(
+    employeeId: string,
+    afterTimestamp: Date | null,
+    maxResults = 20,
+  ): Promise<string[]> {
+    const query = buildGmailInboxListQuery(afterTimestamp);
+    const { ids } = await this.listMessageIdsPage(employeeId, query, { maxResults });
+    return ids;
   }
 
   /** Returns true if the message has a noise label — second safety net after query filters. */
@@ -154,10 +193,13 @@ export class GmailService {
 
     const fromRaw = getHeader('From');
     const toRaw = getHeader('To');
+    const replyToRaw = getHeader('Reply-To');
     const subject = getHeader('Subject');
     const dateStr = getHeader('Date');
 
     const fromEmail = this.extractEmail(fromRaw);
+    const fromName = this.extractDisplayName(fromRaw);
+    const replyToEmail = replyToRaw ? this.extractEmail(replyToRaw) : null;
     const toEmails = this.extractEmails(toRaw);
     const sentAt = dateStr ? new Date(dateStr) : new Date(Number(msg.internalDate));
     const bodyText = this.extractBestBodyText(msg.payload ?? {});
@@ -172,12 +214,84 @@ export class GmailService {
       employeeId,
       direction,
       fromEmail,
+      fromName,
+      replyToEmail,
       toEmails,
       subject,
       bodyText,
       sentAt,
       labelIds,
     };
+  }
+
+  /**
+   * Last up to `maxMessages` messages in the Gmail thread (by internalDate), for Gemini relevance context.
+   * Reuses `threads.get` metadata per thread across one ingest batch via `metaByThread`.
+   */
+  async fetchLastMessagesInThreadForRelevance(
+    employeeId: string,
+    employeeEmail: string,
+    current: EmailMessage,
+    metaByThread: Map<string, gmail_v1.Schema$Message[]>,
+    maxMessages = 3,
+  ): Promise<EmailMessage[]> {
+    const threadId = current.providerThreadId;
+    if (!threadId) return [current];
+
+    let sorted: gmail_v1.Schema$Message[];
+    const cached = metaByThread.get(threadId);
+    if (cached) {
+      sorted = cached;
+    } else {
+      const gmail = await this.getGmailClient(employeeId);
+      try {
+        const res = await retryWithBackoff(
+          () =>
+            gmail.users.threads.get({
+              userId: 'me',
+              id: threadId,
+              format: 'metadata',
+            }),
+          {
+            operationName: `gmail.threads.get.metadata(${threadId})`,
+            attempts: 3,
+            timeoutMs: 20_000,
+            onRetry: (a, err, d) =>
+              this.logger.warn(`threads.get retry ${a}: ${(err as Error).message} — wait ${d}ms`),
+          },
+        );
+        const raw = res.data.messages ?? [];
+        sorted = [...raw].sort(
+          (a, b) => Number(a.internalDate ?? 0) - Number(b.internalDate ?? 0),
+        );
+        metaByThread.set(threadId, sorted);
+      } catch (err) {
+        this.logger.warn(`threads.get failed for ${threadId}: ${(err as Error).message}`);
+        return [current];
+      }
+    }
+
+    const slice = sorted.slice(-maxMessages);
+    const out: EmailMessage[] = [];
+    for (const ref of slice) {
+      const id = ref.id;
+      if (!id) continue;
+      if (id === current.providerMessageId) {
+        out.push(current);
+        continue;
+      }
+      try {
+        out.push(await this.fetchFullMessage(employeeId, employeeEmail, id));
+      } catch (e) {
+        this.logger.debug(`skip thread sibling ${id}: ${(e as Error).message}`);
+      }
+    }
+    if (out.length === 0) return [current];
+    if (!out.some((m) => m.providerMessageId === current.providerMessageId)) {
+      out.push(current);
+    }
+    out.sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
+    return out;
   }
 
   /**
@@ -248,6 +362,39 @@ export class GmailService {
   private extractEmail(raw: string): string {
     const match = raw.match(/<([^>]+)>/);
     return match ? match[1] : raw.trim();
+  }
+
+  private extractDisplayName(raw: string): string | null {
+    if (!raw) return null;
+    const m = raw.match(/^\s*"?([^"<]+?)"?\s*<[^>]+>/);
+    if (!m?.[1]) return null;
+    const decoded = this.decodeMimeWords(m[1].trim()).replace(/^"+|"+$/g, '').trim();
+    if (!decoded) return null;
+    // Ignore pseudo-name values that are actually just an email.
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(decoded)) return null;
+    return decoded;
+  }
+
+  /** Decode common RFC2047 MIME encoded-words in headers (e.g. =?UTF-8?B?...?=). */
+  private decodeMimeWords(value: string): string {
+    return value.replace(
+      /=\?([^?]+)\?([bBqQ])\?([^?]+)\?=/g,
+      (_full, _charset: string, encoding: string, text: string) => {
+        try {
+          if (encoding.toUpperCase() === 'B') {
+            return Buffer.from(text, 'base64').toString('utf-8');
+          }
+          const qp = text
+            .replace(/_/g, ' ')
+            .replace(/=([0-9A-Fa-f]{2})/g, (_m: string, hex: string) =>
+              String.fromCharCode(parseInt(hex, 16)),
+            );
+          return Buffer.from(qp, 'binary').toString('utf-8');
+        } catch {
+          return text;
+        }
+      },
+    );
   }
 
   private extractEmails(raw: string): string[] {

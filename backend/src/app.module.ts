@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
+import { AppController } from './app.controller';
 import { EmployeesModule } from './modules/employees/employees.module';
 import { EmailIngestionModule } from './modules/email-ingestion/email-ingestion.module';
 import { ConversationsModule } from './modules/conversations/conversations.module';
@@ -17,6 +18,7 @@ import { SelfTrackingModule } from './modules/self-tracking/self-tracking.module
 import { PlatformAdminModule } from './modules/platform-admin/platform-admin.module';
 
 @Module({
+  controllers: [AppController],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),

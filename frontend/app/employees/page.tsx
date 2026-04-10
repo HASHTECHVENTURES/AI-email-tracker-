@@ -41,13 +41,6 @@ type EmployeeRow = {
   ai_enabled?: boolean;
 };
 
-type EmployeeMessage = {
-  provider_message_id: string;
-  subject: string;
-  from_email: string;
-  sent_at: string;
-};
-
 type DashboardConv = {
   employee_id: string;
   follow_up_status: string;
@@ -76,8 +69,6 @@ function EmployeesPageInner() {
   const [aiBriefingsOn, setAiBriefingsOn] = useState(true);
   const [mailboxCrawlOn, setMailboxCrawlOn] = useState(true);
   const [slaInputs, setSlaInputs] = useState<Record<string, string>>({});
-  const [messagesByEmployee, setMessagesByEmployee] = useState<Record<string, EmployeeMessage[]>>({});
-  const [messagesLoadingFor, setMessagesLoadingFor] = useState<string | null>(null);
   const [trackingInputs, setTrackingInputs] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -290,30 +281,6 @@ function EmployeesPageInner() {
     }
   }
 
-  async function viewMessages(employeeId: string) {
-    setError(null);
-    setMessagesLoadingFor(employeeId);
-    try {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) return;
-      const res = await apiFetch(
-        `/employees/${encodeURIComponent(employeeId)}/messages?limit=10`,
-        session.access_token,
-      );
-      const body = (await res.json().catch(() => ({}))) as { messages?: EmployeeMessage[]; message?: string };
-      if (!res.ok) {
-        setError(body.message || 'Could not load messages');
-        return;
-      }
-      setMessagesByEmployee((prev) => ({ ...prev, [employeeId]: body.messages ?? [] }));
-    } finally {
-      setMessagesLoadingFor(null);
-    }
-  }
-
   async function saveTrackingStart(employeeId: string) {
     setError(null);
     setNotice(null);
@@ -356,7 +323,7 @@ function EmployeesPageInner() {
       });
       await loadLists(session.access_token);
       flashNotice(
-        `Tracking start saved (${new Date(asIso).toLocaleString()}) for ${employee?.name ?? 'mailbox'}. Gmail fetch window was reset to match.`,
+        `Tracking window saved (${new Date(asIso).toLocaleString()}) for ${employee?.name ?? 'mailbox'}. Gmail sync resets from that time; SLA lists still only show relevant threads.`,
       );
     } finally {
       setTrackingSavingFor(null);
@@ -643,10 +610,10 @@ function EmployeesPageInner() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => void viewMessages(emp.id)}
+                          onClick={() => router.push(`/employees/${encodeURIComponent(emp.id)}/mails`)}
                           className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                         >
-                          Inbox sample
+                          View mails
                         </button>
                         <button
                           type="button"
@@ -684,7 +651,8 @@ function EmployeesPageInner() {
                           Time tracker
                         </p>
                         <p className="text-xs text-slate-600">
-                          Only messages at or after this time are ingested and tracked for SLAs.
+                          Inbox window: sync considers mail on or after this time. SLA views still only list threads we
+                          mark relevant—not every message.
                         </p>
                         <div className="flex flex-wrap items-center gap-2">
                           <input
@@ -751,19 +719,6 @@ function EmployeesPageInner() {
                           </button>
                         </div>
                       </div>
-                      {messagesLoadingFor === emp.id ? (
-                        <p className="mt-2 text-xs text-slate-500">Loading…</p>
-                      ) : null}
-                      {messagesByEmployee[emp.id]?.length ? (
-                        <ul className="mt-2 space-y-1 rounded-xl border border-slate-100 bg-surface-muted/50 p-2">
-                          {messagesByEmployee[emp.id].map((m) => (
-                            <li key={m.provider_message_id} className="text-xs text-slate-600">
-                              <span className="font-medium text-slate-800">{m.subject || '(no subject)'}</span> ·{' '}
-                              {new Date(m.sent_at).toLocaleDateString()}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
                     </article>
                   );
                 })}
@@ -822,7 +777,12 @@ function EmployeesPageInner() {
                       </button>
                     </th>
                     <th className="px-3 py-3">SLA (h)</th>
-                    <th className="px-3 py-3">Tracking Start</th>
+                    <th
+                      className="px-3 py-3"
+                      title="Inbox window: mail on or after this time is eligible for sync. Not every message becomes an SLA thread."
+                    >
+                      Tracking since
+                    </th>
                     <th className="px-3 py-3 w-[140px]">Email / AI</th>
                     <th className="px-3 py-3">Actions</th>
                   </tr>
@@ -949,7 +909,7 @@ function EmployeesPageInner() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => void viewMessages(emp.id)}
+                            onClick={() => router.push(`/employees/${encodeURIComponent(emp.id)}/mails`)}
                             className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700 transition-all duration-200 hover:bg-gray-50"
                           >
                             View mails
@@ -962,19 +922,6 @@ function EmployeesPageInner() {
                             Delete
                           </button>
                         </div>
-                        {messagesLoadingFor === emp.id ? (
-                          <p className="mt-2 text-xs text-gray-500">Loading emails...</p>
-                        ) : null}
-                        {messagesByEmployee[emp.id]?.length ? (
-                          <ul className="mt-2 space-y-1 rounded-lg border border-gray-200 bg-gray-50 p-2">
-                            {messagesByEmployee[emp.id].map((m) => (
-                              <li key={m.provider_message_id} className="text-xs text-gray-700">
-                                <span className="font-medium">{m.subject || '(no subject)'}</span> - {m.from_email}{' '}
-                                - {new Date(m.sent_at).toLocaleString()}
-                              </li>
-                            ))}
-                          </ul>
-                        ) : null}
                       </td>
                     </tr>
                   ))}

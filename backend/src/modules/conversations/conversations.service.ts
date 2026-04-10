@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { FollowUpStatus } from '../common/types';
@@ -22,6 +22,8 @@ interface EmailRow {
   employee_id: string;
   direction: string;
   from_email: string;
+  from_name: string | null;
+  reply_to_email: string | null;
   to_emails: string[];
   subject: string;
   sent_at: string;
@@ -85,7 +87,12 @@ export class ConversationsService {
     };
 
     for (const key of threadKeys) {
-      const outcome = await this.recomputeThread(key.companyId, key.employeeId, key.threadId, globalSla);
+      const outcome = await this.recomputeThread(
+        key.companyId,
+        key.employeeId,
+        key.threadId,
+        globalSla,
+      );
       result.threadsProcessed++;
       if (outcome.action === 'created') result.created++;
       if (outcome.action === 'updated') result.updated++;
@@ -95,6 +102,30 @@ export class ConversationsService {
     const counts = await this.getStatusCounts();
     result.statusBreakdown = counts;
     return result;
+  }
+
+  async recomputeAllForCompany(companyId: string): Promise<RecomputeResult> {
+    const { data, error } = await this.supabase
+      .from('conversations')
+      .select('employee_id, provider_thread_id')
+      .eq('company_id', companyId)
+      .eq('is_ignored', false);
+
+    if (error) {
+      this.logger.error('recomputeAllForCompany: query failed', error.message);
+      throw error;
+    }
+
+    const keys: ThreadKey[] = (data ?? []).map(
+      (r: { employee_id: string; provider_thread_id: string }) => ({
+        companyId,
+        employeeId: r.employee_id,
+        threadId: r.provider_thread_id,
+      }),
+    );
+
+    this.logger.log(`recomputeAllForCompany: ${keys.length} threads`);
+    return this.recomputeForThreads(keys);
   }
 
   async recomputeRecent(): Promise<RecomputeResult> {
@@ -335,7 +366,7 @@ export class ConversationsService {
 
     const { data: emails, error } = await this.supabase
       .from('email_messages')
-      .select('provider_message_id, provider_thread_id, employee_id, direction, from_email, to_emails, subject, sent_at')
+      .select('provider_message_id, provider_thread_id, employee_id, direction, from_email, from_name, reply_to_email, to_emails, subject, sent_at')
       .eq('company_id', companyId)
       .eq('employee_id', employeeId)
       .eq('provider_thread_id', threadId)
@@ -368,8 +399,30 @@ export class ConversationsService {
 
     const result = this.followupService.analyze(lastClientMsgAt, lastEmployeeReplyAt, slaHours, manuallyClosed);
 
-    const clientEmail = lastInbound?.from_email ?? null;
+    const contactEmail = (
+      lastInbound?.reply_to_email?.trim() ||
+      lastInbound?.from_email?.trim() ||
+      null
+    );
+    const contactName = (lastInbound?.from_name ?? '').trim() || contactEmail;
     const conversationId = `${employeeId}:${threadId}`;
+
+    const senderLocal = (contactEmail ?? '').split('@')[0]?.toLowerCase() ?? '';
+    const looksAutomated =
+      /^(no-?reply|noreply|notifications?|mailer-daemon|bounce|donotreply|automated|system|support\+?|notify|alerts?|updates?-noreply|billing|invoices?|receipts?|orders?|payments?|accounts?|marketing|newsletter|webmaster|postmaster)$/i.test(senderLocal);
+
+    /** Latest non-empty inbound subject so the UI shows a real thread title when AI summary is still empty. */
+    const inboundSubjectLine =
+      [...inbound]
+        .reverse()
+        .map((m) => (m.subject ?? '').trim())
+        .find((s) => s.length > 0) ?? '';
+
+    const existingSummary = (existing?.summary ?? '').trim();
+    const summaryForRow =
+      existingSummary.length >= 12
+        ? existingSummary
+        : inboundSubjectLine || existingSummary;
 
     const row = {
       conversation_id: conversationId,
@@ -377,8 +430,8 @@ export class ConversationsService {
       employee_id: employeeId,
       company_id: companyId,
       department_id: employee.departmentId ?? null,
-      client_name: clientEmail,
-      client_email: clientEmail,
+      client_name: contactName,
+      client_email: contactEmail,
       last_client_msg_at: lastClientMsgAt?.toISOString() ?? null,
       last_employee_reply_at: lastEmployeeReplyAt?.toISOString() ?? null,
       follow_up_required: result.followUpRequired,
@@ -389,8 +442,8 @@ export class ConversationsService {
       reason: result.shortReason,
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,
-      priority: existing?.priority ?? 'MEDIUM',
-      summary: existing?.summary ?? '',
+      priority: looksAutomated ? 'LOW' : (existing?.priority ?? 'MEDIUM'),
+      summary: summaryForRow,
       confidence: existing ? Number(existing.confidence) : 0,
       updated_at: new Date().toISOString(),
     };
@@ -413,7 +466,7 @@ export class ConversationsService {
       newStatus: result.followUpStatus,
       employeeName: employee.name,
       employeeEmail: employee.email,
-      clientEmail: clientEmail,
+      clientEmail: contactEmail,
       delayHours: result.delayHours,
       slaHours,
       shortReason: result.shortReason,
@@ -428,36 +481,15 @@ export class ConversationsService {
         employee: employee.name,
         hours: result.delayHours,
         status: 'HIGH priority SLA',
-        client_email: clientEmail ?? '',
+        client_email: contactEmail ?? '',
       }, conversationId);
     }
 
-    // AI enrichment: global + platform tenant kill switch + CEO role/mailbox-type toggles + per-mailbox
     let enriched = false;
-    const settings = await this.settingsService.getAll();
-    const aiEnabled = settings.ai_enabled;
-    const companyAiEnabled = await this.companyPolicyService.isAiEnabledForCompany(companyId);
-    const portalLinked = await this.employeesService.hasPortalEmployeeLink(companyId, employeeId);
-    const roleAiOk = portalLinked ? settings.ai_for_employees_enabled : settings.ai_for_managers_enabled;
-    const employeeAiEnabled = await this.employeesService.isAutoAiEnabledForEmployee(companyId, employeeId);
-    if (
-      aiEnabled &&
-      companyAiEnabled &&
-      roleAiOk &&
-      employeeAiEnabled &&
-      this.aiEnrichmentService.shouldEnrich({
-        follow_up_required: result.followUpRequired,
-        priority: row.priority,
-        summary: row.summary,
-        follow_up_status: result.followUpStatus,
-        delay_hours: result.delayHours,
-        sla_hours: slaHours,
-      })
-    ) {
+    if (this.aiEnrichmentService.isAvailable) {
       try {
         await this.aiEnrichmentService.enrichConversation(conversationId, employeeId, threadId);
         enriched = true;
-        this.logger.log(`AI enriched conversation ${conversationId}`);
       } catch (err) {
         this.logger.warn(`AI enrichment failed for ${conversationId}: ${(err as Error).message}`);
       }
@@ -487,6 +519,29 @@ export class ConversationsService {
     return (data as { department_id: string | null } | null)?.department_id ?? null;
   }
 
+  /** Labels + Gmail link for the thread read page (no PII beyond what the row already stores). */
+  async getPortalThreadContext(
+    companyId: string,
+    conversationId: string,
+  ): Promise<{
+    conv: ConversationRow;
+    employee_name: string;
+    open_gmail_link: string;
+  } | null> {
+    const conv = await this.getConversation(companyId, conversationId);
+    if (!conv) return null;
+    const { data: emp } = await this.supabase
+      .from('employees')
+      .select('name')
+      .eq('company_id', companyId)
+      .eq('id', conv.employee_id)
+      .maybeSingle();
+    const tid = encodeURIComponent(conv.provider_thread_id);
+    const employee_name = (emp as { name: string } | null)?.name?.trim() || conv.employee_id;
+    const open_gmail_link = `https://mail.google.com/mail/u/0/#inbox/${tid}`;
+    return { conv, employee_name, open_gmail_link };
+  }
+
   async getConversationScopeRow(companyId: string, conversationId: string): Promise<{
     company_id: string;
     employee_id: string;
@@ -499,6 +554,54 @@ export class ConversationsService {
       .eq('conversation_id', conversationId)
       .maybeSingle();
     return (data ?? null) as { company_id: string; employee_id: string; department_id: string | null } | null;
+  }
+
+  /**
+   * All ingested messages for a thread, oldest first — `body_text` is the full plain-text body from Gmail ingestion
+   * (HTML parts converted to text), up to an ingestion storage cap.
+   */
+  async listIngestedThreadMessages(
+    companyId: string,
+    conversationId: string,
+  ): Promise<
+    Array<{
+      provider_message_id: string;
+      subject: string;
+      from_email: string;
+      from_name: string | null;
+      to_emails: string[];
+      direction: string;
+      body_text: string;
+      sent_at: string;
+    }>
+  > {
+    const conv = await this.getConversation(companyId, conversationId);
+    if (!conv) {
+      return [];
+    }
+    const { data, error } = await this.supabase
+      .from('email_messages')
+      .select(
+        'provider_message_id, subject, from_email, from_name, to_emails, direction, body_text, sent_at',
+      )
+      .eq('company_id', companyId)
+      .eq('employee_id', conv.employee_id)
+      .eq('provider_thread_id', conv.provider_thread_id)
+      .order('sent_at', { ascending: true });
+    if (error) {
+      this.logger.error(`listIngestedThreadMessages: ${error.message}`);
+      throw new InternalServerErrorException('Could not load thread messages');
+    }
+    return (data ?? []) as Array<{
+      provider_message_id: string;
+      subject: string;
+      from_email: string;
+      from_name: string | null;
+      to_emails: string[];
+      direction: string;
+      body_text: string;
+      sent_at: string;
+    }>;
   }
 
   private async findStaleThreads(): Promise<ThreadKey[]> {

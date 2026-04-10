@@ -180,6 +180,18 @@ export class EmployeesController {
     return { ok: true, employee: updated };
   }
 
+  @Patch(':id/tracking-pause')
+  async toggleTrackingPause(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Body() body: { paused?: boolean },
+  ) {
+    const ctx = getRequestContext(req);
+    const paused = body.paused === true;
+    await this.employeesService.setTrackingPaused(ctx, id, paused);
+    return { ok: true, paused };
+  }
+
   @Get(':id/messages')
   async getRecentMessages(
     @Req() req: Request,
