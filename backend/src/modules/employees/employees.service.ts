@@ -1470,13 +1470,7 @@ export class EmployeesService {
     if (!data) return null;
 
     const row = data as EmployeeDbRow;
-    const { data: sync } = await this.supabase
-      .from('mail_sync_state')
-      .select('start_date')
-      .eq('employee_id', employeeId)
-      .maybeSingle();
 
-    const syncStart = (sync as { start_date: string } | null)?.start_date ?? null;
     return {
       id: row.id,
       name: row.name,
@@ -1486,9 +1480,9 @@ export class EmployeesService {
       active: row.is_active !== false,
       slaHoursDefault: row.sla_hours_default ?? undefined,
       aiEnabled: row.ai_enabled !== false,
-      trackingStartAt: row.tracking_start_at ?? syncStart,
+      trackingStartAt: row.tracking_start_at ?? null,
       trackingPaused: row.tracking_paused === true,
-      startTrackingAt: row.tracking_start_at ?? syncStart,
+      startTrackingAt: row.tracking_start_at ?? null,
     };
   }
 
@@ -1537,16 +1531,11 @@ export class EmployeesService {
     if (!emp) return null;
 
     const row = emp as { tracking_paused: boolean; tracking_start_at: string | null };
-    const { data: sync } = await this.supabase
-      .from('mail_sync_state')
-      .select('start_date')
-      .eq('employee_id', employeeId)
-      .maybeSingle();
-    const syncStart = (sync as { start_date: string } | null)?.start_date ?? null;
 
     return {
       trackingPaused: row.tracking_paused === true,
-      trackingStartAt: row.tracking_start_at ?? syncStart,
+      /** Product tracking window only — never derived from `mail_sync_state` (implementation cursor). */
+      trackingStartAt: row.tracking_start_at ?? null,
     };
   }
 

@@ -162,35 +162,50 @@ export class SelfTrackingService {
     const rows = (data ?? []) as Row[];
     const nameById = new Map(mailboxes.map((m) => [m.id, m.name]));
 
-    const conversations: ConversationListItem[] = rows.map((r) => {
-      const tid = encodeURIComponent(r.provider_thread_id);
-      return {
-        conversation_id: r.conversation_id,
-        employee_id: r.employee_id,
-        employee_name: nameById.get(r.employee_id) ?? r.employee_id,
-        provider_thread_id: r.provider_thread_id,
-        client_name: r.client_name,
-        client_email: r.client_email,
-        follow_up_status: r.follow_up_status,
-        priority: r.priority,
-        delay_hours: r.delay_hours,
-        sla_hours:
-          mailboxes.find((m) => m.id === r.employee_id)?.sla_hours_default ?? 24,
-        summary: r.summary,
-        short_reason: r.short_reason,
-        reason: r.reason || r.short_reason,
-        last_client_msg_at: r.last_client_msg_at,
-        last_employee_reply_at: r.last_employee_reply_at,
-        follow_up_required: r.follow_up_required,
-        confidence: r.confidence,
-        lifecycle_status: r.lifecycle_status,
-        manually_closed: r.manually_closed,
-        is_ignored: r.is_ignored,
-        user_cc_only: r.user_cc_only ?? false,
-        open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
-        updated_at: r.updated_at,
-      };
-    });
+    const trackingStartMsByEmployee = new Map<string, number>();
+    for (const m of mailboxes) {
+      const raw = m.tracking_start_at;
+      if (raw && !Number.isNaN(Date.parse(raw))) {
+        trackingStartMsByEmployee.set(m.id, Date.parse(raw));
+      }
+    }
+
+    const conversations: ConversationListItem[] = rows
+      .filter((r) => {
+        const t0 = trackingStartMsByEmployee.get(r.employee_id);
+        if (t0 == null) return true;
+        if (!r.last_client_msg_at) return false;
+        return Date.parse(r.last_client_msg_at) >= t0;
+      })
+      .map((r) => {
+        const tid = encodeURIComponent(r.provider_thread_id);
+        return {
+          conversation_id: r.conversation_id,
+          employee_id: r.employee_id,
+          employee_name: nameById.get(r.employee_id) ?? r.employee_id,
+          provider_thread_id: r.provider_thread_id,
+          client_name: r.client_name,
+          client_email: r.client_email,
+          follow_up_status: r.follow_up_status,
+          priority: r.priority,
+          delay_hours: r.delay_hours,
+          sla_hours:
+            mailboxes.find((m) => m.id === r.employee_id)?.sla_hours_default ?? 24,
+          summary: r.summary,
+          short_reason: r.short_reason,
+          reason: r.reason || r.short_reason,
+          last_client_msg_at: r.last_client_msg_at,
+          last_employee_reply_at: r.last_employee_reply_at,
+          follow_up_required: r.follow_up_required,
+          confidence: r.confidence,
+          lifecycle_status: r.lifecycle_status,
+          manually_closed: r.manually_closed,
+          is_ignored: r.is_ignored,
+          user_cc_only: r.user_cc_only ?? false,
+          open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
+          updated_at: r.updated_at,
+        };
+      });
 
     const needs_attention = conversations.filter(
       (c) =>

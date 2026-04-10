@@ -252,6 +252,18 @@ export class EmailIngestionService {
         conversationsUpdated: 0,
       };
     }
+    if (!tracking?.trackingStartAt?.trim()) {
+      this.logger.debug(`Ingest skipped (tracking_start_at not set): ${employee.name}`);
+      return {
+        companyId,
+        employeeId: employee.id,
+        employeeName: employee.name,
+        newMessages: 0,
+        skippedFiltered: 0,
+        affectedThreads: 0,
+        conversationsUpdated: 0,
+      };
+    }
 
     const portalLinked = await this.employeesService.hasPortalEmployeeLink(companyId, employee.id);
     if (portalLinked && !cycleSettings.email_crawl_employee_mailboxes_enabled) {
@@ -283,18 +295,12 @@ export class EmailIngestionService {
     const resumeToken = syncState?.gmail_list_page_token ?? null;
     const resumeEpoch = syncState?.gmail_list_query_after_epoch ?? null;
 
-    let listAfterDate: Date;
-    if (resumeToken != null && resumeEpoch != null) {
-      listAfterDate = new Date(Number(resumeEpoch) * 1000);
-    } else {
-      const afterDate = this.effectiveAfterDate(
-        syncState?.last_processed_at,
-        syncState?.start_date,
-      );
-      const startIso = syncState?.start_date ?? tracking?.trackingStartAt ?? null;
-      listAfterDate =
-        afterDate ?? (startIso ? new Date(startIso) : new Date());
-    }
+    const listAfterDate = this.liveListAfterDate(
+      syncState,
+      tracking.trackingStartAt,
+      resumeToken,
+      resumeEpoch,
+    );
 
     const listQuery = buildGmailInboxListQuery(listAfterDate);
     const listMaxResults = Math.min(
@@ -394,10 +400,8 @@ export class EmailIngestionService {
           batchLatestSent = msg.sentAt;
         }
 
-        const startAt = tracking?.trackingStartAt
-          ? new Date(tracking.trackingStartAt)
-          : (syncState?.start_date ? new Date(syncState.start_date) : null);
-        if (startAt && msg.sentAt < startAt) {
+        const startAt = new Date(tracking.trackingStartAt);
+        if (msg.sentAt < startAt) {
           skippedFiltered += 1;
           await this.recordIngestionSkip(employee.id, msg.providerMessageId);
           continue;
@@ -859,6 +863,26 @@ export class EmailIngestionService {
     return new Date(Math.max(...dates));
   }
 
+  /**
+   * Live Gmail list lower bound: resume token wins; else max(last_processed, product tracking start).
+   * Never uses `mail_sync_state.start_date` alone — that field can be a stale technical default (e.g. 2020).
+   */
+  private liveListAfterDate(
+    syncState: MailSyncRow | null,
+    trackingStartIso: string | null | undefined,
+    resumeToken: string | null,
+    resumeEpoch: number | null,
+  ): Date {
+    if (resumeToken != null && resumeEpoch != null) {
+      return new Date(Number(resumeEpoch) * 1000);
+    }
+    const productStartIso = trackingStartIso?.trim()
+      ? new Date(trackingStartIso.trim()).toISOString()
+      : new Date().toISOString();
+    const afterDate = this.effectiveAfterDate(syncState?.last_processed_at, productStartIso);
+    return afterDate ?? new Date(productStartIso);
+  }
+
   private async getSyncState(employeeId: string): Promise<MailSyncRow | null> {
     const { data } = await this.supabase
       .from('mail_sync_state')
@@ -906,17 +930,12 @@ export class EmailIngestionService {
     const resumeToken = syncState?.gmail_list_page_token ?? null;
     const resumeEpoch = syncState?.gmail_list_query_after_epoch ?? null;
 
-    let listAfterDate: Date;
-    if (resumeToken != null && resumeEpoch != null) {
-      listAfterDate = new Date(Number(resumeEpoch) * 1000);
-    } else {
-      const afterDate = this.effectiveAfterDate(
-        syncState?.last_processed_at,
-        syncState?.start_date,
-      );
-      const startIso = syncState?.start_date ?? tracking?.trackingStartAt ?? null;
-      listAfterDate = afterDate ?? (startIso ? new Date(startIso) : new Date());
-    }
+    const listAfterDate = this.liveListAfterDate(
+      syncState,
+      tracking?.trackingStartAt,
+      resumeToken,
+      resumeEpoch,
+    );
 
     const listQuery = buildGmailInboxListQuery(listAfterDate);
     const maxPages = Math.min(10, Math.max(1, options?.maxPages ?? 5));
@@ -1069,7 +1088,19 @@ export class EmailIngestionService {
       backfillMaxSentAt?: Date | null;
     },
   ): Promise<void> {
-    const startDate = existing?.start_date ?? new Date('2020-01-01').toISOString();
+    let startDate = existing?.start_date;
+    if (!startDate) {
+      const { data: emp } = await this.supabase
+        .from('employees')
+        .select('tracking_start_at')
+        .eq('id', employeeId)
+        .maybeSingle();
+      const ts = (emp as { tracking_start_at: string | null } | null)?.tracking_start_at;
+      startDate =
+        ts && ts.trim()
+          ? new Date(ts.trim()).toISOString()
+          : new Date().toISOString();
+    }
     let lastProcessed = existing?.last_processed_at ?? null;
     if (patch.lastProcessedAt) {
       lastProcessed = patch.lastProcessedAt.toISOString();
