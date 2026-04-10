@@ -5031,19 +5031,6 @@ function MyEmailPageInner() {
               ))}
             </div>
 
-            <p className="mt-3 max-w-3xl text-[11px] leading-relaxed text-slate-600">
-              <span className="font-medium text-slate-800">Need your reply</span> through{' '}
-              <span className="font-medium text-slate-800">All threads</span> show{' '}
-              <strong className="font-medium text-slate-700">conversations already saved</strong> in the portal. How they
-              sort (reply owed vs waiting, CC, done, low priority) follows your last messages, SLA, and AI-assigned
-              priority after import.{' '}
-              <span className="font-medium text-slate-800">Skipped</span> is{' '}
-              <strong className="font-medium text-slate-700">separate</strong>: mail Gmail sync chose not to store yet
-              (Inbox AI filter or before your tracking window). Those threads do{' '}
-              <strong className="font-medium text-slate-700">not</strong> appear in the other tabs until you use{' '}
-              <strong className="font-medium text-slate-700">Add to inbox</strong> on the Skipped list.
-            </p>
-
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               {mailTab !== 'skipped' && scopedPersonOptions.length > 1 ? (
                 <select
