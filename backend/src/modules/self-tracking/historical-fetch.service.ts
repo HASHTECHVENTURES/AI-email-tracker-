@@ -16,6 +16,7 @@ import { EmailMessage } from '../common/types';
 import { getGeminiApiKeyFromEnv } from '../common/env';
 import { RequestContext } from '../common/request-context';
 import type { ConversationListItem } from '../dashboard/dashboard.service';
+import { SelfTrackingService } from './self-tracking.service';
 import type { gmail_v1 } from 'googleapis';
 
 const MAX_HISTORICAL_RANGE_DAYS = 731;
@@ -69,6 +70,7 @@ export class HistoricalFetchService {
     private readonly conversationsService: ConversationsService,
     private readonly settingsService: SettingsService,
     private readonly companyPolicyService: CompanyPolicyService,
+    private readonly selfTrackingService: SelfTrackingService,
   ) {
     const key = getGeminiApiKeyFromEnv();
     if (!key) {
@@ -146,12 +148,19 @@ export class HistoricalFetchService {
     onProgress?.({ phase: 'listed', totalIds: messageIds.length });
 
     if (messageIds.length === 0) {
+      const inWindow = await this.selfTrackingService.listConversationsByLastClientMsgWindow(
+        ctx,
+        employeeId,
+        employee.name,
+        startIso.trim(),
+        endIso.trim(),
+      );
       const empty: HistoricalFetchResult = {
         fetched_from_gmail: 0,
         stored_relevant: 0,
         skipped_irrelevant: 0,
         conversations_created: 0,
-        conversations: [],
+        conversations: inWindow,
       };
       onProgress?.({ phase: 'complete', result: empty });
       return empty;
@@ -289,12 +298,20 @@ export class HistoricalFetchService {
       conversationsCreated = rc.created + rc.updated;
     }
 
-    const conversations = await this.loadNewConversations(
+    const fromNewThreads = await this.loadNewConversations(
       ctx.companyId,
       employeeId,
       [...affectedThreads],
       employee.name,
     );
+    const inWindow = await this.selfTrackingService.listConversationsByLastClientMsgWindow(
+      ctx,
+      employeeId,
+      employee.name,
+      startIso.trim(),
+      endIso.trim(),
+    );
+    const conversations = this.mergeHistoricalConversationViews(fromNewThreads, inWindow);
 
     this.logger.log(
       `Historical fetch done: ${fetchedCount} fetched, ${messages.length} stored, ${skippedIrrelevant} skipped, ${conversationsCreated} conversations`,
@@ -309,6 +326,20 @@ export class HistoricalFetchService {
     };
     onProgress?.({ phase: 'complete', result });
     return result;
+  }
+
+  /** Union by conversation id; prefer rows from the current fetch when duplicates exist. */
+  private mergeHistoricalConversationViews(
+    fromFetch: ConversationListItem[],
+    inDateWindow: ConversationListItem[],
+  ): ConversationListItem[] {
+    const byId = new Map<string, ConversationListItem>();
+    for (const c of inDateWindow) byId.set(c.conversation_id, c);
+    for (const c of fromFetch) byId.set(c.conversation_id, c);
+    return [...byId.values()].sort(
+      (a, b) =>
+        new Date(b.last_client_msg_at ?? 0).getTime() - new Date(a.last_client_msg_at ?? 0).getTime(),
+    );
   }
 
   private async messageAlreadyStored(employeeId: string, providerMessageId: string): Promise<boolean> {

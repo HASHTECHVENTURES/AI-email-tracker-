@@ -398,6 +398,116 @@ export class SelfTrackingService {
   }
 
   /**
+   * All follow-up rows for one mailbox whose **last client message** time falls in `[startIso, endIso]`
+   * (any status). Used by Historical Search so the table shows threads that Live sync already ingested —
+   * not only threads touched by a one-off Gmail pull in that run.
+   */
+  async listConversationsByLastClientMsgWindow(
+    ctx: RequestContext,
+    employeeId: string,
+    employeeName: string,
+    startIso: string,
+    endIso: string,
+  ): Promise<ConversationListItem[]> {
+    const startMs = Date.parse(startIso);
+    const endMs = Date.parse(endIso);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      throw new BadRequestException('Invalid start or end date');
+    }
+    if (endMs < startMs) {
+      throw new BadRequestException('End must be on or after start');
+    }
+    const rangeDays = (endMs - startMs) / 86_400_000;
+    if (rangeDays > HISTORICAL_MISSED_MAX_RANGE_DAYS) {
+      throw new BadRequestException(
+        `Date range cannot exceed ${HISTORICAL_MISSED_MAX_RANGE_DAYS} days`,
+      );
+    }
+
+    const { data: empRow } = await this.supabase
+      .from('employees')
+      .select('sla_hours_default')
+      .eq('id', employeeId)
+      .eq('company_id', ctx.companyId)
+      .maybeSingle();
+    const slaHours =
+      (empRow as { sla_hours_default: number | null } | null)?.sla_hours_default ?? 24;
+
+    const startBound = new Date(startMs).toISOString();
+    const endBound = new Date(endMs).toISOString();
+
+    const { data, error } = await this.supabase
+      .from('conversations')
+      .select(
+        'conversation_id, employee_id, provider_thread_id, client_name, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, user_cc_only, updated_at',
+      )
+      .eq('company_id', ctx.companyId)
+      .eq('employee_id', employeeId)
+      .eq('is_ignored', false)
+      .not('last_client_msg_at', 'is', null)
+      .gte('last_client_msg_at', startBound)
+      .lte('last_client_msg_at', endBound)
+      .order('last_client_msg_at', { ascending: false });
+
+    if (error) {
+      this.logger.error('listConversationsByLastClientMsgWindow', error.message);
+      throw new InternalServerErrorException(error.message);
+    }
+
+    type Row = {
+      conversation_id: string;
+      employee_id: string;
+      provider_thread_id: string;
+      client_name: string | null;
+      client_email: string | null;
+      follow_up_status: string;
+      priority: string;
+      delay_hours: number;
+      summary: string;
+      short_reason: string;
+      reason: string;
+      last_client_msg_at: string | null;
+      last_employee_reply_at: string | null;
+      follow_up_required: boolean;
+      confidence: number;
+      lifecycle_status: string;
+      manually_closed: boolean;
+      is_ignored: boolean;
+      user_cc_only: boolean;
+      updated_at: string;
+    };
+
+    return (data ?? []).map((r: Row) => {
+      const tid = encodeURIComponent(r.provider_thread_id);
+      return {
+        conversation_id: r.conversation_id,
+        employee_id: r.employee_id,
+        employee_name: employeeName,
+        provider_thread_id: r.provider_thread_id,
+        client_name: r.client_name,
+        client_email: r.client_email,
+        follow_up_status: r.follow_up_status,
+        priority: r.priority,
+        delay_hours: r.delay_hours,
+        sla_hours: slaHours,
+        summary: r.summary,
+        short_reason: r.short_reason,
+        reason: r.reason || r.short_reason,
+        last_client_msg_at: r.last_client_msg_at,
+        last_employee_reply_at: r.last_employee_reply_at,
+        follow_up_required: r.follow_up_required,
+        confidence: r.confidence,
+        lifecycle_status: r.lifecycle_status,
+        manually_closed: r.manually_closed,
+        is_ignored: r.is_ignored,
+        user_cc_only: r.user_cc_only ?? false,
+        open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
+        updated_at: r.updated_at,
+      };
+    });
+  }
+
+  /**
    * Remove noisy rows already in `email_messages`, record skips, and recompute affected threads (no AI).
    */
   async pruneNoiseMail(

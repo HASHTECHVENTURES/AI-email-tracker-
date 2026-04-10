@@ -1992,6 +1992,14 @@ function MyEmailPageInner() {
                 <strong className="font-medium text-slate-700">Fetch from Gmail</strong>. Our AI pulls mail from that
                 period, classifies it, and shows important threads below.
               </p>
+              <p className="mt-2 rounded-lg border border-slate-100 bg-slate-50/90 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
+                <strong className="text-slate-800">Same storage as Live.</strong> Historical Search and Live Mails both
+                read and write the <strong className="font-medium text-slate-800">same</strong> saved threads — there is
+                no separate &quot;historical inbox&quot; that later drains into Live. If Live already synced an email,
+                a historical run may import little that is new; threads whose <em>last client message</em> falls in
+                your range still appear in the table below. New mail appearing in Live over time is normal background
+                sync (every few minutes), not old historical data &quot;leaking&quot; in.
+              </p>
               {ownMailboxes.length > 0 ? (
                 <p className="mt-2 text-[11px] text-slate-400">
                   Inbox: {ownMailboxes[0].name} · {ownMailboxes[0].email}
