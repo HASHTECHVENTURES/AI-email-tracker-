@@ -25,6 +25,7 @@ interface EmailRow {
   from_name: string | null;
   reply_to_email: string | null;
   to_emails: string[];
+  cc_emails: string[] | null;
   subject: string;
   sent_at: string;
 }
@@ -50,6 +51,7 @@ interface ConversationRow {
   reason: string;
   manually_closed: boolean;
   is_ignored: boolean;
+  user_cc_only: boolean;
   updated_at: string;
 }
 
@@ -298,6 +300,7 @@ export class ConversationsService {
       reason: old.reason,
       manually_closed: old.manually_closed,
       is_ignored: old.is_ignored,
+      user_cc_only: old.user_cc_only ?? false,
       updated_at: new Date().toISOString(),
     };
 
@@ -366,7 +369,9 @@ export class ConversationsService {
 
     const { data: emails, error } = await this.supabase
       .from('email_messages')
-      .select('provider_message_id, provider_thread_id, employee_id, direction, from_email, from_name, reply_to_email, to_emails, subject, sent_at')
+      .select(
+        'provider_message_id, provider_thread_id, employee_id, direction, from_email, from_name, reply_to_email, to_emails, cc_emails, subject, sent_at',
+      )
       .eq('company_id', companyId)
       .eq('employee_id', employeeId)
       .eq('provider_thread_id', threadId)
@@ -385,6 +390,10 @@ export class ConversationsService {
 
     const lastClientMsgAt = lastInbound ? new Date(lastInbound.sent_at) : null;
     const lastEmployeeReplyAt = lastOutbound ? new Date(lastOutbound.sent_at) : null;
+
+    const userCcOnly = lastInbound
+      ? ConversationsService.mailboxIsCcOnlyOnLatestInbound(employee.email, lastInbound.to_emails, lastInbound.cc_emails)
+      : false;
 
     const slaHours = this.employeesService.getSlaHours(employee, globalSlaHours);
     const existing = await this.getConversation(companyId, `${employeeId}:${threadId}`);
@@ -442,6 +451,7 @@ export class ConversationsService {
       reason: result.shortReason,
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,
+      user_cc_only: userCcOnly,
       priority: looksAutomated ? 'LOW' : (existing?.priority ?? 'MEDIUM'),
       summary: summaryForRow,
       confidence: existing ? Number(existing.confidence) : 0,
@@ -677,5 +687,19 @@ export class ConversationsService {
     }
 
     return result;
+  }
+
+  /** Latest inbound: in To → primary; only in Cc → FYI bucket in UI. */
+  private static mailboxIsCcOnlyOnLatestInbound(
+    mailboxEmail: string,
+    toEmails: string[] | null | undefined,
+    ccEmails: string[] | null | undefined,
+  ): boolean {
+    const m = mailboxEmail.trim().toLowerCase();
+    if (!m) return false;
+    const inTo = (toEmails ?? []).some((e) => e.trim().toLowerCase() === m);
+    if (inTo) return false;
+    const inCc = (ccEmails ?? []).some((e) => e.trim().toLowerCase() === m);
+    return inCc;
   }
 }

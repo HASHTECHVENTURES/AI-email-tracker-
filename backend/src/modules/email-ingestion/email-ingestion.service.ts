@@ -374,7 +374,18 @@ export class EmailIngestionService {
     let batchLatestSent: Date | null = null;
 
     for (const msgId of messageIds) {
-      if (await this.messageAlreadyHandled(employee.id, msgId)) continue;
+      if (await this.messageInDatabase(employee.id, msgId)) continue;
+
+      const wasSkipped = await this.skipRecorded(employee.id, msgId);
+      if (wasSkipped) {
+        const outboundPeek = await this.gmailService.peekIsOutboundFrom(
+          employee.id,
+          employee.email,
+          msgId,
+        );
+        if (!outboundPeek) continue;
+        await this.clearIngestionSkip(employee.id, msgId);
+      }
 
       try {
         const msg = await this.gmailService.fetchFullMessage(employee.id, employee.email, msgId);
@@ -539,6 +550,7 @@ export class EmailIngestionService {
         `from: ${m.fromEmail}`,
         `from_name: ${m.fromName ?? ''}`,
         `to: ${(m.toEmails ?? []).join(', ')}`,
+        `cc: ${(m.ccEmails ?? []).join(', ')}`,
         `subject: ${m.subject ?? ''}`,
         '',
         'body_text:',
@@ -658,6 +670,12 @@ export class EmailIngestionService {
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
   ): Promise<{ relevant: boolean; reason: string | null }> {
+    if (target.direction === 'OUTBOUND') {
+      return {
+        relevant: true,
+        reason: 'Outbound — your sent message (reply detection / SLA)',
+      };
+    }
     if (allowGeminiRelevance && this.relevanceModel) {
       const sliceWithTarget = this.sortThreadChronological(
         threadSlice.some((m) => m.providerMessageId === target.providerMessageId)
@@ -681,24 +699,43 @@ export class EmailIngestionService {
     return { relevant: false, reason: null };
   }
 
-  private async messageAlreadyHandled(
-    employeeId: string,
-    providerMessageId: string,
-  ): Promise<boolean> {
+  private async messageInDatabase(employeeId: string, providerMessageId: string): Promise<boolean> {
     const { data: row } = await this.supabase
       .from('email_messages')
       .select('provider_message_id')
       .eq('employee_id', employeeId)
       .eq('provider_message_id', providerMessageId)
       .maybeSingle();
-    if (row) return true;
+    return row != null;
+  }
+
+  private async skipRecorded(employeeId: string, providerMessageId: string): Promise<boolean> {
     const { data: sk } = await this.supabase
       .from('email_ingestion_skips')
       .select('provider_message_id')
       .eq('employee_id', employeeId)
       .eq('provider_message_id', providerMessageId)
       .maybeSingle();
-    return sk !== null;
+    return sk != null;
+  }
+
+  private async clearIngestionSkip(employeeId: string, providerMessageId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('email_ingestion_skips')
+      .delete()
+      .eq('employee_id', employeeId)
+      .eq('provider_message_id', providerMessageId);
+    if (error) {
+      this.logger.warn(`clearIngestionSkip ${providerMessageId}: ${error.message}`);
+    }
+  }
+
+  private async messageAlreadyHandled(
+    employeeId: string,
+    providerMessageId: string,
+  ): Promise<boolean> {
+    if (await this.messageInDatabase(employeeId, providerMessageId)) return true;
+    return this.skipRecorded(employeeId, providerMessageId);
   }
 
   private async recordIngestionSkip(employeeId: string, providerMessageId: string): Promise<void> {
@@ -727,6 +764,7 @@ export class EmailIngestionService {
       from_name: msg.fromName ?? null,
       reply_to_email: msg.replyToEmail ?? null,
       to_emails: msg.toEmails,
+      cc_emails: msg.ccEmails ?? [],
       subject: msg.subject,
       body_text: clipStoredBody(msg.bodyText),
       sent_at: msg.sentAt.toISOString(),
@@ -738,8 +776,22 @@ export class EmailIngestionService {
       .from('email_messages')
       .upsert(rows, { onConflict: 'provider_message_id' });
 
+    if (error && this.isMissingCcEmailsColumn(error)) {
+      const legacyRows = rows.map(({ cc_emails: _cc, ...rest }) => rest);
+      const second = await this.supabase
+        .from('email_messages')
+        .upsert(legacyRows, { onConflict: 'provider_message_id' });
+      if (!second.error) {
+        this.logger.warn(
+          'email_messages.cc_emails column missing — applied legacy upsert; run migration 019_cc_emails_user_cc_only.sql.',
+        );
+        return;
+      }
+      error = second.error;
+    }
+
     if (error && this.isMissingRelevanceReasonColumn(error)) {
-      const legacyRows = rows.map(({ relevance_reason: _rr, ...rest }) => rest);
+      const legacyRows = rows.map(({ relevance_reason: _rr, cc_emails: _cc, ...rest }) => rest);
       const second = await this.supabase
         .from('email_messages')
         .upsert(legacyRows, { onConflict: 'provider_message_id' });
@@ -753,7 +805,9 @@ export class EmailIngestionService {
     }
 
     if (error && this.isMissingSenderIdentityColumns(error)) {
-      const legacyRows = rows.map(({ from_name: _n, reply_to_email: _r, relevance_reason: _rr, ...rest }) => rest);
+      const legacyRows = rows.map(
+        ({ from_name: _n, reply_to_email: _r, relevance_reason: _rr, cc_emails: _cc, ...rest }) => rest,
+      );
       const { error: legacyErr } = await this.supabase
         .from('email_messages')
         .upsert(legacyRows, { onConflict: 'provider_message_id' });
@@ -786,6 +840,11 @@ export class EmailIngestionService {
   private isMissingRelevanceReasonColumn(err: { code?: string; message?: string }): boolean {
     const msg = String(err?.message ?? '');
     return msg.includes('relevance_reason');
+  }
+
+  private isMissingCcEmailsColumn(err: { code?: string; message?: string }): boolean {
+    const msg = String(err?.message ?? '');
+    return msg.includes('cc_emails');
   }
 
   /** Gmail incremental fetch: use the later of last processed cursor and start-tracking window. */

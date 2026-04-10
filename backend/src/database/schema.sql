@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS email_messages (
   from_name TEXT,
   reply_to_email TEXT,
   to_emails TEXT[] NOT NULL,
+  cc_emails TEXT[] NOT NULL DEFAULT '{}',
   subject TEXT NOT NULL,
   body_text TEXT NOT NULL,
   sent_at TIMESTAMPTZ NOT NULL,
@@ -129,6 +130,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   reason TEXT NOT NULL DEFAULT '',
   manually_closed BOOLEAN NOT NULL DEFAULT FALSE,
   is_ignored BOOLEAN NOT NULL DEFAULT FALSE,
+  user_cc_only BOOLEAN NOT NULL DEFAULT FALSE,
   last_alert_sent_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (employee_id, provider_thread_id)

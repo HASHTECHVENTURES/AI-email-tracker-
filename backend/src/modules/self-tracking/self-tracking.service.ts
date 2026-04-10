@@ -120,7 +120,7 @@ export class SelfTrackingService {
     let query = this.supabase
       .from('conversations')
       .select(
-        'conversation_id, employee_id, company_id, department_id, provider_thread_id, client_name, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, updated_at',
+        'conversation_id, employee_id, company_id, department_id, provider_thread_id, client_name, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, user_cc_only, updated_at',
       )
       .eq('company_id', ctx.companyId)
       .eq('is_ignored', false)
@@ -155,6 +155,7 @@ export class SelfTrackingService {
       lifecycle_status: string;
       manually_closed: boolean;
       is_ignored: boolean;
+      user_cc_only: boolean;
       updated_at: string;
     };
 
@@ -185,6 +186,7 @@ export class SelfTrackingService {
         lifecycle_status: r.lifecycle_status,
         manually_closed: r.manually_closed,
         is_ignored: r.is_ignored,
+        user_cc_only: r.user_cc_only ?? false,
         open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
         updated_at: r.updated_at,
       };
@@ -320,7 +322,7 @@ export class SelfTrackingService {
     const { data, error } = await this.supabase
       .from('conversations')
       .select(
-        'conversation_id, employee_id, company_id, department_id, provider_thread_id, client_name, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, updated_at',
+        'conversation_id, employee_id, company_id, department_id, provider_thread_id, client_name, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, user_cc_only, updated_at',
       )
       .eq('company_id', ctx.companyId)
       .eq('is_ignored', false)
@@ -355,6 +357,7 @@ export class SelfTrackingService {
       lifecycle_status: string;
       manually_closed: boolean;
       is_ignored: boolean;
+      user_cc_only: boolean;
       updated_at: string;
     };
 
@@ -385,6 +388,7 @@ export class SelfTrackingService {
         lifecycle_status: r.lifecycle_status,
         manually_closed: r.manually_closed,
         is_ignored: r.is_ignored,
+        user_cc_only: r.user_cc_only ?? false,
         open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
         updated_at: r.updated_at,
       };

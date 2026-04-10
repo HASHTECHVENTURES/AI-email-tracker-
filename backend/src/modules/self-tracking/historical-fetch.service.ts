@@ -342,6 +342,7 @@ export class HistoricalFetchService {
         `sent_at: ${m.sentAt.toISOString()}`,
         `from: ${m.fromEmail}`,
         `to: ${(m.toEmails ?? []).join(', ')}`,
+        `cc: ${(m.ccEmails ?? []).join(', ')}`,
         `subject: ${m.subject ?? ''}`,
         '',
         'body_text:',
@@ -392,6 +393,12 @@ export class HistoricalFetchService {
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
   ): Promise<{ relevant: boolean; reason: string | null }> {
+    if (target.direction === 'OUTBOUND') {
+      return {
+        relevant: true,
+        reason: 'Outbound — your sent message (reply detection / SLA)',
+      };
+    }
     if (allowGeminiRelevance && this.relevanceModel) {
       const sliceWithTarget = this.sortThreadChronological(
         threadSlice.some((m) => m.providerMessageId === target.providerMessageId)
@@ -420,6 +427,7 @@ export class HistoricalFetchService {
       from_name: msg.fromName ?? null,
       reply_to_email: msg.replyToEmail ?? null,
       to_emails: msg.toEmails,
+      cc_emails: msg.ccEmails ?? [],
       subject: msg.subject,
       body_text: clipStoredBody(msg.bodyText),
       sent_at: msg.sentAt.toISOString(),
@@ -427,12 +435,24 @@ export class HistoricalFetchService {
       relevance_reason: msg.relevanceReason?.trim() ? msg.relevanceReason.trim().slice(0, 2000) : null,
     }));
 
-    const { error } = await this.supabase
+    let { error } = await this.supabase
       .from('email_messages')
       .upsert(rows, { onConflict: 'provider_message_id' });
 
+    if (error && String(error.message ?? '').includes('cc_emails')) {
+      const noCc = rows.map(({ cc_emails: _c, ...rest }) => rest);
+      const second = await this.supabase.from('email_messages').upsert(noCc, { onConflict: 'provider_message_id' });
+      if (!second.error) {
+        this.logger.warn('Historical fetch: cc_emails missing — legacy upsert; run migration 019.');
+        return;
+      }
+      error = second.error;
+    }
+
     if (error) {
-      const legacyRows = rows.map(({ relevance_reason: _rr, from_name: _n, reply_to_email: _r, ...rest }) => rest);
+      const legacyRows = rows.map(
+        ({ relevance_reason: _rr, from_name: _n, reply_to_email: _r, cc_emails: _c, ...rest }) => rest,
+      );
       const { error: legacyErr } = await this.supabase
         .from('email_messages')
         .upsert(legacyRows, { onConflict: 'provider_message_id' });
@@ -456,7 +476,7 @@ export class HistoricalFetchService {
     const { data, error } = await this.supabase
       .from('conversations')
       .select(
-        'conversation_id, employee_id, provider_thread_id, client_name, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, updated_at',
+        'conversation_id, employee_id, provider_thread_id, client_name, client_email, follow_up_status, priority, delay_hours, summary, short_reason, reason, last_client_msg_at, last_employee_reply_at, follow_up_required, confidence, lifecycle_status, manually_closed, is_ignored, user_cc_only, updated_at',
       )
       .eq('company_id', companyId)
       .eq('is_ignored', false)
@@ -484,6 +504,7 @@ export class HistoricalFetchService {
       lifecycle_status: string;
       manually_closed: boolean;
       is_ignored: boolean;
+      user_cc_only: boolean;
       updated_at: string;
     };
 
@@ -510,6 +531,7 @@ export class HistoricalFetchService {
         lifecycle_status: r.lifecycle_status,
         manually_closed: r.manually_closed,
         is_ignored: r.is_ignored,
+        user_cc_only: r.user_cc_only ?? false,
         open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
         updated_at: r.updated_at,
       };

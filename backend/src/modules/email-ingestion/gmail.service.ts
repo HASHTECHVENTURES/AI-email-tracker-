@@ -157,6 +157,34 @@ export class GmailService {
     return out;
   }
 
+  /**
+   * Cheap `messages.get` (metadata + From only) to detect outbound without a full body fetch.
+   * Used to recover wrongly AI-skipped Sent mail so reply state can update.
+   */
+  async peekIsOutboundFrom(employeeId: string, employeeEmail: string, messageId: string): Promise<boolean> {
+    const gmail = await this.getGmailClient(employeeId);
+    const response = await retryWithBackoff(
+      () =>
+        gmail.users.messages.get({
+          userId: 'me',
+          id: messageId,
+          format: 'metadata',
+          metadataHeaders: ['From'],
+        }),
+      {
+        operationName: `gmail.peekFrom(${employeeId},${messageId})`,
+        attempts: 2,
+        timeoutMs: 8000,
+        onRetry: (a, err, d) =>
+          this.logger.warn(`peekIsOutboundFrom retry ${a}: ${(err as Error).message} — ${d}ms`),
+      },
+    );
+    const headers = response.data.payload?.headers ?? [];
+    const fromRaw = headers.find((h) => h.name?.toLowerCase() === 'from')?.value ?? '';
+    const fromEmail = this.extractEmail(fromRaw).trim().toLowerCase();
+    return fromEmail === employeeEmail.trim().toLowerCase();
+  }
+
   async fetchFullMessage(
     employeeId: string,
     employeeEmail: string,
@@ -193,6 +221,7 @@ export class GmailService {
 
     const fromRaw = getHeader('From');
     const toRaw = getHeader('To');
+    const ccRaw = getHeader('Cc');
     const replyToRaw = getHeader('Reply-To');
     const subject = getHeader('Subject');
     const dateStr = getHeader('Date');
@@ -201,6 +230,7 @@ export class GmailService {
     const fromName = this.extractDisplayName(fromRaw);
     const replyToEmail = replyToRaw ? this.extractEmail(replyToRaw) : null;
     const toEmails = this.extractEmails(toRaw);
+    const ccEmails = this.extractEmails(ccRaw);
     const sentAt = dateStr ? new Date(dateStr) : new Date(Number(msg.internalDate));
     const bodyText = this.extractBestBodyText(msg.payload ?? {});
     const labelIds = (msg.labelIds ?? []) as string[];
@@ -217,6 +247,7 @@ export class GmailService {
       fromName,
       replyToEmail,
       toEmails,
+      ccEmails,
       subject,
       bodyText,
       sentAt,

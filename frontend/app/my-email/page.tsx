@@ -70,11 +70,13 @@ type ConversationRow = {
   open_gmail_link: string;
   updated_at: string;
   follow_up_required?: boolean;
+  /** Latest inbound had you only on Cc, not To. */
+  user_cc_only?: boolean;
 };
 
 const MAIL_PAGE_SIZE = 50;
 
-type MailTab = 'action' | 'waiting' | 'closed' | 'noise' | 'all';
+type MailTab = 'action' | 'waiting' | 'cc' | 'closed' | 'noise' | 'all';
 
 /** Mirrors GET /settings (includes company_admin_ai_enabled). Used before Start to gate ingest without Inbox AI. */
 type IngestAiSettings = {
@@ -320,8 +322,18 @@ function ConversationSubjectCell({ c }: { c: ConversationRow }) {
   const showSub = sub.length > 0 && sub !== title;
   return (
     <td className="max-w-[min(28rem,45vw)] px-4 py-3 align-top text-slate-700">
-      <div className="font-medium leading-snug text-slate-900 line-clamp-2" title={title}>
-        {title}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="font-medium leading-snug text-slate-900 line-clamp-2" title={title}>
+          {title}
+        </span>
+        {c.user_cc_only ? (
+          <span
+            className="shrink-0 rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-800"
+            title="You were only on Cc on the latest inbound (not To)"
+          >
+            CC
+          </span>
+        ) : null}
       </div>
       {sender ? (
         <div className="mt-0.5 text-[11px] leading-snug text-slate-500 line-clamp-1" title={sender}>
@@ -502,6 +514,7 @@ function MyEmailPageInner() {
 
   /** Bulk delete selection for the active mail tab list. */
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(() => new Set());
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
   /** Center-screen modal: deleting (progress) then refreshing dashboard. */
   const [bulkDeleteProgress, setBulkDeleteProgress] = useState<{
     stage: 'deleting' | 'refreshing';
@@ -550,6 +563,30 @@ function MyEmailPageInner() {
     });
     setError(null);
   }, []);
+
+  const resolveConversation = useCallback(
+    async (conversationId: string) => {
+      if (!token) return;
+      setResolvingId(conversationId);
+      setError(null);
+      try {
+        const res = await apiFetch(
+          `/conversations/${encodeURIComponent(conversationId)}/mark-done`,
+          token,
+          { method: 'POST' },
+        );
+        if (!res.ok) {
+          setError(await readApiErrorMessage(res, 'Could not mark resolved.'));
+          return;
+        }
+        await loadDashboard(token);
+        setSuccess('Marked resolved.');
+      } finally {
+        setResolvingId(null);
+      }
+    },
+    [token, loadDashboard],
+  );
 
   useEffect(() => {
     if (authLoading) return;
@@ -1355,6 +1392,15 @@ function MyEmailPageInner() {
     [withoutLowScoped],
   );
 
+  const ccScopedRows = useMemo(
+    () =>
+      (hideLowPriority
+        ? scopedConversations.filter((c) => c.priority !== 'LOW')
+        : scopedConversations
+      ).filter((c) => c.user_cc_only === true),
+    [hideLowPriority, scopedConversations],
+  );
+
   const tabSourceRows = useMemo(() => {
     switch (mailTab) {
       case 'noise':
@@ -1363,6 +1409,8 @@ function MyEmailPageInner() {
         return withoutLowScoped.filter((c) => needsMyReply(c));
       case 'waiting':
         return withoutLowScoped.filter((c) => isWaitingOnThem(c));
+      case 'cc':
+        return ccScopedRows;
       case 'closed':
         return scopedConversations.filter((c) => c.follow_up_status === 'DONE');
       case 'all': {
@@ -1380,6 +1428,7 @@ function MyEmailPageInner() {
     mailTab,
     scopedConversations,
     withoutLowScoped,
+    ccScopedRows,
     hideLowPriority,
     allTabStatus,
     allTabPriority,
@@ -2330,6 +2379,7 @@ function MyEmailPageInner() {
                 [
                   ['action', 'Need your reply'],
                   ['waiting', 'Waiting on them'],
+                  ['cc', 'CC only'],
                   ['closed', 'Done'],
                   ['noise', 'Low / noise'],
                   ['all', 'All threads'],
@@ -2353,6 +2403,9 @@ function MyEmailPageInner() {
                   ) : null}
                   {id === 'waiting' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({kpiWaitingCount})</span>
+                  ) : null}
+                  {id === 'cc' ? (
+                    <span className="ml-1.5 tabular-nums opacity-80">({ccScopedRows.length})</span>
                   ) : null}
                 </button>
               ))}
@@ -2469,6 +2522,7 @@ function MyEmailPageInner() {
                         <th className="px-3 py-3">SLA</th>
                         <th className="min-w-[8rem] px-3 py-3">Activity</th>
                         <th className="px-3 py-3">Gmail</th>
+                        <th className="min-w-[5rem] px-3 py-3 text-right">Resolve</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
@@ -2531,6 +2585,21 @@ function MyEmailPageInner() {
                               >
                                 Open
                               </a>
+                            </td>
+                            <td className="px-3 py-3 text-right align-top" onClick={(e) => e.stopPropagation()}>
+                              {c.follow_up_status !== 'DONE' ? (
+                                <button
+                                  type="button"
+                                  disabled={resolvingId === c.conversation_id}
+                                  onClick={() => void resolveConversation(c.conversation_id)}
+                                  className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+                                  title="Mark this thread resolved if you already replied or no follow-up is needed"
+                                >
+                                  {resolvingId === c.conversation_id ? '…' : 'Resolve'}
+                                </button>
+                              ) : (
+                                <span className="text-[11px] text-slate-400">—</span>
+                              )}
                             </td>
                           </tr>
                         );

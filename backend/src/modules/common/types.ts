@@ -34,6 +34,8 @@ export interface EmailMessage {
   /** Reply target parsed from `Reply-To` header; falls back to fromEmail when absent. */
   replyToEmail?: string | null;
   toEmails: string[];
+  /** Parsed from `Cc` header (may be empty for older rows). */
+  ccEmails: string[];
   subject: string;
   bodyText: string;
   sentAt: Date;
