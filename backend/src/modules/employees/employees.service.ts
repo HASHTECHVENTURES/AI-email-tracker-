@@ -1690,6 +1690,40 @@ export class EmployeesService {
       throw new BadRequestException('name and email are required');
     }
 
+    /** Same work email may already exist (e.g. manager row from Employees / my-mail). Re-use it for Gmail connect instead of 23505. */
+    const { data: existingSameEmail, error: existingErr } = await this.supabase
+      .from('employees')
+      .select(
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, mailbox_type',
+      )
+      .eq('company_id', companyId)
+      .eq('email', email)
+      .maybeSingle();
+
+    if (existingErr) {
+      this.logger.error('createSelfTrackedMailbox existing lookup', existingErr.message);
+      throw new InternalServerErrorException(existingErr.message);
+    }
+
+    if (existingSameEmail) {
+      const row = existingSameEmail as EmployeeDbRow;
+      const department_name = row.department_id
+        ? await this.getDepartmentName(companyId, row.department_id)
+        : '—';
+      const mt = row.mailbox_type;
+      return {
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        department_id: row.department_id,
+        department_name,
+        created_at: row.created_at,
+        sla_hours_default: row.sla_hours_default ?? null,
+        tracking_start_at: row.tracking_start_at ?? null,
+        mailbox_type: mt === 'SELF' ? 'SELF' : mt === 'TEAM' ? 'TEAM' : null,
+      };
+    }
+
     const startIso = new Date().toISOString();
 
     const { data, error } = await this.supabase
@@ -1712,6 +1746,32 @@ export class EmployeesService {
 
     if (error) {
       if (error.code === '23505') {
+        const { data: raced } = await this.supabase
+          .from('employees')
+          .select(
+            'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, mailbox_type',
+          )
+          .eq('company_id', companyId)
+          .eq('email', email)
+          .maybeSingle();
+        if (raced) {
+          const row = raced as EmployeeDbRow;
+          const department_name = row.department_id
+            ? await this.getDepartmentName(companyId, row.department_id)
+            : '—';
+          const mt = row.mailbox_type;
+          return {
+            id: row.id,
+            name: row.name,
+            email: row.email,
+            department_id: row.department_id,
+            department_name,
+            created_at: row.created_at,
+            sla_hours_default: row.sla_hours_default ?? null,
+            tracking_start_at: row.tracking_start_at ?? null,
+            mailbox_type: mt === 'SELF' ? 'SELF' : mt === 'TEAM' ? 'TEAM' : null,
+          };
+        }
         throw new BadRequestException('A mailbox with this email already exists in your company');
       }
       if (this.isMissingMailboxTypeColumn(error)) {
