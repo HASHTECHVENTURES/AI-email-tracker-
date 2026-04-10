@@ -172,8 +172,11 @@ function TeamHealthDot({ health }: { health: TeamHealth }) {
 export default function DashboardPage() {
   const router = useRouter();
   const { me, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
-  // VIEW toggle removed: role is fixed at login. Managers always see Manager dashboard.
-  const canActAsMailbox = false;
+  // Managers can act as Employees if they selected "Employee" at login.
+  const canActAsMailbox =
+    !!me &&
+    isDepartmentManagerRole(me.role) &&
+    !!(me.linked_employee_id?.trim());
   const actAsMailboxView = useActAsEmployeeMailboxView(canActAsMailbox);
   const [error, setError] = useState<string | null>(null);
   const [dash, setDash] = useState<DashboardPayload | null>(null);

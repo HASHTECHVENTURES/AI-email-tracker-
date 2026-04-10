@@ -171,9 +171,10 @@ export function AppShell({
   const isCeo = role === 'CEO';
   const isHead = isDepartmentManagerRole(role);
   const isEmployee = role === 'EMPLOYEE';
-  // VIEW toggle removed: role is fixed at login (HEAD = Manager, EMPLOYEE = Employee).
-  // Managers always see the Manager nav regardless of linked_employee_id.
-  const canActAsMailbox = false;
+  // Managers can act as Employees if they selected "Employee" at login.
+  // The toggle UI is completely removed, so this state is driven entirely by login selection.
+  const canActAsMailbox =
+    isHead && !isPlatformAdmin && !!(me?.linked_employee_id?.trim());
   const actAsMailbox = useActAsEmployeeMailboxView(canActAsMailbox);
   /** Employee portal nav, or manager viewing their linked mailbox. */
   const mailboxNav = isEmployee || actAsMailbox;

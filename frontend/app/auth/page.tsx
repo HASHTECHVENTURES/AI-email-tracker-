@@ -441,14 +441,33 @@ function AuthPageInner() {
       // Validate selected role against actual DB role
       const selectedApiRole = signupRoleToApiRole(loginRole);
       const actualRole = status.user?.role;
-      if (selectedApiRole && actualRole && actualRole !== 'PLATFORM_ADMIN' && selectedApiRole !== actualRole) {
+      if (selectedApiRole && actualRole && actualRole !== 'PLATFORM_ADMIN') {
         const roleLabel = (r: string) =>
           r === 'CEO' ? 'CEO' : r === 'HEAD' ? 'Manager' : r === 'EMPLOYEE' ? 'Employee' : r;
-        setInfoVariant('default');
-        setInfo(
-          `Your account is registered as ${roleLabel(actualRole)}, not ${roleLabel(selectedApiRole)}. Please select "${roleLabel(actualRole)}" and try again.`,
-        );
-        return;
+
+        let roleError: string | null = null;
+        if (actualRole === 'CEO' && selectedApiRole !== 'CEO') {
+          roleError = `Your account is registered as ${roleLabel(actualRole)}, not ${roleLabel(selectedApiRole)}. Please select "${roleLabel(actualRole)}" and try again.`;
+        } else if (actualRole === 'EMPLOYEE' && selectedApiRole !== 'EMPLOYEE') {
+          roleError = `Your account is registered as ${roleLabel(actualRole)}, not ${roleLabel(selectedApiRole)}. Please select "${roleLabel(actualRole)}" and try again.`;
+        } else if (actualRole === 'HEAD') {
+          if (selectedApiRole === 'CEO') {
+            roleError = `Your account is registered as ${roleLabel(actualRole)}, not ${roleLabel(selectedApiRole)}. Please select "${roleLabel(actualRole)}" and try again.`;
+          }
+        }
+
+        if (roleError) {
+          setInfoVariant('default');
+          setInfo(roleError);
+          return;
+        }
+
+        // Apply employee "act as" view for Managers who chose Employee at login
+        if (actualRole === 'HEAD') {
+          import('@/lib/api').then(({ setActAsEmployeeView }) => {
+            setActAsEmployeeView(selectedApiRole === 'EMPLOYEE');
+          });
+        }
       }
 
       if (status.needs_onboarding) {
