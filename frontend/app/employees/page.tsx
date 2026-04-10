@@ -48,12 +48,6 @@ type DashboardConv = {
   follow_up_status: string;
 };
 
-/** `<input type="datetime-local" />` values are naive local time — never use `toISOString().slice(0,16)` (UTC). */
-function toLocalDatetimeLocalValue(d: Date) {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 function EmployeesPageInner() {
   const PAGE_SIZE = 8;
   const router = useRouter();
@@ -71,14 +65,12 @@ function EmployeesPageInner() {
   const [aiBriefingsOn, setAiBriefingsOn] = useState(true);
   const [mailboxCrawlOn, setMailboxCrawlOn] = useState(true);
   const [slaInputs, setSlaInputs] = useState<Record<string, string>>({});
-  const [trackingInputs, setTrackingInputs] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [sortBy, setSortBy] = useState<'name' | 'department' | 'gmail' | 'last_sync'>('last_sync');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [pauseSavingFor, setPauseSavingFor] = useState<string | null>(null);
   const [slaSavingFor, setSlaSavingFor] = useState<string | null>(null);
-  const [trackingSavingFor, setTrackingSavingFor] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -300,55 +292,6 @@ function EmployeesPageInner() {
     }
   }
 
-  async function saveTrackingStart(employeeId: string) {
-    setError(null);
-    setNotice(null);
-    const employee = employees.find((e) => e.id === employeeId);
-    const raw =
-      trackingInputs[employeeId] ??
-      (employee?.tracking_start_at ? toLocalDatetimeLocalValue(new Date(employee.tracking_start_at)) : '');
-    if (!raw.trim()) {
-      setError('Pick start date and time.');
-      return;
-    }
-    const asIso = new Date(raw).toISOString();
-    const supabase = createClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) {
-      setError('Your session expired. Please sign in again.');
-      return;
-    }
-    setTrackingSavingFor(employeeId);
-    try {
-      const res = await apiFetch(
-        `/employees/${encodeURIComponent(employeeId)}/tracking-start`,
-        session.access_token,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({ tracking_start_at: asIso }),
-        },
-      );
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({}));
-        setError((b.message as string) || 'Could not update tracking start');
-        return;
-      }
-      setTrackingInputs((prev) => {
-        const next = { ...prev };
-        delete next[employeeId];
-        return next;
-      });
-      await loadLists(session.access_token);
-      flashNotice(
-        `Tracking window saved (${new Date(asIso).toLocaleString()}) for ${employee?.name ?? 'mailbox'}. Gmail sync resets from that time; SLA lists still only show relevant threads.`,
-      );
-    } finally {
-      setTrackingSavingFor(null);
-    }
-  }
-
   async function patchEmployeePauses(employeeId: string, body: { tracking_paused?: boolean; ai_enabled?: boolean }) {
     setError(null);
     const supabase = createClient();
@@ -371,10 +314,6 @@ function EmployeesPageInner() {
     } finally {
       setPauseSavingFor(null);
     }
-  }
-
-  function emailFetchOn(emp: EmployeeRow): boolean {
-    return emp.tracking_paused !== true;
   }
 
   function aiOn(emp: EmployeeRow): boolean {
@@ -613,12 +552,12 @@ function EmployeesPageInner() {
               />
             </div>
           </div>
-          {(isManager || isCeo) && employees.length > 0 ? (
+          {isCeo && employees.length > 0 ? (
             <p className="mt-3 text-xs text-slate-500">
-              {isManager
-                ? 'Use Time tracker to control when tracking starts. Email and AI switches affect only that mailbox.'
-                : 'Email and AI switches here affect one mailbox at a time. Company-wide controls are in Settings.'}
+              SLA and AI here apply per mailbox. Company-wide controls are in Settings.
             </p>
+          ) : isManager && employees.length > 0 ? (
+            <p className="mt-3 text-xs text-slate-500">Turn off AI for a mailbox to stop Inbox AI and thread enrichment for that person.</p>
           ) : null}
           {employees.length === 0 ? (
             <p className="mt-3 text-sm text-slate-500">Add people to get started.</p>
@@ -683,101 +622,24 @@ function EmployeesPageInner() {
                           Delete
                         </button>
                       </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                        <span className="text-slate-500">SLA (h)</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={168}
-                          value={slaInputs[emp.id] ?? String(emp.sla_hours_default ?? 24)}
-                          onChange={(e) =>
-                            setSlaInputs((prev) => ({
-                              ...prev,
-                              [emp.id]: e.target.value,
-                            }))
-                          }
-                          className="w-16 rounded-lg border border-slate-200 px-2 py-1 text-xs focus:ring-2 focus:ring-brand-500"
-                        />
+                      <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+                        <div>
+                          <p className="text-xs font-semibold text-slate-800">Inbox AI</p>
+                          <p className="mt-0.5 text-[11px] text-slate-500">Off stops AI for this mailbox only.</p>
+                        </div>
                         <button
                           type="button"
-                          onClick={() => void saveSla(emp.id)}
-                          className="rounded-lg border border-slate-200 px-2 py-1 font-medium text-slate-700 hover:bg-slate-50"
+                          role="switch"
+                          aria-checked={aiOn(emp)}
+                          disabled={pauseSavingFor === emp.id}
+                          onClick={() => void patchEmployeePauses(emp.id, { ai_enabled: !aiOn(emp) })}
+                          title={aiOn(emp) ? 'Turn off AI for this mailbox' : 'Turn on AI for this mailbox'}
+                          className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${aiOn(emp) ? 'bg-indigo-600' : 'bg-slate-300'} ${pauseSavingFor === emp.id ? 'opacity-50' : ''}`}
                         >
-                          Save
-                        </button>
-                      </div>
-                      <div className="mt-3 space-y-2 rounded-xl border border-indigo-100 bg-indigo-50/40 p-3">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-900/80">
-                          Time tracker
-                        </p>
-                        <p className="text-xs text-slate-600">
-                          Inbox window: sync considers mail on or after this time. SLA views still only list threads we
-                          mark relevant—not every message.
-                        </p>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <input
-                            type="datetime-local"
-                            value={
-                              trackingInputs[emp.id] ??
-                              (emp.tracking_start_at
-                                ? toLocalDatetimeLocalValue(new Date(emp.tracking_start_at))
-                                : '')
-                            }
-                            onChange={(e) =>
-                              setTrackingInputs((prev) => ({
-                                ...prev,
-                                [emp.id]: e.target.value,
-                              }))
-                            }
-                            disabled={trackingSavingFor === emp.id}
-                            className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs focus:ring-2 focus:ring-brand-500 disabled:bg-slate-50 sm:max-w-[240px]"
+                          <span
+                            className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${aiOn(emp) ? 'left-6' : 'left-0.5'}`}
                           />
-                          <button
-                            type="button"
-                            onClick={() => void saveTrackingStart(emp.id)}
-                            disabled={trackingSavingFor === emp.id}
-                            className="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs font-medium text-indigo-900 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {trackingSavingFor === emp.id ? 'Saving…' : 'Save'}
-                          </button>
-                        </div>
-                      </div>
-                      <div className="mt-3 space-y-2 rounded-xl border border-slate-100 bg-white/80 p-3">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">This mailbox only</p>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs text-slate-600">Email fetch</span>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={emailFetchOn(emp)}
-                            disabled={pauseSavingFor === emp.id}
-                            onClick={() =>
-                              void patchEmployeePauses(emp.id, { tracking_paused: emailFetchOn(emp) })
-                            }
-                            title={emailFetchOn(emp) ? 'Pause Gmail sync for this person' : 'Resume Gmail sync'}
-                            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${emailFetchOn(emp) ? 'bg-indigo-600' : 'bg-slate-300'} ${pauseSavingFor === emp.id ? 'opacity-50' : ''}`}
-                          >
-                            <span
-                              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${emailFetchOn(emp) ? 'left-6' : 'left-0.5'}`}
-                            />
-                          </button>
-                        </div>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs text-slate-600">AI</span>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={aiOn(emp)}
-                            disabled={pauseSavingFor === emp.id}
-                            onClick={() => void patchEmployeePauses(emp.id, { ai_enabled: !aiOn(emp) })}
-                            title={aiOn(emp) ? 'Pause AI for this mailbox' : 'Enable AI for this mailbox'}
-                            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${aiOn(emp) ? 'bg-indigo-600' : 'bg-slate-300'} ${pauseSavingFor === emp.id ? 'opacity-50' : ''}`}
-                          >
-                            <span
-                              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${aiOn(emp) ? 'left-6' : 'left-0.5'}`}
-                            />
-                          </button>
-                        </div>
+                        </button>
                       </div>
                     </article>
                   );
@@ -813,7 +675,7 @@ function EmployeesPageInner() {
             </>
           ) : (
             <div className="mt-4 overflow-x-auto rounded-lg border border-slate-100">
-              <table className="min-w-[1100px] w-full text-sm">
+              <table className="min-w-[900px] w-full text-sm">
                 <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-3 py-3">
@@ -837,13 +699,7 @@ function EmployeesPageInner() {
                       </button>
                     </th>
                     <th className="px-3 py-3">SLA (h)</th>
-                    <th
-                      className="px-3 py-3"
-                      title="Inbox window: mail on or after this time is eligible for sync. Not every message becomes an SLA thread."
-                    >
-                      Tracking since
-                    </th>
-                    <th className="px-3 py-3 w-[140px]">Email / AI</th>
+                    <th className="px-3 py-3 w-[100px]">AI</th>
                     <th className="px-3 py-3">Actions</th>
                   </tr>
                 </thead>
@@ -894,68 +750,20 @@ function EmployeesPageInner() {
                         </div>
                       </td>
                       <td className="px-3 py-3">
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="datetime-local"
-                            value={
-                              trackingInputs[emp.id] ??
-                              (emp.tracking_start_at
-                                ? toLocalDatetimeLocalValue(new Date(emp.tracking_start_at))
-                                : '')
-                            }
-                            onChange={(e) =>
-                              setTrackingInputs((prev) => ({
-                                ...prev,
-                                [emp.id]: e.target.value,
-                              }))
-                            }
-                            disabled={trackingSavingFor === emp.id}
-                            className="rounded-lg border border-gray-300 px-2 py-1.5 text-xs focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
-                          />
+                        <div className="flex justify-end">
                           <button
                             type="button"
-                            onClick={() => void saveTrackingStart(emp.id)}
-                            disabled={trackingSavingFor === emp.id}
-                            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700 transition-all duration-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            role="switch"
+                            aria-checked={aiOn(emp)}
+                            disabled={pauseSavingFor === emp.id}
+                            onClick={() => void patchEmployeePauses(emp.id, { ai_enabled: !aiOn(emp) })}
+                            title={aiOn(emp) ? 'Turn off AI for this mailbox' : 'Turn on AI for this mailbox'}
+                            className={`relative h-6 w-10 shrink-0 rounded-full transition-colors ${aiOn(emp) ? 'bg-indigo-600' : 'bg-slate-300'} ${pauseSavingFor === emp.id ? 'opacity-50' : ''}`}
                           >
-                            {trackingSavingFor === emp.id ? 'Saving…' : 'Save'}
+                            <span
+                              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${aiOn(emp) ? 'left-5' : 'left-0.5'}`}
+                            />
                           </button>
-                        </div>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="flex flex-col gap-2">
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-[10px] text-slate-500">Email</span>
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={emailFetchOn(emp)}
-                              disabled={pauseSavingFor === emp.id}
-                              onClick={() =>
-                                void patchEmployeePauses(emp.id, { tracking_paused: emailFetchOn(emp) })
-                              }
-                              className={`relative h-6 w-10 shrink-0 rounded-full transition-colors ${emailFetchOn(emp) ? 'bg-indigo-600' : 'bg-slate-300'} ${pauseSavingFor === emp.id ? 'opacity-50' : ''}`}
-                            >
-                              <span
-                                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${emailFetchOn(emp) ? 'left-5' : 'left-0.5'}`}
-                              />
-                            </button>
-                          </div>
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-[10px] text-slate-500">AI</span>
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={aiOn(emp)}
-                              disabled={pauseSavingFor === emp.id}
-                              onClick={() => void patchEmployeePauses(emp.id, { ai_enabled: !aiOn(emp) })}
-                              className={`relative h-6 w-10 shrink-0 rounded-full transition-colors ${aiOn(emp) ? 'bg-indigo-600' : 'bg-slate-300'} ${pauseSavingFor === emp.id ? 'opacity-50' : ''}`}
-                            >
-                              <span
-                                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${aiOn(emp) ? 'left-5' : 'left-0.5'}`}
-                              />
-                            </button>
-                          </div>
                         </div>
                       </td>
                       <td className="px-3 py-3">

@@ -75,13 +75,6 @@ export class SaasAuthService {
         linkedEmployeeId = (emp as { id: string }).id;
       }
     }
-    /**
-     * HEAD: do **not** infer `linked_employee_id` from a same-email `employees` row.
-     * Otherwise every manager who shares an email with any roster row gets the Manager/Mailbox
-     * toggle and act-as-employee APIs without an explicit link. Mailbox view requires
-     * `users.linked_employee_id` set (e.g. when the org links the manager to their mailbox).
-     */
-
     let managedDepartmentIds: string[] = [];
     let resolvedDepartmentId: string | null = row.department_id ?? null;
 
@@ -112,6 +105,29 @@ export class SaasAuthService {
             : (managedDepartmentIds[0] ?? null);
       } else {
         resolvedDepartmentId = row.department_id;
+      }
+    }
+
+    /**
+     * HEAD without `users.linked_employee_id`: infer mailbox only when the same-email `employees`
+     * row is in a department this person does **not** manage (e.g. IC under another manager).
+     * If their only roster row is in a team they manage, do not infer — avoids spurious
+     * Manager/Mailbox for managers who are not also an IC elsewhere. Explicit `linked_employee_id`
+     * still wins.
+     */
+    if (row.role === 'HEAD' && !linkedEmployeeId && managedDepartmentIds.length > 0) {
+      const emailNorm = row.email.trim().toLowerCase();
+      const { data: empRow } = await this.supabase
+        .from('employees')
+        .select('id, department_id')
+        .eq('company_id', row.company_id)
+        .eq('email', emailNorm)
+        .maybeSingle();
+      const emp = empRow as { id: string; department_id: string | null } | null;
+      const empDept = emp?.department_id?.trim() ? emp.department_id : null;
+      const managedSet = new Set(managedDepartmentIds);
+      if (emp && empDept && !managedSet.has(empDept)) {
+        linkedEmployeeId = emp.id;
       }
     }
 
