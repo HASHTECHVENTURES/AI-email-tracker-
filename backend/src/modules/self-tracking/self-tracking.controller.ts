@@ -196,6 +196,69 @@ export class SelfTrackingController {
     return { run };
   }
 
+  @Delete('historical-search-runs/:id')
+  async deleteHistoricalSearchRun(@Req() req: Request, @Param('id') id: string) {
+    const user = req.user;
+    if (!user) throw new UnauthorizedException();
+    const ctx = getRequestContext(req);
+    assertSelfTrackingReader(ctx);
+    const { deleted } = await this.selfTrackingService.deleteHistoricalSearchRun(ctx, user.email, id);
+    if (!deleted) {
+      throw new NotFoundException('Saved search not found');
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Messages Gmail sync skipped (Inbox AI not relevant, before tracking start, or legacy id-only rows).
+   */
+  @Get('ai-skipped-mails')
+  async listAiSkippedMails(
+    @Req() req: Request,
+    @Query('employee_id') employeeId?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    const user = req.user;
+    if (!user) throw new UnauthorizedException();
+    const ctx = getRequestContext(req);
+    assertSelfTrackingReader(ctx);
+    const eid = employeeId?.trim();
+    if (!eid) {
+      throw new BadRequestException('employee_id is required');
+    }
+    const n = Number(limit ?? '40');
+    const o = Number(offset ?? '0');
+    const lim = Number.isFinite(n) ? n : 40;
+    const off = Number.isFinite(o) ? o : 0;
+    return this.selfTrackingService.listAiSkippedMails(ctx, user.email, eid, lim, off);
+  }
+
+  /** Remove one skip so the next sync can re-evaluate that Gmail message. */
+  @Delete('ai-skipped-mails')
+  async clearAiSkippedMail(
+    @Req() req: Request,
+    @Query('employee_id') employeeId?: string,
+    @Query('provider_message_id') providerMessageId?: string,
+  ) {
+    const user = req.user;
+    if (!user) throw new UnauthorizedException();
+    const ctx = getRequestContext(req);
+    assertSelfTrackingReader(ctx);
+    const eid = employeeId?.trim();
+    const mid = providerMessageId?.trim();
+    if (!eid || !mid) {
+      throw new BadRequestException('employee_id and provider_message_id are required');
+    }
+    const mailboxes = await this.selfTrackingService.getVisibleMailboxes(ctx, user.email);
+    const allowed = new Set(mailboxes.map((m) => m.id));
+    if (!allowed.has(eid)) {
+      throw new ForbiddenException('Mailbox not in your scope');
+    }
+    await this.emailIngestionService.clearIngestionSkipEntry(eid, mid);
+    return { ok: true };
+  }
+
   @Get('historical-window-results')
   async historicalWindowResults(
     @Req() req: Request,

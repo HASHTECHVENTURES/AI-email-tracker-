@@ -430,7 +430,14 @@ export class EmailIngestionService {
         const startAt = new Date(tracking.trackingStartAt);
         if (msg.sentAt < startAt) {
           skippedFiltered += 1;
-          await this.recordIngestionSkip(employee.id, msg.providerMessageId);
+          await this.recordIngestionSkip(employee.id, msg.providerMessageId, {
+            skip_kind: 'before_tracking',
+            skip_reason: 'Sent before your tracking start time.',
+            subject: msg.subject,
+            from_email: msg.fromEmail,
+            sent_at: msg.sentAt,
+            provider_thread_id: msg.providerThreadId,
+          });
           continue;
         }
 
@@ -455,7 +462,19 @@ export class EmailIngestionService {
         );
         if (!decision.relevant) {
           skippedFiltered += 1;
-          await this.recordIngestionSkip(employee.id, msg.providerMessageId);
+          const reasonText =
+            decision.reason?.trim() ||
+            (allowGeminiRelevance && this.relevanceModel
+              ? 'Marked not relevant by Inbox AI.'
+              : 'Not ingested without a positive Inbox AI decision.');
+          await this.recordIngestionSkip(employee.id, msg.providerMessageId, {
+            skip_kind: 'ai_irrelevant',
+            skip_reason: reasonText,
+            subject: msg.subject,
+            from_email: msg.fromEmail,
+            sent_at: msg.sentAt,
+            provider_thread_id: msg.providerThreadId,
+          });
           continue;
         }
 
@@ -696,19 +715,48 @@ export class EmailIngestionService {
     return this.skipRecorded(employeeId, providerMessageId);
   }
 
-  private async recordIngestionSkip(employeeId: string, providerMessageId: string): Promise<void> {
-    const { error } = await this.supabase.from('email_ingestion_skips').upsert(
-      {
-        employee_id: employeeId,
-        provider_message_id: providerMessageId,
-        skipped_at: new Date().toISOString(),
-      },
-      { onConflict: 'employee_id,provider_message_id' },
-    );
+  /** Persist skip ledger row (live sync, historical fetch, etc.). */
+  async recordIngestionSkip(
+    employeeId: string,
+    providerMessageId: string,
+    meta?: {
+      skip_kind: 'before_tracking' | 'ai_irrelevant' | 'legacy';
+      skip_reason?: string | null;
+      subject?: string;
+      from_email?: string;
+      sent_at?: Date | null;
+      provider_thread_id?: string;
+    },
+  ): Promise<void> {
+    const row: Record<string, unknown> = {
+      employee_id: employeeId,
+      provider_message_id: providerMessageId,
+      skipped_at: new Date().toISOString(),
+    };
+    if (meta) {
+      row.skip_kind = meta.skip_kind;
+      row.skip_reason = meta.skip_reason?.trim() ? meta.skip_reason.trim().slice(0, 2000) : null;
+      row.subject = meta.subject?.trim() ? meta.subject.trim().slice(0, 500) : null;
+      row.from_email = meta.from_email?.trim() ? meta.from_email.trim().slice(0, 320) : null;
+      row.sent_at = meta.sent_at ? meta.sent_at.toISOString() : null;
+      row.provider_thread_id = meta.provider_thread_id?.trim()
+        ? meta.provider_thread_id.trim().slice(0, 200)
+        : null;
+    } else {
+      row.skip_kind = 'legacy';
+    }
+    const { error } = await this.supabase.from('email_ingestion_skips').upsert(row, {
+      onConflict: 'employee_id,provider_message_id',
+    });
     if (error) {
       this.logger.error(`recordIngestionSkip ${providerMessageId}: ${error.message}`);
       throw error;
     }
+  }
+
+  /** Remove skip ledger entry so the next Gmail sync can fetch and re-classify this message. */
+  async clearIngestionSkipEntry(employeeId: string, providerMessageId: string): Promise<void> {
+    await this.clearIngestionSkip(employeeId, providerMessageId);
   }
 
   private async storeMessages(companyId: string, employeeId: string, messages: EmailMessage[]): Promise<void> {

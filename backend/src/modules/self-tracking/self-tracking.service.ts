@@ -29,6 +29,18 @@ export interface HistoricalSearchRunListItem {
   stats: Record<string, unknown>;
 }
 
+export interface AiSkippedMailItem {
+  employee_id: string;
+  provider_message_id: string;
+  skipped_at: string;
+  skip_kind: string;
+  skip_reason: string | null;
+  subject: string | null;
+  from_email: string | null;
+  sent_at: string | null;
+  provider_thread_id: string | null;
+}
+
 function buildHistoricalRunSummary(r: {
   mailbox_name: string;
   window_start: string;
@@ -718,6 +730,115 @@ export class SelfTrackingService {
       conversation_count: r.conversation_count,
       stats: (r.stats ?? {}) as Record<string, unknown>,
       report_summary: buildHistoricalRunSummary(r),
+    };
+  }
+
+  async deleteHistoricalSearchRun(
+    ctx: RequestContext,
+    callerEmail: string,
+    runId: string,
+  ): Promise<{ deleted: boolean }> {
+    const id = runId?.trim();
+    if (!id) return { deleted: false };
+    const mailboxes = await this.getVisibleMailboxes(ctx, callerEmail);
+    const allowed = new Set(mailboxes.map((m) => m.id));
+    const { data: row, error: loadErr } = await this.supabase
+      .from('historical_search_runs')
+      .select('id, employee_id')
+      .eq('company_id', ctx.companyId)
+      .eq('id', id)
+      .maybeSingle();
+    if (loadErr) {
+      this.logger.warn(`deleteHistoricalSearchRun load: ${loadErr.message}`);
+      throw new InternalServerErrorException(loadErr.message);
+    }
+    const r = row as { id: string; employee_id: string } | null;
+    if (!r || !allowed.has(r.employee_id)) {
+      return { deleted: false };
+    }
+    const { error: delErr } = await this.supabase
+      .from('historical_search_runs')
+      .delete()
+      .eq('company_id', ctx.companyId)
+      .eq('id', id);
+    if (delErr) {
+      this.logger.warn(`deleteHistoricalSearchRun: ${delErr.message}`);
+      throw new InternalServerErrorException(delErr.message);
+    }
+    return { deleted: true };
+  }
+
+  /**
+   * Recent ingestion skips for one mailbox (AI “not relevant”, before tracking window, etc.).
+   * Requires mailbox in {@link getVisibleMailboxes} scope.
+   */
+  async listAiSkippedMails(
+    ctx: RequestContext,
+    callerEmail: string,
+    employeeId: string,
+    limit = 40,
+    offset = 0,
+  ): Promise<{ total: number; items: AiSkippedMailItem[] }> {
+    const id = employeeId?.trim();
+    if (!id) {
+      throw new BadRequestException('employee_id is required');
+    }
+    const mailboxes = await this.getVisibleMailboxes(ctx, callerEmail);
+    const allowed = new Set(mailboxes.map((m) => m.id));
+    if (!allowed.has(id)) {
+      throw new ForbiddenException('Mailbox not in your scope');
+    }
+    const lim = Math.min(Math.max(1, limit), 100);
+    const off = Math.max(0, offset);
+
+    const { count, error: cErr } = await this.supabase
+      .from('email_ingestion_skips')
+      .select('provider_message_id', { count: 'exact', head: true })
+      .eq('employee_id', id);
+    if (cErr) {
+      this.logger.warn(`listAiSkippedMails count: ${cErr.message}`);
+      throw new InternalServerErrorException(cErr.message);
+    }
+
+    const { data, error } = await this.supabase
+      .from('email_ingestion_skips')
+      .select(
+        'employee_id, provider_message_id, skipped_at, skip_kind, skip_reason, subject, from_email, sent_at, provider_thread_id',
+      )
+      .eq('employee_id', id)
+      .order('skipped_at', { ascending: false })
+      .range(off, off + lim - 1);
+
+    if (error) {
+      this.logger.warn(`listAiSkippedMails: ${error.message}`);
+      throw new InternalServerErrorException(error.message);
+    }
+
+    const rows = (data ?? []) as Array<{
+      employee_id: string;
+      provider_message_id: string;
+      skipped_at: string;
+      skip_kind: string | null;
+      skip_reason: string | null;
+      subject: string | null;
+      from_email: string | null;
+      sent_at: string | null;
+      provider_thread_id: string | null;
+    }>;
+
+    return {
+      total: count ?? rows.length,
+      items: rows.map((r) => ({
+        employee_id: r.employee_id,
+        provider_message_id: r.provider_message_id,
+        skipped_at: r.skipped_at,
+        skip_kind: r.skip_kind ?? 'legacy',
+        skip_reason: r.skip_reason,
+        subject: r.subject,
+        from_email: r.from_email,
+        sent_at: r.sent_at,
+        provider_thread_id: r.provider_thread_id,
+      })),
     };
   }
 }

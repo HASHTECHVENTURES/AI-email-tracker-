@@ -196,6 +196,12 @@ CREATE TABLE IF NOT EXISTS email_ingestion_skips (
   employee_id UUID NOT NULL REFERENCES employees (id) ON DELETE CASCADE,
   provider_message_id TEXT NOT NULL,
   skipped_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  skip_kind TEXT NOT NULL DEFAULT 'legacy',
+  skip_reason TEXT,
+  subject TEXT,
+  from_email TEXT,
+  sent_at TIMESTAMPTZ,
+  provider_thread_id TEXT,
   PRIMARY KEY (employee_id, provider_message_id)
 );
 

@@ -18,6 +18,7 @@ import { getGeminiApiKeyFromEnv } from '../common/env';
 import { RequestContext } from '../common/request-context';
 import type { ConversationListItem } from '../dashboard/dashboard.service';
 import { SelfTrackingService } from './self-tracking.service';
+import { EmailIngestionService } from '../email-ingestion/email-ingestion.service';
 import type { gmail_v1 } from 'googleapis';
 
 const MAX_HISTORICAL_RANGE_DAYS = 731;
@@ -92,6 +93,7 @@ export class HistoricalFetchService {
     private readonly settingsService: SettingsService,
     private readonly companyPolicyService: CompanyPolicyService,
     private readonly selfTrackingService: SelfTrackingService,
+    private readonly emailIngestionService: EmailIngestionService,
   ) {
     const key = getGeminiApiKeyFromEnv();
     if (!key) {
@@ -323,6 +325,22 @@ export class HistoricalFetchService {
 
         if (!decision.relevant) {
           skippedIrrelevant++;
+          const reasonText =
+            decision.reason?.trim() || 'Marked not relevant by Inbox AI (historical search).';
+          try {
+            await this.emailIngestionService.recordIngestionSkip(employeeId, msg.providerMessageId, {
+              skip_kind: 'ai_irrelevant',
+              skip_reason: reasonText,
+              subject: msg.subject,
+              from_email: msg.fromEmail,
+              sent_at: msg.sentAt,
+              provider_thread_id: msg.providerThreadId,
+            });
+          } catch (skipErr) {
+            this.logger.warn(
+              `Historical fetch: could not record skip for ${msgId}: ${(skipErr as Error).message}`,
+            );
+          }
           continue;
         }
 

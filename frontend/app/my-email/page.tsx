@@ -7,7 +7,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
 } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
@@ -478,6 +480,34 @@ function formatLocalYmd(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+function formatLocalHm(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Defaults to “now” when the mailbox has no tracking start yet. */
+function isoToLiveTrackingDateTime(iso: string | null | undefined): { date: string; time: string } {
+  if (!iso?.trim()) {
+    const d = new Date();
+    return { date: formatLocalYmd(d), time: formatLocalHm(d) };
+  }
+  const d = new Date(iso.trim());
+  if (Number.isNaN(d.getTime())) {
+    const n = new Date();
+    return { date: formatLocalYmd(n), time: formatLocalHm(n) };
+  }
+  return { date: formatLocalYmd(d), time: formatLocalHm(d) };
+}
+
+function liveTrackingDateTimeToIso(dateYmd: string, timeHm: string): string | null {
+  const dStr = dateYmd.trim();
+  const tStr = timeHm.trim();
+  if (!dStr || !tStr) return null;
+  const d = new Date(`${dStr}T${tStr}`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
 /** Map a stored ISO window boundary to `input[type=date]` value in local time. */
 function isoToLocalYmd(iso: string): string {
   const d = new Date(iso);
@@ -496,6 +526,211 @@ type HistoricalSearchRunItem = {
   conversation_count: number;
   stats: Record<string, unknown>;
 };
+
+type AiSkippedMailItem = {
+  employee_id: string;
+  provider_message_id: string;
+  skipped_at: string;
+  skip_kind: string;
+  skip_reason: string | null;
+  subject: string | null;
+  from_email: string | null;
+  sent_at: string | null;
+  provider_thread_id: string | null;
+};
+
+function skipKindShortLabel(kind: string): string {
+  if (kind === 'ai_irrelevant') return 'Inbox AI';
+  if (kind === 'before_tracking') return 'Before tracking';
+  if (kind === 'legacy') return 'Older skip';
+  return kind;
+}
+
+function clipStr(s: string | null | undefined, max: number): string {
+  const t = (s ?? '').trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1)}…`;
+}
+
+const AI_SKIPPED_PAGE = 25;
+
+/** Skipped-message ledger for Live Mails (shown below KPIs next to Follow-ups). */
+function AiSkippedMailsPanel({
+  mailboxes,
+  aiSkippedMailboxId,
+  onMailboxChange,
+  onRefresh,
+  aiSkippedLoading,
+  aiSkippedTotal,
+  aiSkippedRows,
+  aiSkippedOffset,
+  setAiSkippedOffset,
+  onClearSkip,
+  aiSkippedClearingId,
+}: {
+  mailboxes: Mailbox[];
+  aiSkippedMailboxId: string;
+  onMailboxChange: (id: string) => void;
+  onRefresh: () => void;
+  aiSkippedLoading: boolean;
+  aiSkippedTotal: number;
+  aiSkippedRows: AiSkippedMailItem[];
+  aiSkippedOffset: number;
+  setAiSkippedOffset: Dispatch<SetStateAction<number>>;
+  onClearSkip: (providerMessageId: string) => void;
+  aiSkippedClearingId: string | null;
+}) {
+  return (
+    <div className="rounded-2xl border border-amber-200/80 bg-gradient-to-br from-amber-50/90 via-white to-slate-50/80 px-4 py-4 shadow-card sm:px-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-xs font-bold uppercase tracking-wide text-amber-900/90">
+            Messages not added to your tracker
+          </p>
+          <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+            Gmail sync sometimes skips mail (Inbox AI marked it not relevant, or it was before your tracking start).
+            Review here and open in Gmail. Use <strong>Re-try on next sync</strong> to remove the skip and let the next
+            run fetch it again.
+          </p>
+        </div>
+        {mailboxes.length > 1 ? (
+          <label className="flex min-w-[12rem] flex-col gap-1 text-xs font-medium text-slate-600">
+            Mailbox
+            <select
+              value={aiSkippedMailboxId}
+              onChange={(e) => onMailboxChange(e.target.value)}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+            >
+              {mailboxes.map((mb) => (
+                <option key={mb.id} value={mb.id}>
+                  {mb.name} · {mb.email}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={aiSkippedLoading}
+          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+        >
+          {aiSkippedLoading ? 'Loading…' : 'Refresh'}
+        </button>
+        <span className="text-[11px] text-slate-500">
+          {aiSkippedTotal} total skip{aiSkippedTotal === 1 ? '' : 's'} recorded
+        </span>
+      </div>
+      {aiSkippedRows.length === 0 && !aiSkippedLoading ? (
+        <p className="mt-3 text-sm text-slate-600">
+          No skipped messages in the ledger for this mailbox yet (or all were cleared).
+        </p>
+      ) : null}
+      {aiSkippedRows.length > 0 ? (
+        <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200/80 bg-white/90">
+          <table className="min-w-full divide-y divide-slate-100 text-left text-xs">
+            <thead className="bg-slate-50/90 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-3 py-2">When skipped</th>
+                <th className="px-3 py-2">Kind</th>
+                <th className="px-3 py-2">From / subject</th>
+                <th className="px-3 py-2">Why</th>
+                <th className="px-3 py-2">Gmail</th>
+                <th className="px-3 py-2 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-slate-800">
+              {aiSkippedRows.map((row) => {
+                const gmailUrl =
+                  row.provider_thread_id && row.provider_thread_id.length > 0
+                    ? `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(row.provider_thread_id)}`
+                    : null;
+                return (
+                  <tr key={`${row.employee_id}:${row.provider_message_id}`} className="align-top">
+                    <td className="px-3 py-2.5 whitespace-nowrap">
+                      <RelWithAbsoluteDate iso={row.skipped_at} />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+                        {skipKindShortLabel(row.skip_kind)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <div className="max-w-[14rem] font-medium text-slate-900 sm:max-w-xs">
+                        {clipStr(row.subject, 72) || '(No subject)'}
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-slate-500">
+                        {clipStr(row.from_email, 48) || '—'}
+                        {row.sent_at ? (
+                          <span className="ml-1 tabular-nums text-slate-400">
+                            · {absoluteTime(row.sent_at)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5 text-[11px] leading-snug text-slate-600">
+                      {clipStr(row.skip_reason, 220) || '—'}
+                    </td>
+                    <td className="px-3 py-2.5 whitespace-nowrap">
+                      {gmailUrl ? (
+                        <a
+                          href={gmailUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-semibold text-brand-600 hover:underline"
+                        >
+                          Open
+                        </a>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      <button
+                        type="button"
+                        disabled={aiSkippedClearingId === row.provider_message_id}
+                        onClick={() => onClearSkip(row.provider_message_id)}
+                        className="text-[11px] font-semibold text-amber-800 hover:underline disabled:opacity-40"
+                      >
+                        {aiSkippedClearingId === row.provider_message_id ? '…' : 'Re-try on next sync'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {aiSkippedTotal > AI_SKIPPED_PAGE ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          <button
+            type="button"
+            disabled={aiSkippedOffset <= 0 || aiSkippedLoading}
+            onClick={() => setAiSkippedOffset((o) => Math.max(0, o - AI_SKIPPED_PAGE))}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            disabled={aiSkippedOffset + AI_SKIPPED_PAGE >= aiSkippedTotal || aiSkippedLoading}
+            onClick={() => setAiSkippedOffset((o) => o + AI_SKIPPED_PAGE)}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+          >
+            Next
+          </button>
+          <span className="text-slate-500">
+            Showing {aiSkippedOffset + 1}–{Math.min(aiSkippedOffset + AI_SKIPPED_PAGE, aiSkippedTotal)} of{' '}
+            {aiSkippedTotal}
+          </span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /** Start/end of local calendar days as ISO strings for the historical missed API. */
 function localYmdRangeToIsoBounds(
@@ -579,10 +814,18 @@ function formatCountdownMmSs(ms: number): string {
 /** CEO Live Mails: last sync + countdown + manual sync (always between toggle and KPIs). */
 function CeoLiveSyncStrip({
   mailboxes,
+  liveTrackDate,
+  liveTrackTime,
+  onLiveTrackDateChange,
+  onLiveTrackTimeChange,
   onSyncNow,
   syncBusy,
 }: {
   mailboxes: Mailbox[];
+  liveTrackDate: string;
+  liveTrackTime: string;
+  onLiveTrackDateChange: (v: string) => void;
+  onLiveTrackTimeChange: (v: string) => void;
   onSyncNow: () => void;
   syncBusy: boolean;
 }) {
@@ -645,6 +888,33 @@ function CeoLiveSyncStrip({
               . Timer below is a rough countdown to the next slot. If nothing appears in Follow-ups, confirm{' '}
               <strong className="font-medium text-slate-700">Mailbox crawl</strong> is on in Settings, then run sync.
             </p>
+            <div className="mt-4 flex flex-col gap-2 rounded-xl border border-brand-100 bg-white/80 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-end">
+              <p className="w-full text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                Track live mail from
+              </p>
+              <p className="w-full text-[11px] leading-relaxed text-slate-500">
+                Only messages on or after this moment are ingested for your CEO inbox(es).{' '}
+                <strong className="font-medium text-slate-700">Run sync now</strong> saves this time, then pulls Gmail.
+              </p>
+              <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                Start date
+                <input
+                  type="date"
+                  value={liveTrackDate}
+                  onChange={(e) => onLiveTrackDateChange(e.target.value)}
+                  className="rounded-lg border border-slate-200 px-2 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                Start time
+                <input
+                  type="time"
+                  value={liveTrackTime}
+                  onChange={(e) => onLiveTrackTimeChange(e.target.value)}
+                  className="rounded-lg border border-slate-200 px-2 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                />
+              </label>
+            </div>
           </div>
         </div>
 
@@ -760,8 +1030,14 @@ function MyEmailPageInner() {
   const [histMailboxId, setHistMailboxId] = useState('');
   const [historicalSavedRuns, setHistoricalSavedRuns] = useState<HistoricalSearchRunItem[]>([]);
   const [historicalRunsLoading, setHistoricalRunsLoading] = useState(false);
-  /** Which saved run row is expanded (details + stats). */
-  const [expandedHistoricalRunId, setExpandedHistoricalRunId] = useState<string | null>(null);
+  const [selectedHistoricalRunIds, setSelectedHistoricalRunIds] = useState<string[]>([]);
+  const [histRunsDeleting, setHistRunsDeleting] = useState(false);
+  const [aiSkippedMailboxId, setAiSkippedMailboxId] = useState('');
+  const [aiSkippedRows, setAiSkippedRows] = useState<AiSkippedMailItem[]>([]);
+  const [aiSkippedTotal, setAiSkippedTotal] = useState(0);
+  const [aiSkippedLoading, setAiSkippedLoading] = useState(false);
+  const [aiSkippedOffset, setAiSkippedOffset] = useState(0);
+  const [aiSkippedClearingId, setAiSkippedClearingId] = useState<string | null>(null);
 
   const [filterMailbox, setFilterMailbox] = useState('');
   /** Extra filters only for the “All threads” tab. */
@@ -781,6 +1057,10 @@ function MyEmailPageInner() {
   const [togglePauseLoadingId, setTogglePauseLoadingId] = useState<string | null>(null);
   /** CEO Live Mails: manual GET /email-ingestion/run */
   const [liveSyncBusy, setLiveSyncBusy] = useState(false);
+  /** CEO Live: local date/time → saved as `tracking_start_at` before each manual sync. */
+  const [liveTrackDate, setLiveTrackDate] = useState('');
+  const [liveTrackTime, setLiveTrackTime] = useState('');
+  const liveTrackSourceRef = useRef<string>('');
   const [operationStartingId, setOperationStartingId] = useState<string | null>(null);
   const [pipeline, setPipeline] = useState<{
     mailboxId: string;
@@ -1493,6 +1773,35 @@ function MyEmailPageInner() {
     (showCEOOnlyChrome ? ceoInboxMode === 'historical' : Boolean(isHeadOrEmp));
 
   useEffect(() => {
+    if (!showCEOOnlyChrome || ceoInboxMode !== 'live') return;
+    const primary = ownMailboxes.find((m) => m.gmail_connected) ?? ownMailboxes[0];
+    if (!primary) return;
+    const key = `${primary.id}:${primary.tracking_start_at ?? ''}`;
+    if (liveTrackSourceRef.current === key) return;
+    liveTrackSourceRef.current = key;
+    const { date, time } = isoToLiveTrackingDateTime(primary.tracking_start_at);
+    setLiveTrackDate(date);
+    setLiveTrackTime(time);
+  }, [showCEOOnlyChrome, ceoInboxMode, ownMailboxes]);
+
+  useEffect(() => {
+    if (ownMailboxes.length === 0) return;
+    setAiSkippedMailboxId((prev) => {
+      if (prev && ownMailboxes.some((m) => m.id === prev)) return prev;
+      return ownMailboxes.find((m) => m.gmail_connected)?.id ?? ownMailboxes[0].id;
+    });
+  }, [ownMailboxes]);
+
+  useEffect(() => {
+    setAiSkippedOffset(0);
+  }, [aiSkippedMailboxId]);
+
+  useEffect(() => {
+    const allowed = new Set(historicalSavedRuns.map((r) => r.id));
+    setSelectedHistoricalRunIds((prev) => prev.filter((id) => allowed.has(id)));
+  }, [historicalSavedRuns]);
+
+  useEffect(() => {
     if (!me || (me.role !== 'HEAD' && me.role !== 'EMPLOYEE')) return;
     setMyEmailTab('ceo');
     setCeoInboxMode('historical');
@@ -1561,6 +1870,102 @@ function MyEmailPageInner() {
     }
   }, [token]);
 
+  const loadAiSkippedMails = useCallback(async () => {
+    if (!token || !aiSkippedMailboxId) return;
+    setAiSkippedLoading(true);
+    try {
+      const params = new URLSearchParams({
+        employee_id: aiSkippedMailboxId,
+        limit: String(AI_SKIPPED_PAGE),
+        offset: String(aiSkippedOffset),
+      });
+      const res = await apiFetch(`/self-tracking/ai-skipped-mails?${params}`, token);
+      if (!res.ok) {
+        throw new Error(await readApiErrorMessage(res, 'Could not load skipped messages.'));
+      }
+      const data = (await res.json()) as { items?: AiSkippedMailItem[]; total?: number };
+      setAiSkippedRows(Array.isArray(data.items) ? data.items : []);
+      setAiSkippedTotal(typeof data.total === 'number' ? data.total : 0);
+    } catch (e) {
+      console.warn(e);
+      setError(e instanceof Error ? e.message : 'Could not load messages Inbox AI skipped.');
+    } finally {
+      setAiSkippedLoading(false);
+    }
+  }, [token, aiSkippedMailboxId, aiSkippedOffset]);
+
+  const deleteHistoricalSearchRunById = useCallback(
+    async (id: string) => {
+      if (!token) return false;
+      const res = await apiFetch(`/self-tracking/historical-search-runs/${encodeURIComponent(id)}`, token, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        setError(await readApiErrorMessage(res, 'Could not delete saved search.'));
+        return false;
+      }
+      return true;
+    },
+    [token],
+  );
+
+  const deleteSelectedHistoricalRuns = useCallback(async () => {
+    if (!token || selectedHistoricalRunIds.length === 0) return;
+    const ids = [...selectedHistoricalRunIds];
+    if (
+      !window.confirm(
+        `Delete ${ids.length} saved search(es) from the log? This does not remove threads already in your tracker.`,
+      )
+    ) {
+      return;
+    }
+    setHistRunsDeleting(true);
+    setError(null);
+    try {
+      for (const id of ids) {
+        const ok = await deleteHistoricalSearchRunById(id);
+        if (!ok) return;
+      }
+      setSelectedHistoricalRunIds([]);
+      await loadHistoricalSavedRuns();
+      setSuccess(`Removed ${ids.length} saved search(es).`);
+    } finally {
+      setHistRunsDeleting(false);
+    }
+  }, [token, selectedHistoricalRunIds, deleteHistoricalSearchRunById, loadHistoricalSavedRuns]);
+
+  const clearAiSkipEntry = useCallback(
+    async (providerMessageId: string) => {
+      if (!token || !aiSkippedMailboxId) return;
+      setAiSkippedClearingId(providerMessageId);
+      setError(null);
+      try {
+        const params = new URLSearchParams({
+          employee_id: aiSkippedMailboxId,
+          provider_message_id: providerMessageId,
+        });
+        const res = await apiFetch(`/self-tracking/ai-skipped-mails?${params}`, token, {
+          method: 'DELETE',
+        });
+        if (!res.ok) {
+          setError(await readApiErrorMessage(res, 'Could not clear skip.'));
+          return;
+        }
+        await loadAiSkippedMails();
+        setSuccess('Skip removed — run sync again to re-fetch this message from Gmail.');
+      } finally {
+        setAiSkippedClearingId(null);
+      }
+    },
+    [token, aiSkippedMailboxId, loadAiSkippedMails],
+  );
+
+  useEffect(() => {
+    if (!showCEOOnlyChrome || ceoInboxMode !== 'live') return;
+    if (!token || !aiSkippedMailboxId) return;
+    void loadAiSkippedMails();
+  }, [showCEOOnlyChrome, ceoInboxMode, token, aiSkippedMailboxId, aiSkippedOffset, loadAiSkippedMails]);
+
   const applySavedHistoricalRun = useCallback(
     async (run: HistoricalSearchRunItem) => {
       if (showCEOOnlyChrome) setCeoInboxMode('historical');
@@ -1612,7 +2017,6 @@ function MyEmailPageInner() {
       if (!data.run || cancelled) return;
       historicalRunUrlHandledRef.current = rid;
       await applySavedHistoricalRun(data.run);
-      setExpandedHistoricalRunId(rid);
       router.replace(pathname, { scroll: false });
     })();
     return () => {
@@ -1775,9 +2179,6 @@ function MyEmailPageInner() {
             setHistoricalSearched(true);
             setHistLive((prev) => ({ ...prev, phase: 'done' }));
             void loadHistoricalSavedRuns();
-            if (result?.run_id) {
-              setExpandedHistoricalRunId(String(result.run_id));
-            }
             if (result?.stopped) {
               setSuccess(
                 conv.length > 0
@@ -2098,9 +2499,38 @@ function MyEmailPageInner() {
 
   const runLiveIngestionNow = useCallback(async () => {
     if (!token) return;
+    const trackingIso = liveTrackingDateTimeToIso(liveTrackDate, liveTrackTime);
+    if (!trackingIso) {
+      setError('Choose a valid start date and time for live tracking.');
+      return;
+    }
+    const targets = ownMailboxes.filter((m) => m.gmail_connected);
+    if (targets.length === 0) {
+      setError('Connect Gmail on your inbox card first.');
+      return;
+    }
     setLiveSyncBusy(true);
     setError(null);
     try {
+      for (const mb of targets) {
+        const patchRes = await apiFetch(
+          `/employees/${encodeURIComponent(mb.id)}/tracking-start`,
+          token,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ tracking_start_at: trackingIso }),
+          },
+        );
+        if (!patchRes.ok) {
+          const j = await patchRes.json().catch(() => ({}));
+          setError(
+            (j as { message?: string }).message ??
+              `Could not save tracking start for ${mb.email}.`,
+          );
+          return;
+        }
+      }
+      liveTrackSourceRef.current = `${targets[0].id}:${trackingIso}`;
       const res = await apiFetch('/email-ingestion/run', token);
       const j = (await res.json().catch(() => ({}))) as {
         status?: string;
@@ -2129,7 +2559,7 @@ function MyEmailPageInner() {
     } finally {
       setLiveSyncBusy(false);
     }
-  }, [token, loadDashboard, syncEmployeeIdsParam]);
+  }, [token, loadDashboard, syncEmployeeIdsParam, liveTrackDate, liveTrackTime, ownMailboxes]);
 
   const pipelineStep2Done =
     pipeline != null && (!pipeline.running || pipeline.status !== 'running');
@@ -2618,6 +3048,10 @@ function MyEmailPageInner() {
                   {ceoInboxMode === 'live' ? (
                     <CeoLiveSyncStrip
                       mailboxes={ownMailboxes}
+                      liveTrackDate={liveTrackDate}
+                      liveTrackTime={liveTrackTime}
+                      onLiveTrackDateChange={setLiveTrackDate}
+                      onLiveTrackTimeChange={setLiveTrackTime}
                       onSyncNow={() => void runLiveIngestionNow()}
                       syncBusy={liveSyncBusy}
                     />
@@ -2739,69 +3173,127 @@ function MyEmailPageInner() {
                   </button>
                 </div>
                 <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                  Each completed Gmail fetch is stored with its date range and stats. Open one to reload that window’s
-                  threads (same as choosing those dates and mailbox).
+                  Each completed Gmail fetch is stored with its date range and stats. Select rows to delete them from the
+                  log, or load one to reopen that window (same as choosing those dates and mailbox).
                 </p>
+                {historicalSavedRuns.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 border-b border-slate-200/80 pb-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const allOn = historicalSavedRuns.every((r) => selectedHistoricalRunIds.includes(r.id));
+                        if (allOn) {
+                          setSelectedHistoricalRunIds([]);
+                        } else {
+                          setSelectedHistoricalRunIds(historicalSavedRuns.map((r) => r.id));
+                        }
+                      }}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 shadow-sm hover:bg-slate-50"
+                    >
+                      {historicalSavedRuns.every((r) => selectedHistoricalRunIds.includes(r.id))
+                        ? 'Deselect all'
+                        : 'Select all'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedHistoricalRunIds([])}
+                      disabled={selectedHistoricalRunIds.length === 0}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Clear selection
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void deleteSelectedHistoricalRuns()}
+                      disabled={selectedHistoricalRunIds.length === 0 || histRunsDeleting}
+                      className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-900 shadow-sm hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {histRunsDeleting
+                        ? 'Deleting…'
+                        : `Delete selected (${selectedHistoricalRunIds.length})`}
+                    </button>
+                  </div>
+                ) : null}
                 {historicalSavedRuns.length === 0 && !historicalRunsLoading ? (
-                  <p className="mt-3 text-sm text-slate-500">No saved searches yet — run <strong>Fetch from Gmail</strong> above.</p>
-                ) : (
+                  <p className="mt-3 text-sm text-slate-500">
+                    No saved searches yet — run <strong>Fetch from Gmail</strong> above.
+                  </p>
+                ) : null}
+                {historicalSavedRuns.length > 0 ? (
                   <ul className="mt-3 space-y-2">
                     {historicalSavedRuns.map((run) => {
-                      const open = expandedHistoricalRunId === run.id;
                       const st = run.stats ?? {};
+                      const listed = st.fetched_from_gmail ?? '—';
+                      const kept = st.stored_relevant ?? '—';
+                      const skipped = st.skipped_irrelevant ?? '—';
                       return (
-                        <li key={run.id} className="rounded-lg border border-white/80 bg-white/90 shadow-sm">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setExpandedHistoricalRunId((prev) => (prev === run.id ? null : run.id))
-                            }
-                            className="flex w-full items-start justify-between gap-2 px-3 py-2.5 text-left text-sm text-slate-800 hover:bg-slate-50/90"
-                          >
-                            <span className="min-w-0 flex-1">
-                              <span className="block font-semibold text-slate-900">{run.report_summary}</span>
-                              <span className="mt-0.5 block text-[11px] text-slate-500">
+                        <li
+                          key={run.id}
+                          className="rounded-lg border border-white/80 bg-white/90 shadow-sm"
+                        >
+                          <div className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-start sm:gap-3">
+                            <label className="flex shrink-0 cursor-pointer items-start gap-2 pt-0.5">
+                              <input
+                                type="checkbox"
+                                checked={selectedHistoricalRunIds.includes(run.id)}
+                                onChange={() => {
+                                  setSelectedHistoricalRunIds((prev) =>
+                                    prev.includes(run.id)
+                                      ? prev.filter((x) => x !== run.id)
+                                      : [...prev, run.id],
+                                  );
+                                }}
+                                className="mt-1 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                              />
+                            </label>
+                            <div className="min-w-0 flex-1 text-sm">
+                              <p className="font-semibold text-slate-900">{run.report_summary}</p>
+                              <p className="mt-0.5 text-[11px] text-slate-500">
                                 Saved {new Date(run.created_at).toLocaleString()}
-                              </span>
-                            </span>
-                            <span className="shrink-0 text-slate-400" aria-hidden>
-                              {open ? '▾' : '▸'}
-                            </span>
-                          </button>
-                          {open ? (
-                            <div className="border-t border-slate-100 px-3 py-3 text-xs text-slate-600">
-                              <dl className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
-                                <div>
-                                  <dt className="text-slate-400">Listed from Gmail</dt>
-                                  <dd className="font-mono tabular-nums">{String(st.fetched_from_gmail ?? '—')}</dd>
-                                </div>
-                                <div>
-                                  <dt className="text-slate-400">Kept (relevant)</dt>
-                                  <dd className="font-mono tabular-nums">{String(st.stored_relevant ?? '—')}</dd>
-                                </div>
-                                <div>
-                                  <dt className="text-slate-400">Skipped</dt>
-                                  <dd className="font-mono tabular-nums">{String(st.skipped_irrelevant ?? '—')}</dd>
-                                </div>
-                                <div>
-                                  <dt className="text-slate-400">Threads in view</dt>
-                                  <dd className="font-mono tabular-nums">{run.conversation_count}</dd>
-                                </div>
-                              </dl>
+                              </p>
+                              <p className="mt-1 text-[11px] text-slate-600">
+                                Gmail listed <span className="font-mono tabular-nums">{String(listed)}</span> · kept{' '}
+                                <span className="font-mono tabular-nums">{String(kept)}</span> · AI skipped{' '}
+                                <span className="font-mono tabular-nums">{String(skipped)}</span> ·{' '}
+                                <span className="font-mono tabular-nums">{run.conversation_count}</span> threads in view
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 flex-col gap-1.5 sm:items-end">
                               <button
                                 type="button"
                                 onClick={() => void applySavedHistoricalRun(run)}
-                                className="mt-3 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                                className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
                               >
-                                Load this search
+                                Load
+                              </button>
+                              <button
+                                type="button"
+                                disabled={histRunsDeleting}
+                                onClick={() => {
+                                  if (!window.confirm('Delete this saved search from the log?')) return;
+                                  void (async () => {
+                                    setHistRunsDeleting(true);
+                                    setError(null);
+                                    const ok = await deleteHistoricalSearchRunById(run.id);
+                                    if (ok) {
+                                      setSelectedHistoricalRunIds((prev) => prev.filter((x) => x !== run.id));
+                                      await loadHistoricalSavedRuns();
+                                      setSuccess('Removed saved search.');
+                                    }
+                                    setHistRunsDeleting(false);
+                                  })();
+                                }}
+                                className="text-xs font-semibold text-red-700 hover:underline disabled:opacity-40"
+                              >
+                                Delete
                               </button>
                             </div>
-                          ) : null}
+                          </div>
                         </li>
                       );
                     })}
                   </ul>
-                )}
+                ) : null}
               </div>
 
               {historicalLoading ? (
@@ -3162,6 +3654,24 @@ function MyEmailPageInner() {
               </div>
             ))}
           </div>
+
+          {ceoInboxMode === 'live' && ownMailboxes.some((m) => m.gmail_connected) ? (
+            <div className="mt-8">
+              <AiSkippedMailsPanel
+                mailboxes={ownMailboxes}
+                aiSkippedMailboxId={aiSkippedMailboxId}
+                onMailboxChange={setAiSkippedMailboxId}
+                onRefresh={() => void loadAiSkippedMails()}
+                aiSkippedLoading={aiSkippedLoading}
+                aiSkippedTotal={aiSkippedTotal}
+                aiSkippedRows={aiSkippedRows}
+                aiSkippedOffset={aiSkippedOffset}
+                setAiSkippedOffset={setAiSkippedOffset}
+                onClearSkip={(id) => void clearAiSkipEntry(id)}
+                aiSkippedClearingId={aiSkippedClearingId}
+              />
+            </div>
+          ) : null}
 
           <div className="mt-8 flex flex-col gap-8">
           {/* ── Follow-ups: tabs + compact list + drawer ── */}
