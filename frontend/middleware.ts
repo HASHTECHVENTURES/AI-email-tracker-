@@ -74,6 +74,8 @@ export async function middleware(request: NextRequest) {
 
     let user: { id: string } | null = null;
     try {
+      // Refresh session from cookies first (access token may expire during long OAuth round-trips).
+      await supabase.auth.getSession();
       const { data } = await supabase.auth.getUser();
       user = data.user;
     } catch {
@@ -98,7 +100,14 @@ export async function middleware(request: NextRequest) {
     if (!user && isProtected) {
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = pathname.startsWith('/admin') ? '/admin/login' : '/auth';
+      // Do not clone the full query string (e.g. Gmail OAuth adds connected=, employee_id=).
+      // Only forward a safe subset so /auth stays predictable and we can re-attach success after login.
+      redirectUrl.search = '';
       redirectUrl.searchParams.set('next', request.nextUrl.pathname);
+      const gmailConnected = request.nextUrl.searchParams.get('connected');
+      if (gmailConnected === '1') {
+        redirectUrl.searchParams.set('connected', '1');
+      }
       const redirectResponse = NextResponse.redirect(redirectUrl);
       copyCookies(response, redirectResponse);
       return redirectResponse;

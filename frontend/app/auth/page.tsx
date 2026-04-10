@@ -10,6 +10,36 @@ import { PasswordInput } from '@/components/PasswordInput';
 
 const PENDING_KEY = 'pendingSignup';
 
+/** After Gmail OAuth, middleware may send users to /auth without a session; restore ?connected=1 post-login for my-email toast. */
+const POST_AUTH_GMAIL_CONNECTED_KEY = 'ai_et_post_auth_gmail_connected_v1';
+
+function rememberGmailConnectedFromUrl() {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.setItem(POST_AUTH_GMAIL_CONNECTED_KEY, '1');
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Append ?connected=1 once, then clear the session flag (used for post-login redirect). */
+function consumeGmailConnectedRedirect(path: string, urlHadConnected: boolean): string {
+  if (typeof window === 'undefined') return path;
+  let attach = urlHadConnected;
+  try {
+    if (sessionStorage.getItem(POST_AUTH_GMAIL_CONNECTED_KEY) === '1') {
+      attach = true;
+      sessionStorage.removeItem(POST_AUTH_GMAIL_CONNECTED_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+  if (!attach) return path;
+  if (path.includes('connected=1')) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}connected=1`;
+}
+
 /** Shown on dashboard after redirect when onboarding finds an existing profile (duplicate signup). */
 const AUTH_NOTICE_STORAGE_KEY = 'ai_et_auth_notice_v1';
 
@@ -173,6 +203,18 @@ function AuthPageInner() {
   const [info, setInfo] = useState<string | null>(friendlyAuthError);
   const [infoVariant, setInfoVariant] = useState<'default' | 'notice'>('default');
   const [pendingEmailHint, setPendingEmailHint] = useState<string | null>(null);
+  const gmailConnectedParam = searchParams.get('connected') === '1';
+
+  useEffect(() => {
+    if (!gmailConnectedParam) return;
+    rememberGmailConnectedFromUrl();
+    if (!friendlyAuthError) {
+      setInfoVariant('notice');
+      setInfo(
+        'Gmail is connected. Sign in below to return to your inbox — your session can expire while you finish the Google sign-in step.',
+      );
+    }
+  }, [gmailConnectedParam, friendlyAuthError]);
 
   const clearFeedback = () => {
     setInfo(null);
@@ -243,15 +285,15 @@ function AuthPageInner() {
           await refreshMe(session.access_token);
         }
         clearPending();
-        router.replace(safeNext);
+        router.replace(consumeGmailConnectedRedirect(safeNext, gmailConnectedParam));
         return 'navigated' as const;
       }
       clearPending();
       await refreshMe(session.access_token);
-      router.replace(safeNext);
+      router.replace(consumeGmailConnectedRedirect(safeNext, gmailConnectedParam));
       return 'navigated' as const;
     },
-    [refreshMe, router, safeNext, clearPending],
+    [refreshMe, router, safeNext, clearPending, gmailConnectedParam],
   );
 
   useEffect(() => {
@@ -297,7 +339,9 @@ function AuthPageInner() {
         if (!me) {
           return;
         }
-        router.replace(postLoginPath(status.user.role, safeNext));
+        router.replace(
+          consumeGmailConnectedRedirect(postLoginPath(status.user.role, safeNext), gmailConnectedParam),
+        );
         return;
       }
 
@@ -345,6 +389,7 @@ function AuthPageInner() {
     completeFromEmail,
     finalizeOnboarding,
     redirectIfPlatformAdmin,
+    gmailConnectedParam,
   ]);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -400,7 +445,9 @@ function AuthPageInner() {
         return;
       }
       await refreshMe(session.access_token);
-      router.replace(postLoginPath(status.user?.role, safeNext));
+      router.replace(
+        consumeGmailConnectedRedirect(postLoginPath(status.user?.role, safeNext), gmailConnectedParam),
+      );
     } finally {
       setLoading(false);
     }
