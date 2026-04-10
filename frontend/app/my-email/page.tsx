@@ -151,6 +151,18 @@ function needsMyReply(c: ConversationRow): boolean {
   return lc > lr;
 }
 
+/** Optional “focus recent” filter: last inbound client message older than N calendar days. */
+const STALE_NEED_REPLY_DAYS = 30;
+
+function isStaleNeedReplyByClientMessage(c: ConversationRow, staleDays: number): boolean {
+  if (!needsMyReply(c)) return false;
+  const iso = c.last_client_msg_at;
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return false;
+  return Date.now() - t > staleDays * 86_400_000;
+}
+
 /** Ball in their court: we replied at or after their last message. */
 function isWaitingOnThem(c: ConversationRow): boolean {
   if (c.follow_up_status === 'DONE' || c.follow_up_status === 'MISSED') return false;
@@ -511,6 +523,8 @@ function MyEmailPageInner() {
 
   /** Hide LOW-priority threads from primary tabs (still visible under Low / noise). */
   const [hideLowPriority, setHideLowPriority] = useState(true);
+  /** When on, “Need your reply” hides threads whose last client message is older than STALE_NEED_REPLY_DAYS. */
+  const [hideStaleNeedReply, setHideStaleNeedReply] = useState(false);
 
   /** Bulk delete selection for the active mail tab list. */
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(() => new Set());
@@ -1384,8 +1398,13 @@ function MyEmailPageInner() {
   );
 
   const kpiNeedReplyCount = useMemo(
-    () => withoutLowScoped.filter((c) => needsMyReply(c)).length,
-    [withoutLowScoped],
+    () =>
+      withoutLowScoped.filter(
+        (c) =>
+          needsMyReply(c) &&
+          (!hideStaleNeedReply || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)),
+      ).length,
+    [withoutLowScoped, hideStaleNeedReply],
   );
   const kpiWaitingCount = useMemo(
     () => withoutLowScoped.filter((c) => isWaitingOnThem(c)).length,
@@ -1406,7 +1425,11 @@ function MyEmailPageInner() {
       case 'noise':
         return scopedConversations.filter((c) => c.priority === 'LOW');
       case 'action':
-        return withoutLowScoped.filter((c) => needsMyReply(c));
+        return withoutLowScoped.filter(
+          (c) =>
+            needsMyReply(c) &&
+            (!hideStaleNeedReply || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)),
+        );
       case 'waiting':
         return withoutLowScoped.filter((c) => isWaitingOnThem(c));
       case 'cc':
@@ -1432,6 +1455,7 @@ function MyEmailPageInner() {
     hideLowPriority,
     allTabStatus,
     allTabPriority,
+    hideStaleNeedReply,
   ]);
 
   const searchFilteredTabRows = useMemo(() => {
@@ -1542,6 +1566,7 @@ function MyEmailPageInner() {
     myEmailTab,
     filterMailbox,
     scopeMailboxIds,
+    hideStaleNeedReply,
   ]);
 
   const mailboxesForInboxShortcuts = useMemo(() => {
@@ -2397,7 +2422,9 @@ function MyEmailPageInner() {
                   <strong className="font-medium text-slate-600">Live Mails</strong> is continuous Gmail sync — not “only
                   this month.” Any thread that still needs a reply or is overdue stays here until you answer from this
                   inbox (so we see the sent message), tap <strong className="font-medium text-slate-600">Resolve</strong>,
-                  or delete the row. Rows are sorted with the most recent activity first.
+                  or delete the row. Rows are sorted with the most recent activity first. Use{' '}
+                  <strong className="font-medium text-slate-600">Focus recent</strong> below to hide old “need reply” rows
+                  without removing them (they stay in <strong className="font-medium text-slate-600">All threads</strong>).
                 </p>
               </div>
               <input
@@ -2445,6 +2472,21 @@ function MyEmailPageInner() {
                 </button>
               ))}
             </div>
+
+            <label className="mt-3 flex max-w-2xl cursor-pointer items-start gap-2 text-[11px] leading-snug text-slate-600">
+              <input
+                type="checkbox"
+                checked={hideStaleNeedReply}
+                onChange={(e) => setHideStaleNeedReply(e.target.checked)}
+                className="mt-0.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+              />
+              <span>
+                <strong className="font-medium text-slate-800">Focus recent:</strong> in &quot;Need your reply&quot;, hide
+                threads whose last client message is older than {STALE_NEED_REPLY_DAYS} days (e.g. old March outreach
+                still marked overdue). They stay in{' '}
+                <strong className="font-medium text-slate-700">All threads</strong>.
+              </span>
+            </label>
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               {scopedPersonOptions.length > 1 ? (
@@ -2530,9 +2572,11 @@ function MyEmailPageInner() {
                   </>
                 ) : null}{' '}
                 Try another tab
-                {mailTab === 'action' && hideLowPriority
-                  ? ', turn off hide LOW, or check Low / noise.'
-                  : '.'}
+                {mailTab === 'action' && hideStaleNeedReply
+                  ? ' — turn off Focus recent or open All threads for older need-reply items.'
+                  : mailTab === 'action' && hideLowPriority
+                    ? ', turn off hide LOW, or check Low / noise.'
+                    : '.'}
               </p>
             ) : (
               <>
