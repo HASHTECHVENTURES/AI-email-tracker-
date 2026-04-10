@@ -58,6 +58,17 @@ type CeoDepartmentRollup = {
   need_attention_count: number;
 };
 
+type CeoEmployeeMailboxRollup = {
+  employee_id: string;
+  employee_name: string;
+  department_name: string | null;
+  total_threads: number;
+  missed: number;
+  pending: number;
+  done: number;
+  need_attention_count: number;
+};
+
 type DashboardPayload = {
   needs_attention: ConversationRow[];
   ai_insights: {
@@ -80,6 +91,7 @@ type DashboardPayload = {
   employee_filter_options: { id: string; name: string; department_name?: string | null; is_manager?: boolean }[];
   my_followups?: { missed: number; pending: number; done: number };
   ceo_department_rollups?: CeoDepartmentRollup[];
+  ceo_employee_mailbox_rollups?: CeoEmployeeMailboxRollup[];
   historical_search_runs?: {
     id: string;
     employee_id: string;
@@ -938,6 +950,77 @@ export default function DashboardPage() {
 
             {historicalSearchCard}
 
+            {(dash.ceo_employee_mailbox_rollups?.length ?? 0) > 0 ? (
+              <section className={cardClass}>
+                <div className="mb-5 border-b border-slate-100 pb-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">People in scope</p>
+                  <h2 className="mt-1 text-xl font-bold text-slate-950">Mailbox load (employees)</h2>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Threads for each person you checked under <span className="font-medium text-slate-800">Employees</span>{' '}
+                    on Dashboard scope — this is <strong className="font-semibold text-slate-800">not</strong> the team
+                    lead row below.
+                  </p>
+                </div>
+                <div className="space-y-4">
+                  {(() => {
+                    const rollups = dash.ceo_employee_mailbox_rollups ?? [];
+                    const maxAttn = Math.max(1, ...rollups.map((r) => r.need_attention_count));
+                    return rollups.map((r) => {
+                      const attnPct = Math.min(100, Math.round((r.need_attention_count / maxAttn) * 100));
+                      const total = Math.max(1, r.total_threads);
+                      const donePct = Math.round((r.done / total) * 100);
+                      const pendPct = Math.round((r.pending / total) * 100);
+                      const missedPct = Math.round((r.missed / total) * 100);
+                      return (
+                        <div
+                          key={r.employee_id}
+                          className="rounded-xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50/40 to-white px-4 py-3"
+                        >
+                          <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-800/90">Mailbox</p>
+                              <p className="font-semibold text-slate-900">{r.employee_name}</p>
+                              <p className="text-xs text-slate-500">
+                                {r.department_name?.trim() ? r.department_name.trim() : 'Department not set'}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 gap-3 text-xs tabular-nums text-slate-600">
+                              <span title="Needs attention">
+                                <span className="font-semibold text-violet-700">{r.need_attention_count}</span> attn
+                              </span>
+                              <span>
+                                <span className="font-semibold text-red-600">{r.missed}</span> missed
+                              </span>
+                              <span>
+                                <span className="font-semibold text-amber-700">{r.pending}</span> pend
+                              </span>
+                              <span>
+                                <span className="font-semibold text-emerald-700">{r.done}</span> done
+                              </span>
+                            </div>
+                          </div>
+                          <div className="mt-3 space-y-1.5">
+                            <div className="h-2 overflow-hidden rounded-full bg-slate-200/80">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-emerald-600 to-brand-600 transition-[width] duration-300"
+                                style={{ width: `${attnPct}%` }}
+                                title={`Need attention: ${r.need_attention_count}`}
+                              />
+                            </div>
+                            <div className="flex h-1.5 overflow-hidden rounded-full bg-slate-200/60">
+                              <div className="bg-emerald-500" style={{ width: `${donePct}%` }} title={`Done ${r.done}`} />
+                              <div className="bg-amber-400" style={{ width: `${pendPct}%` }} title={`Pending ${r.pending}`} />
+                              <div className="bg-red-500" style={{ width: `${missedPct}%` }} title={`Missed ${r.missed}`} />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </section>
+            ) : null}
+
             {(dash.ceo_department_rollups?.length ?? 0) > 0 ? (
               <section className={cardClass}>
                 <div className="mb-5 border-b border-slate-100 pb-4">
@@ -969,13 +1052,14 @@ export default function DashboardPage() {
                         <div key={r.department_id} className="rounded-xl border border-slate-100 bg-slate-50/50 px-4 py-3">
                           <div className="flex flex-wrap items-baseline justify-between gap-2">
                             <div className="min-w-0">
+                              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Team</p>
                               <p className="font-semibold text-slate-900">{r.department_name}</p>
                               <p className="text-xs text-slate-500">
                                 {r.manager_name?.trim()
-                                  ? `Manager: ${r.manager_name.trim()}`
+                                  ? `Team lead: ${r.manager_name.trim()}`
                                   : r.manager_email
-                                    ? `Manager: ${r.manager_email}`
-                                    : 'No manager assigned'}
+                                    ? `Team lead: ${r.manager_email}`
+                                    : 'No team lead assigned'}
                               </p>
                             </div>
                             <div className="flex shrink-0 gap-3 text-xs tabular-nums text-slate-600">

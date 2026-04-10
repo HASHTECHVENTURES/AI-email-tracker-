@@ -128,6 +128,18 @@ export interface CeoDepartmentRollup {
   need_attention_count: number;
 }
 
+/** CEO dashboard: per-mailbox load for employees explicitly selected in command center scope (not the dept manager row). */
+export interface CeoEmployeeMailboxRollup {
+  employee_id: string;
+  employee_name: string;
+  department_name: string | null;
+  total_threads: number;
+  missed: number;
+  pending: number;
+  done: number;
+  need_attention_count: number;
+}
+
 export interface SimplifiedDashboardResponse {
   needs_attention: ConversationListItem[];
   ai_insights: {
@@ -157,6 +169,8 @@ export interface SimplifiedDashboardResponse {
   my_followups?: { missed: number; pending: number; done: number };
   /** Populated for CEO only — department vs manager vs thread pressure. */
   ceo_department_rollups?: CeoDepartmentRollup[];
+  /** CEO only — one row per mailbox picked under “Employees” in dashboard scope. */
+  ceo_employee_mailbox_rollups?: CeoEmployeeMailboxRollup[];
   /** Recent saved Historical Search runs (My Email) visible to this user. */
   historical_search_runs?: HistoricalSearchRunListItem[];
 }
@@ -364,6 +378,71 @@ export class DashboardService {
     }
     out.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
     return out;
+  }
+
+  private static needsAttentionConv(c: ConversationListItem): boolean {
+    return c.follow_up_status === 'MISSED' || (c.priority === 'HIGH' && c.follow_up_status !== 'DONE');
+  }
+
+  /**
+   * People picked as mailboxes in CEO scope — distinct from department “team lead” rows.
+   */
+  private async buildCeoEmployeeMailboxRollups(
+    companyId: string,
+    all: ConversationListItem[],
+    selectedEmployeeIds: string[],
+  ): Promise<CeoEmployeeMailboxRollup[]> {
+    if (!selectedEmployeeIds.length) return [];
+    const { aliasToTargetMap } = await this.employeesService.getEmployeeAliasMapping(
+      companyId,
+      selectedEmployeeIds,
+    );
+    const canonFor = (eid: string) => aliasToTargetMap.get(eid) ?? eid;
+    const uniqueCanon = [...new Set(selectedEmployeeIds.map(canonFor))];
+
+    const { data: emps, error: eErr } = await this.supabase
+      .from('employees')
+      .select('id, name, department_id')
+      .eq('company_id', companyId)
+      .in('id', uniqueCanon);
+    if (eErr) {
+      this.logger.warn(`buildCeoEmployeeMailboxRollups employees: ${eErr.message}`);
+    }
+    const empById = new Map((emps ?? []).map((e: { id: string; name: string; department_id: string | null }) => [e.id, e]));
+
+    const { data: deptRows } = await this.supabase
+      .from('departments')
+      .select('id, name')
+      .eq('company_id', companyId);
+    const deptName = new Map((deptRows ?? []).map((d: { id: string; name: string }) => [d.id, d.name]));
+
+    const rows: CeoEmployeeMailboxRollup[] = [];
+    for (const canon of uniqueCanon) {
+      const convs = all.filter((c) => canonFor(c.employee_id) === canon);
+      const em = empById.get(canon);
+      const dn = em?.department_id ? deptName.get(em.department_id) ?? null : null;
+      let missed = 0;
+      let pending = 0;
+      let done = 0;
+      let need_attention_count = 0;
+      for (const c of convs) {
+        if (c.follow_up_status === 'MISSED') missed++;
+        else if (c.follow_up_status === 'PENDING') pending++;
+        else if (c.follow_up_status === 'DONE') done++;
+        if (DashboardService.needsAttentionConv(c)) need_attention_count++;
+      }
+      rows.push({
+        employee_id: canon,
+        employee_name: em?.name?.trim() || convs[0]?.employee_name?.trim() || 'Mailbox',
+        department_name: dn,
+        total_threads: convs.length,
+        missed,
+        pending,
+        done,
+        need_attention_count,
+      });
+    }
+    return rows.sort((a, b) => a.employee_name.localeCompare(b.employee_name));
   }
 
   async getConversationsList(filters: ConversationFilters): Promise<ConversationListItem[]> {
@@ -1237,6 +1316,13 @@ ${dataBlock}`;
 
     if (scope.role === 'CEO') {
       out.ceo_department_rollups = ceo_department_rollups ?? [];
+      if (ceoEmployeeIds?.length) {
+        out.ceo_employee_mailbox_rollups = await this.buildCeoEmployeeMailboxRollups(
+          companyId,
+          all,
+          ceoEmployeeIds,
+        );
+      }
     }
 
     if (scope.role === 'EMPLOYEE' && scope.employeeId) {
