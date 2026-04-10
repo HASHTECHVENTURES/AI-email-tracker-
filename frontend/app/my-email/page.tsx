@@ -2413,19 +2413,6 @@ function MyEmailPageInner() {
             <div className="flex flex-col gap-3 border-b border-slate-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Follow-ups</h2>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  AI continuously reads each email and writes summaries, sets priority, and identifies contacts. Use the{' '}
-                  <strong className="font-medium text-slate-600">CC&apos;d</strong> tab for threads where you were only on
-                  Cc (not To) on the latest message.
-                </p>
-                <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-                  <strong className="font-medium text-slate-600">Live Mails</strong> is continuous Gmail sync — not “only
-                  this month.” Any thread that still needs a reply or is overdue stays here until you answer from this
-                  inbox (so we see the sent message), tap <strong className="font-medium text-slate-600">Resolve</strong>,
-                  or delete the row. Rows are sorted with the most recent activity first. Use{' '}
-                  <strong className="font-medium text-slate-600">Focus recent</strong> below to hide old “need reply” rows
-                  without removing them (they stay in <strong className="font-medium text-slate-600">All threads</strong>).
-                </p>
               </div>
               <input
                 type="search"
