@@ -996,39 +996,30 @@ export class EmployeesService {
       }
     }
 
-    const empIds = rows.map((r) => r.id);
-    const portalLinked = new Set<string>();
-    if (empIds.length > 0) {
-      const { data: profiles } = await this.supabase
-        .from('users')
-        .select('linked_employee_id')
-        .eq('company_id', ctx.companyId)
-        .not('linked_employee_id', 'is', null)
-        .in('linked_employee_id', empIds);
-      for (const p of profiles ?? []) {
-        const lid = (p as { linked_employee_id: string }).linked_employee_id;
-        if (lid) portalLinked.add(lid);
-      }
-    }
+    const { connectedEmails, portalEmails } = await this.aggregateEmailStatuses(ctx.companyId, rows);
 
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      email: r.email,
-      department_id: r.department_id,
-      department_name: (r.department_id ? deptNameById.get(r.department_id) : undefined) ?? '—',
-      created_at: r.created_at,
-      gmail_connected: (r.gmail_status ?? 'EXPIRED') === 'CONNECTED',
-      gmail_status: (r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
-      last_synced_at: r.last_synced_at ?? null,
-      sla_hours_default: r.sla_hours_default ?? null,
-      tracking_start_at: r.tracking_start_at ?? null,
-      has_portal_login: portalLinked.has(r.id),
-      tracking_paused: r.tracking_paused === true,
-      ai_enabled: r.ai_enabled !== false,
-      mailbox_type: (r.mailbox_type as 'TEAM' | null | undefined) ?? null,
-      roster_duplicate: r.roster_duplicate === true,
-    }));
+    return rows.map((r) => {
+      const emailNorm = r.email.trim().toLowerCase();
+      const isConnected = connectedEmails.has(emailNorm) || (r.gmail_status ?? 'EXPIRED') === 'CONNECTED';
+      return {
+        id: r.id,
+        name: r.name,
+        email: r.email,
+        department_id: r.department_id,
+        department_name: (r.department_id ? deptNameById.get(r.department_id) : undefined) ?? '—',
+        created_at: r.created_at,
+        gmail_connected: isConnected,
+        gmail_status: isConnected ? 'CONNECTED' : ((r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED'),
+        last_synced_at: r.last_synced_at ?? null,
+        sla_hours_default: r.sla_hours_default ?? null,
+        tracking_start_at: r.tracking_start_at ?? null,
+        has_portal_login: portalEmails.has(emailNorm),
+        tracking_paused: r.tracking_paused === true,
+        ai_enabled: r.ai_enabled !== false,
+        mailbox_type: (r.mailbox_type as 'TEAM' | null | undefined) ?? null,
+        roster_duplicate: r.roster_duplicate === true,
+      };
+    });
   }
 
   /**
@@ -1141,39 +1132,30 @@ export class EmployeesService {
       }
     }
 
-    const empIds = rows.map((r) => r.id);
-    const portalLinked = new Set<string>();
-    if (empIds.length > 0) {
-      const { data: profiles } = await this.supabase
-        .from('users')
-        .select('linked_employee_id')
-        .eq('company_id', companyId)
-        .not('linked_employee_id', 'is', null)
-        .in('linked_employee_id', empIds);
-      for (const p of profiles ?? []) {
-        const lid = (p as { linked_employee_id: string }).linked_employee_id;
-        if (lid) portalLinked.add(lid);
-      }
-    }
+    const { connectedEmails, portalEmails } = await this.aggregateEmailStatuses(companyId, rows);
 
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      email: r.email,
-      department_id: r.department_id,
-      department_name: (r.department_id ? deptNameById.get(r.department_id) : undefined) ?? '—',
-      created_at: r.created_at,
-      created_by: r.created_by ?? null,
-      gmail_connected: (r.gmail_status ?? 'EXPIRED') === 'CONNECTED',
-      gmail_status: (r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
-      last_synced_at: r.last_synced_at ?? null,
-      sla_hours_default: r.sla_hours_default ?? null,
-      tracking_start_at: r.tracking_start_at ?? null,
-      has_portal_login: portalLinked.has(r.id),
-      tracking_paused: r.tracking_paused === true,
-      ai_enabled: r.ai_enabled !== false,
-      mailbox_type: (r.mailbox_type as 'TEAM' | null | undefined) ?? null,
-    }));
+    return rows.map((r) => {
+      const emailNorm = r.email.trim().toLowerCase();
+      const isConnected = connectedEmails.has(emailNorm) || (r.gmail_status ?? 'EXPIRED') === 'CONNECTED';
+      return {
+        id: r.id,
+        name: r.name,
+        email: r.email,
+        department_id: r.department_id,
+        department_name: (r.department_id ? deptNameById.get(r.department_id) : undefined) ?? '—',
+        created_at: r.created_at,
+        created_by: r.created_by ?? null,
+        gmail_connected: isConnected,
+        gmail_status: isConnected ? 'CONNECTED' : ((r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED'),
+        last_synced_at: r.last_synced_at ?? null,
+        sla_hours_default: r.sla_hours_default ?? null,
+        tracking_start_at: r.tracking_start_at ?? null,
+        has_portal_login: portalEmails.has(emailNorm),
+        tracking_paused: r.tracking_paused === true,
+        ai_enabled: r.ai_enabled !== false,
+        mailbox_type: (r.mailbox_type as 'TEAM' | null | undefined) ?? null,
+      };
+    });
   }
 
   /**
@@ -2101,23 +2083,29 @@ export class EmployeesService {
       }
     }
 
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      email: r.email,
-      department_id: r.department_id,
-      department_name: '—',
-      created_at: r.created_at,
-      created_by: r.created_by ?? null,
-      gmail_connected: (r.gmail_status ?? 'EXPIRED') === 'CONNECTED',
-      gmail_status: (r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED',
-      last_synced_at: r.last_synced_at ?? null,
-      sla_hours_default: r.sla_hours_default ?? null,
-      tracking_start_at: r.tracking_start_at ?? null,
-      tracking_paused: r.tracking_paused === true,
-      ai_enabled: r.ai_enabled !== false,
-      mailbox_type: 'SELF' as const,
-    }));
+    const { connectedEmails } = await this.aggregateEmailStatuses(companyId, rows);
+
+    return rows.map((r) => {
+      const emailNorm = r.email.trim().toLowerCase();
+      const isConnected = connectedEmails.has(emailNorm) || (r.gmail_status ?? 'EXPIRED') === 'CONNECTED';
+      return {
+        id: r.id,
+        name: r.name,
+        email: r.email,
+        department_id: r.department_id,
+        department_name: '—',
+        created_at: r.created_at,
+        created_by: r.created_by ?? null,
+        gmail_connected: isConnected,
+        gmail_status: isConnected ? 'CONNECTED' : ((r.gmail_status ?? 'EXPIRED') as 'CONNECTED' | 'EXPIRED' | 'REVOKED'),
+        last_synced_at: r.last_synced_at ?? null,
+        sla_hours_default: r.sla_hours_default ?? null,
+        tracking_start_at: r.tracking_start_at ?? null,
+        tracking_paused: r.tracking_paused === true,
+        ai_enabled: r.ai_enabled !== false,
+        mailbox_type: 'SELF' as const,
+      };
+    });
   }
 
   async createSelfTrackedMailbox(
@@ -2321,5 +2309,49 @@ export class EmployeesService {
   }> {
     this.logger.debug(`pruneNoiseStoredMessages: no-op (company=${ctx.companyId})`);
     return { deleted: 0, skipsUpserted: 0, batches: 0, threadKeys: [] };
+  }
+
+  /**
+   * Helper: Find if ANY row sharing the same email has gmail_status='CONNECTED' or a portal login.
+   * This ensures a manager sees "Connected" and "Has Portal" even if they are looking at a duplicated roster row.
+   */
+  private async aggregateEmailStatuses(companyId: string, rows: EmployeeDbRow[]): Promise<{ connectedEmails: Set<string>; portalEmails: Set<string> }> {
+    const emails = [...new Set(rows.map((r) => r.email.trim().toLowerCase()))].filter(Boolean);
+    const connectedEmails = new Set<string>();
+    const portalEmails = new Set<string>();
+    
+    if (emails.length === 0) return { connectedEmails, portalEmails };
+
+    const { data: allCompanyRows } = await this.supabase
+      .from('employees')
+      .select('id, email, gmail_status')
+      .eq('company_id', companyId)
+      .in('email', emails);
+
+    const allCompanyEmpIds = new Set<string>();
+    for (const r of allCompanyRows ?? []) {
+      const e = r.email.trim().toLowerCase();
+      allCompanyEmpIds.add(r.id);
+      if (r.gmail_status === 'CONNECTED') {
+        connectedEmails.add(e);
+      }
+    }
+
+    if (allCompanyEmpIds.size > 0) {
+      const { data: profiles } = await this.supabase
+        .from('users')
+        .select('linked_employee_id')
+        .eq('company_id', companyId)
+        .in('linked_employee_id', [...allCompanyEmpIds]);
+      
+      const linkedIds = new Set((profiles ?? []).map((p: any) => p.linked_employee_id));
+      for (const r of allCompanyRows ?? []) {
+        if (linkedIds.has(r.id)) {
+          portalEmails.add(r.email.trim().toLowerCase());
+        }
+      }
+    }
+
+    return { connectedEmails, portalEmails };
   }
 }
