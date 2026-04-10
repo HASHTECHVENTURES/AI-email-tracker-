@@ -3624,6 +3624,58 @@ function MyEmailPageInner() {
         <PageSkeleton />
       ) : (
         <>
+          {me.role === 'HEAD' || me.role === 'MANAGER' ? (
+            <div
+              className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card"
+              role="tablist"
+              aria-label="Manager inbox sections"
+            >
+              <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                My Email
+              </span>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={myEmailTab === 'ceo'}
+                onClick={() => {
+                  if (typeof window === 'undefined') return;
+                  if (window.location.hash) {
+                    window.location.hash = '';
+                  } else {
+                    setMyEmailTab('ceo');
+                  }
+                }}
+                className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
+                  myEmailTab === 'ceo'
+                    ? 'bg-slate-900 text-white'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
+                }`}
+              >
+                Follow-ups & your inbox
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={myEmailTab === 'manager'}
+                onClick={() => {
+                  if (typeof window === 'undefined') return;
+                  if (window.location.hash !== '#manager-mailboxes') {
+                    window.location.hash = 'manager-mailboxes';
+                  } else {
+                    setMyEmailTab('manager');
+                  }
+                }}
+                className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
+                  myEmailTab === 'manager'
+                    ? 'bg-slate-900 text-white'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
+                }`}
+              >
+                Team mailboxes
+              </button>
+            </div>
+          ) : null}
+
           {myEmailTab === 'ceo' ? (
             <div className="mb-6 space-y-4">
               <>

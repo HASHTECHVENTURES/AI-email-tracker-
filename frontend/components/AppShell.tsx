@@ -286,12 +286,6 @@ export function AppShell({
               ) : null}
 
               {showOrg && isHead ? (
-                <SafeLink href="/my-mail" className={navItemClass(pathname === '/my-mail')}>
-                  My mail
-                </SafeLink>
-              ) : null}
-
-              {showOrg && isHead ? (
                 <>
                   <SafeLink href="/manager-messages" className={navItemClass(managerMessagesActive)}>
                     Conversations
@@ -428,11 +422,6 @@ export function AppShell({
               {showOrg && isHead ? (
                 <SafeLink href="/employees" className={navMobileClass(pathname === '/employees')}>
                   Team
-                </SafeLink>
-              ) : null}
-              {showOrg && isHead ? (
-                <SafeLink href="/my-mail" className={navMobileClass(pathname === '/my-mail')}>
-                  My mail
                 </SafeLink>
               ) : null}
               {showOrg && isHead ? (
