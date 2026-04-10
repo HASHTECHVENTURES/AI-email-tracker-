@@ -580,6 +580,11 @@ function SkippedMailsTabTable({
   onImportToInbox,
   aiSkippedImportingId,
   unfilteredPageCount,
+  selectedIds,
+  onToggleSelect,
+  onSelectAllVisible,
+  onBulkClearSkip,
+  skippedBulkClearing,
 }: {
   mailboxes: Mailbox[];
   rows: AiSkippedMailItem[];
@@ -597,7 +602,24 @@ function SkippedMailsTabTable({
   /** Fetch from Gmail and store immediately (bypasses Inbox AI). */
   onImportToInbox: (providerMessageId: string) => void;
   aiSkippedImportingId: string | null;
+  selectedIds: Set<string>;
+  onToggleSelect: (providerMessageId: string) => void;
+  onSelectAllVisible: () => void;
+  onBulkClearSkip: () => void;
+  skippedBulkClearing: boolean;
 }) {
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  const allVisibleSelected =
+    rows.length > 0 && rows.every((r) => selectedIds.has(r.provider_message_id));
+  const someVisibleSelected = rows.some((r) => selectedIds.has(r.provider_message_id));
+  const selectedOnPageCount = rows.filter((r) => selectedIds.has(r.provider_message_id)).length;
+
+  useEffect(() => {
+    const el = selectAllRef.current;
+    if (!el) return;
+    el.indeterminate = someVisibleSelected && !allVisibleSelected;
+  }, [someVisibleSelected, allVisibleSelected]);
+
   return (
     <div className="space-y-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -617,24 +639,54 @@ function SkippedMailsTabTable({
             </select>
           </label>
         ) : null}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={onRefresh}
-            disabled={aiSkippedLoading}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-          >
-            {aiSkippedLoading ? 'Loading…' : 'Refresh'}
-          </button>
-          <span className="text-[11px] text-slate-500">
-            {aiSkippedTotal} total skip{aiSkippedTotal === 1 ? '' : 's'} recorded
-          </span>
+        <div className="flex flex-col items-stretch gap-2 sm:items-end">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={aiSkippedLoading}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              {aiSkippedLoading ? 'Loading…' : 'Refresh now'}
+            </button>
+            <span className="text-[11px] text-slate-500">
+              {aiSkippedTotal} total skip{aiSkippedTotal === 1 ? '' : 's'} recorded
+            </span>
+          </div>
+          <p className="text-[10px] text-slate-400 sm:text-right">
+            Updates automatically every 20s while this tab is open (and when you return to the window).
+          </p>
         </div>
       </div>
       <p className="text-[11px] leading-relaxed text-slate-500">
         <strong className="font-medium text-slate-700">Add to inbox</strong> imports the message into your tracker now (bypasses Inbox AI).{' '}
         <strong className="font-medium text-slate-700">Re-try on next sync</strong> only removes the skip so a future run can try again.
       </p>
+      {rows.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={selectedIds.size === 0 || skippedBulkClearing}
+            onClick={onBulkClearSkip}
+            className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800 shadow-sm hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {skippedBulkClearing
+              ? 'Clearing…'
+              : `Clear skip for selected (${selectedIds.size})`}
+          </button>
+          <button
+            type="button"
+            disabled={rows.length === 0 || skippedBulkClearing}
+            onClick={onSelectAllVisible}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+          >
+            {allVisibleSelected && selectedOnPageCount > 0
+              ? 'Clear selection'
+              : `Select all visible (${rows.length})`}
+          </button>
+          <span className="text-[11px] text-slate-500">Ledger only — Gmail unchanged.</span>
+        </div>
+      ) : null}
       {rows.length === 0 && !aiSkippedLoading ? (
         <p className="rounded-lg border border-slate-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
           {aiSkippedTotal === 0
@@ -649,6 +701,18 @@ function SkippedMailsTabTable({
           <table className="min-w-full divide-y divide-slate-100 text-left text-xs">
             <thead className="bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">
               <tr>
+                <th className="w-10 px-2 py-2" scope="col">
+                  <span className="sr-only">Select</span>
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    checked={allVisibleSelected && rows.length > 0}
+                    onChange={onSelectAllVisible}
+                    disabled={skippedBulkClearing || rows.length === 0}
+                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 disabled:opacity-40"
+                    aria-label="Select all visible skipped messages"
+                  />
+                </th>
                 <th className="px-3 py-2">When skipped</th>
                 <th className="px-3 py-2">Kind</th>
                 <th className="px-3 py-2">From / subject</th>
@@ -665,6 +729,20 @@ function SkippedMailsTabTable({
                 const replyMailto = mailtoReplyHref(row.from_email, row.subject);
                 return (
                   <tr key={`${row.employee_id}:${row.provider_message_id}`} className="align-top">
+                    <td className="px-2 py-2.5 align-top">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(row.provider_message_id)}
+                        onChange={() => onToggleSelect(row.provider_message_id)}
+                        disabled={
+                          skippedBulkClearing ||
+                          aiSkippedClearingId === row.provider_message_id ||
+                          aiSkippedImportingId === row.provider_message_id
+                        }
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 disabled:opacity-40"
+                        aria-label={`Select skipped message ${row.subject ?? row.provider_message_id}`}
+                      />
+                    </td>
                     <td className="px-3 py-2.5 whitespace-nowrap">
                       <RelWithAbsoluteDate iso={row.skipped_at} />
                     </td>
@@ -860,6 +938,7 @@ function CeoLiveSyncStrip({
   syncBusy,
   nextIngestionAtIso,
   scheduleReady,
+  canManualSync = true,
 }: {
   mailboxes: Mailbox[];
   liveTrackDate: string;
@@ -872,6 +951,8 @@ function CeoLiveSyncStrip({
   nextIngestionAtIso: string | null;
   /** False until the first `/settings/runtime` response for this view. */
   scheduleReady: boolean;
+  /** Employees rely on the scheduled crawl; CEO/managers can trigger a company run. */
+  canManualSync?: boolean;
 }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -986,11 +1067,16 @@ function CeoLiveSyncStrip({
           </div>
           <button
             type="button"
-            disabled={syncBusy}
+            disabled={syncBusy || !canManualSync}
+            title={
+              !canManualSync
+                ? 'Company sync is run on a schedule. Ask your CEO or manager if you need an earlier pull.'
+                : undefined
+            }
             onClick={onSyncNow}
             className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-brand-600/25 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {syncBusy ? 'Running sync…' : 'Run sync now'}
+            {syncBusy ? 'Running sync…' : !canManualSync ? 'Scheduled sync' : 'Run sync now'}
           </button>
         </div>
       </div>
@@ -1116,6 +1202,8 @@ function MyEmailPageInner() {
   const [aiSkippedOffset, setAiSkippedOffset] = useState(0);
   const [aiSkippedClearingId, setAiSkippedClearingId] = useState<string | null>(null);
   const [aiSkippedImportingId, setAiSkippedImportingId] = useState<string | null>(null);
+  const [skippedSelectedIds, setSkippedSelectedIds] = useState<Set<string>>(new Set());
+  const [skippedBulkClearing, setSkippedBulkClearing] = useState(false);
 
   const [filterMailbox, setFilterMailbox] = useState('');
   /** Extra filters only for the “All threads” tab. */
@@ -1272,7 +1360,12 @@ function MyEmailPageInner() {
       return;
     }
     /** My Email: CEO full workspace; HEAD/EMPLOYEE — Historical Search (scoped mailboxes). */
-    if (me.role !== 'CEO' && me.role !== 'HEAD' && me.role !== 'EMPLOYEE') {
+    if (
+      me.role !== 'CEO' &&
+      me.role !== 'HEAD' &&
+      me.role !== 'MANAGER' &&
+      me.role !== 'EMPLOYEE'
+    ) {
       router.replace('/dashboard');
       return;
     }
@@ -1855,20 +1948,25 @@ function MyEmailPageInner() {
     [mailboxes, ceoEmailNorm],
   );
 
-  const showCEOOnlyChrome = me?.role === 'CEO';
-  const isHeadOrEmp = me?.role === 'HEAD' || me?.role === 'EMPLOYEE';
+  /** Live + Historical inbox chrome (same surface as CEO) for all My Email roles. */
+  const showFullInboxChrome =
+    me?.role === 'CEO' ||
+    me?.role === 'HEAD' ||
+    me?.role === 'MANAGER' ||
+    me?.role === 'EMPLOYEE';
+  /** CEO manual sync also allowed for department managers; not for IC (cron still runs). */
+  const canRunCompanyWideSync =
+    me?.role === 'CEO' || me?.role === 'HEAD' || me?.role === 'MANAGER';
 
   const historicalMailboxCandidates = useMemo(() => {
-    if (showCEOOnlyChrome) return ownMailboxes;
+    if (me?.role === 'CEO') return ownMailboxes;
     return mailboxes;
-  }, [showCEOOnlyChrome, mailboxes, ownMailboxes]);
+  }, [me?.role, mailboxes, ownMailboxes]);
 
-  const showHistoricalShell =
-    myEmailTab === 'ceo' &&
-    (showCEOOnlyChrome ? ceoInboxMode === 'historical' : Boolean(isHeadOrEmp));
+  const showHistoricalShell = myEmailTab === 'ceo' && ceoInboxMode === 'historical';
 
   useEffect(() => {
-    if (!showCEOOnlyChrome || ceoInboxMode !== 'live') return;
+    if (!showFullInboxChrome || ceoInboxMode !== 'live') return;
     const primary = ownMailboxes.find((m) => m.gmail_connected) ?? ownMailboxes[0];
     if (!primary) return;
     const key = `${primary.id}:${primary.tracking_start_at ?? ''}`;
@@ -1877,10 +1975,10 @@ function MyEmailPageInner() {
     const { date, time } = isoToLiveTrackingDateTime(primary.tracking_start_at);
     setLiveTrackDate(date);
     setLiveTrackTime(time);
-  }, [showCEOOnlyChrome, ceoInboxMode, ownMailboxes]);
+  }, [showFullInboxChrome, ceoInboxMode, ownMailboxes]);
 
   useEffect(() => {
-    if (!token || !showCEOOnlyChrome || myEmailTab !== 'ceo' || ceoInboxMode !== 'live') return;
+    if (!token || !showFullInboxChrome || myEmailTab !== 'ceo' || ceoInboxMode !== 'live') return;
     let cancelled = false;
     void loadLiveIngestSchedule();
     const id = window.setInterval(() => {
@@ -1890,7 +1988,7 @@ function MyEmailPageInner() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [token, showCEOOnlyChrome, myEmailTab, ceoInboxMode, loadLiveIngestSchedule]);
+  }, [token, showFullInboxChrome, myEmailTab, ceoInboxMode, loadLiveIngestSchedule]);
 
   useEffect(() => {
     if (ownMailboxes.length === 0) return;
@@ -1908,12 +2006,6 @@ function MyEmailPageInner() {
     const allowed = new Set(historicalSavedRuns.map((r) => r.id));
     setSelectedHistoricalRunIds((prev) => prev.filter((id) => allowed.has(id)));
   }, [historicalSavedRuns]);
-
-  useEffect(() => {
-    if (!me || (me.role !== 'HEAD' && me.role !== 'EMPLOYEE')) return;
-    setMyEmailTab('ceo');
-    setCeoInboxMode('historical');
-  }, [me]);
 
   useEffect(() => {
     if (historicalMailboxCandidates.length === 0) return;
@@ -1994,9 +2086,10 @@ function MyEmailPageInner() {
     }
   }, [token]);
 
-  const loadAiSkippedMails = useCallback(async () => {
+  const loadAiSkippedMails = useCallback(async (opts?: { silent?: boolean }) => {
     if (!token || !aiSkippedMailboxId) return;
-    setAiSkippedLoading(true);
+    const silent = Boolean(opts?.silent);
+    if (!silent) setAiSkippedLoading(true);
     try {
       const params = new URLSearchParams({
         employee_id: aiSkippedMailboxId,
@@ -2012,9 +2105,11 @@ function MyEmailPageInner() {
       setAiSkippedTotal(typeof data.total === 'number' ? data.total : 0);
     } catch (e) {
       console.warn(e);
-      setError(e instanceof Error ? e.message : 'Could not load messages Inbox AI skipped.');
+      if (!silent) {
+        setError(e instanceof Error ? e.message : 'Could not load messages Inbox AI skipped.');
+      }
     } finally {
-      setAiSkippedLoading(false);
+      if (!silent) setAiSkippedLoading(false);
     }
   }, [token, aiSkippedMailboxId, aiSkippedOffset]);
 
@@ -2103,6 +2198,11 @@ function MyEmailPageInner() {
           setError(await readApiErrorMessage(res, 'Could not clear skip.'));
           return;
         }
+        setSkippedSelectedIds((prev) => {
+          const n = new Set(prev);
+          n.delete(providerMessageId);
+          return n;
+        });
         await loadAiSkippedMails();
         setSuccess('Skip removed — run sync again to re-fetch this message from Gmail.');
       } finally {
@@ -2132,6 +2232,11 @@ function MyEmailPageInner() {
         const body = (await res.json()) as { outcome?: string };
         await loadAiSkippedMails();
         await loadDashboard(token);
+        setSkippedSelectedIds((prev) => {
+          const n = new Set(prev);
+          n.delete(providerMessageId);
+          return n;
+        });
         setSuccess(
           body.outcome === 'already_in_portal'
             ? 'This message was already in your tracker.'
@@ -2143,6 +2248,46 @@ function MyEmailPageInner() {
     },
     [token, aiSkippedMailboxId, loadAiSkippedMails, loadDashboard],
   );
+
+  const clearSelectedSkippedSkips = useCallback(async () => {
+    if (!token || !aiSkippedMailboxId || skippedSelectedIds.size === 0) return;
+    const ids = [...skippedSelectedIds];
+    if (
+      !window.confirm(
+        `Clear skip for ${ids.length} message(s)? On the next sync, Inbox AI can re-evaluate them.`,
+      )
+    ) {
+      return;
+    }
+    setSkippedBulkClearing(true);
+    setError(null);
+    try {
+      let ok = 0;
+      let fail = 0;
+      for (const providerMessageId of ids) {
+        const params = new URLSearchParams({
+          employee_id: aiSkippedMailboxId,
+          provider_message_id: providerMessageId,
+        });
+        const res = await apiFetch(`/self-tracking/ai-skipped-mails?${params}`, token, {
+          method: 'DELETE',
+        });
+        if (res.ok) ok++;
+        else fail++;
+      }
+      setSkippedSelectedIds(new Set());
+      if (fail > 0) {
+        setError(`${fail} message(s) could not be cleared (${ok} cleared).`);
+      } else {
+        setSuccess(`${ok} skip(s) cleared — run sync again to re-fetch from Gmail if AI agrees.`);
+      }
+      await loadAiSkippedMails();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Bulk clear failed.');
+    } finally {
+      setSkippedBulkClearing(false);
+    }
+  }, [token, aiSkippedMailboxId, skippedSelectedIds, loadAiSkippedMails]);
 
   const clearHistWindowSkipEntry = useCallback(
     async (providerMessageId: string) => {
@@ -2252,11 +2397,11 @@ function MyEmailPageInner() {
   ]);
 
   useEffect(() => {
-    if (!showCEOOnlyChrome || ceoInboxMode !== 'live' || mailTab !== 'skipped') return;
+    if (!showFullInboxChrome || ceoInboxMode !== 'live' || mailTab !== 'skipped') return;
     if (!token || !aiSkippedMailboxId) return;
     void loadAiSkippedMails();
   }, [
-    showCEOOnlyChrome,
+    showFullInboxChrome,
     ceoInboxMode,
     mailTab,
     token,
@@ -2264,6 +2409,52 @@ function MyEmailPageInner() {
     aiSkippedOffset,
     loadAiSkippedMails,
   ]);
+
+  /** Drop selections for rows that disappeared after refresh or pagination. */
+  useEffect(() => {
+    const pageIds = new Set(aiSkippedRows.map((r) => r.provider_message_id));
+    setSkippedSelectedIds((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (pageIds.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [aiSkippedRows]);
+
+  useEffect(() => {
+    setSkippedSelectedIds(new Set());
+  }, [aiSkippedMailboxId, aiSkippedOffset]);
+
+  /** Background refresh while Skipped tab is open — no manual Refresh required. */
+  useEffect(() => {
+    if (!showFullInboxChrome || ceoInboxMode !== 'live' || mailTab !== 'skipped') return;
+    if (!token || !aiSkippedMailboxId) return;
+    const POLL_MS = 20_000;
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void loadAiSkippedMails({ silent: true });
+    };
+    const id = window.setInterval(tick, POLL_MS);
+    return () => window.clearInterval(id);
+  }, [showFullInboxChrome, ceoInboxMode, mailTab, token, aiSkippedMailboxId, loadAiSkippedMails]);
+
+  useEffect(() => {
+    if (!showFullInboxChrome || ceoInboxMode !== 'live' || mailTab !== 'skipped') return;
+    if (!token || !aiSkippedMailboxId) return;
+    const onVisible = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void loadAiSkippedMails({ silent: true });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [showFullInboxChrome, ceoInboxMode, mailTab, token, aiSkippedMailboxId, loadAiSkippedMails]);
 
   useEffect(() => {
     if (ceoInboxMode === 'historical' && mailTab === 'skipped') {
@@ -2273,7 +2464,7 @@ function MyEmailPageInner() {
 
   const applySavedHistoricalRun = useCallback(
     async (run: HistoricalSearchRunItem) => {
-      if (showCEOOnlyChrome) setCeoInboxMode('historical');
+      if (showFullInboxChrome) setCeoInboxMode('historical');
       setHistMailboxId(run.employee_id);
       setHistStartDate(isoToLocalYmd(run.window_start));
       setHistEndDate(isoToLocalYmd(run.window_end));
@@ -2289,7 +2480,7 @@ function MyEmailPageInner() {
         setError(e instanceof Error ? e.message : 'Could not load threads for this saved search.');
       }
     },
-    [refreshHistoricalWindowTable, showCEOOnlyChrome],
+    [refreshHistoricalWindowTable, showFullInboxChrome],
   );
 
   useEffect(() => {
@@ -2333,7 +2524,7 @@ function MyEmailPageInner() {
     const targetMailboxId = effectiveHistoricalMailboxId;
     if (!targetMailboxId) {
       setError(
-        showCEOOnlyChrome
+        showFullInboxChrome
           ? 'Connect your CEO inbox under My Email (Live Mails) first.'
           : 'No mailbox in scope. Connect Gmail for this mailbox on the Employees / Team page first.',
       );
@@ -2533,7 +2724,7 @@ function MyEmailPageInner() {
     histEndDate,
     effectiveHistoricalMailboxId,
     refreshHistoricalWindowTable,
-    showCEOOnlyChrome,
+    showFullInboxChrome,
     loadHistoricalSavedRuns,
   ]);
 
@@ -2676,6 +2867,21 @@ function MyEmailPageInner() {
     [withoutLowScoped],
   );
 
+  /** Matches the Low / noise tab (priority LOW in this mailbox scope). */
+  const kpiLowNoiseTabCount = useMemo(
+    () => scopedConversations.filter((c) => c.priority === 'LOW').length,
+    [scopedConversations],
+  );
+
+  /** Matches the All threads tab row count (respects hide-low setting). */
+  const kpiAllThreadsTabCount = useMemo(
+    () =>
+      hideLowPriority
+        ? scopedConversations.filter((c) => c.priority !== 'LOW').length
+        : scopedConversations.length,
+    [hideLowPriority, scopedConversations],
+  );
+
   const ccScopedRows = useMemo(
     () =>
       (hideLowPriority
@@ -2735,6 +2941,19 @@ function MyEmailPageInner() {
       return sub.includes(q) || from.includes(q) || kind.includes(q) || mid.includes(q);
     });
   }, [aiSkippedRows, threadSearch]);
+
+  const toggleSelectAllSkippedFiltered = useCallback(() => {
+    const ids = searchFilteredSkippedRows.map((r) => r.provider_message_id);
+    setSkippedSelectedIds((prev) => {
+      const all = ids.length > 0 && ids.every((id) => prev.has(id));
+      if (all) {
+        const n = new Set(prev);
+        ids.forEach((id) => n.delete(id));
+        return n;
+      }
+      return new Set([...prev, ...ids]);
+    });
+  }, [searchFilteredSkippedRows]);
 
   const searchFilteredTabRows = useMemo(() => {
     const q = threadSearch.trim().toLowerCase();
@@ -2869,6 +3088,7 @@ function MyEmailPageInner() {
 
   const runLiveIngestionNow = useCallback(async () => {
     if (!token) return;
+    if (!canRunCompanyWideSync) return;
     const trackingIso = liveTrackingDateTimeToIso(liveTrackDate, liveTrackTime);
     if (!trackingIso) {
       setError('Choose a valid start date and time for live tracking.');
@@ -2931,7 +3151,16 @@ function MyEmailPageInner() {
     } finally {
       setLiveSyncBusy(false);
     }
-  }, [token, loadDashboard, loadLiveIngestSchedule, syncEmployeeIdsParam, liveTrackDate, liveTrackTime, ownMailboxes]);
+  }, [
+    token,
+    canRunCompanyWideSync,
+    loadDashboard,
+    loadLiveIngestSchedule,
+    syncEmployeeIdsParam,
+    liveTrackDate,
+    liveTrackTime,
+    ownMailboxes,
+  ]);
 
   const pipelineStep2Done =
     pipeline != null && (!pipeline.running || pipeline.status !== 'running');
@@ -2953,7 +3182,15 @@ function MyEmailPageInner() {
                 : 30;
 
   useEffect(() => {
-    if (!token || !me || (me.role !== 'CEO' && me.role !== 'HEAD' && me.role !== 'EMPLOYEE')) return;
+    if (
+      !token ||
+      !me ||
+      (me.role !== 'CEO' &&
+        me.role !== 'HEAD' &&
+        me.role !== 'MANAGER' &&
+        me.role !== 'EMPLOYEE')
+    )
+      return;
     const id = window.setTimeout(() => {
       void loadDashboard(token, syncEmployeeIdsParam || undefined);
     }, 180);
@@ -3072,7 +3309,12 @@ function MyEmailPageInner() {
     );
   }
 
-  if (me.role !== 'CEO' && me.role !== 'HEAD' && me.role !== 'EMPLOYEE') {
+  if (
+    me.role !== 'CEO' &&
+    me.role !== 'HEAD' &&
+    me.role !== 'MANAGER' &&
+    me.role !== 'EMPLOYEE'
+  ) {
     return (
       <AppShell
         role={me.role}
@@ -3085,22 +3327,27 @@ function MyEmailPageInner() {
     );
   }
 
+  const isManagerOrIc =
+    me.role === 'HEAD' || me.role === 'MANAGER' || me.role === 'EMPLOYEE';
+
   const pageTitle =
-    me.role === 'HEAD' || me.role === 'EMPLOYEE'
-      ? 'Historical search'
-      : myEmailTab === 'manager'
+    me.role === 'CEO'
+      ? myEmailTab === 'manager'
         ? 'Manager mail'
         : myEmailTab === 'team'
           ? 'Team mail'
-          : 'My Email';
+          : 'My Email'
+      : 'My Email';
   const shellSubtitle =
-    me.role === 'HEAD' || me.role === 'EMPLOYEE'
-      ? 'Pull Gmail for a date range and classify with AI for mailboxes you can access. Your scope is your department (managers) or your own mailbox (employees).'
-      : myEmailTab === 'ceo'
+    me.role === 'CEO'
+      ? myEmailTab === 'ceo'
         ? 'Your CEO inbox only. Gemini reads mail in your tracking window and keeps messages that may need a reply or follow-up.'
         : myEmailTab === 'manager'
           ? 'Department heads’ tracked inboxes.'
-          : 'Individual contributors and other org mailboxes (not your CEO login).';
+          : 'Individual contributors and other org mailboxes (not your CEO login).'
+      : isManagerOrIc
+        ? 'Live mail, follow-ups, and historical search for mailboxes you can access. Managers: your team’s connected mailboxes sync here automatically — employees do not need to share passwords; they connect Gmail in the employee portal and you see the same threads in Dashboard and My Email.'
+        : 'My Email';
 
   const bulkDeleteBarPct =
     bulkDeleteProgress == null || bulkDeleteProgress.total <= 0
@@ -3379,11 +3626,10 @@ function MyEmailPageInner() {
         <>
           {myEmailTab === 'ceo' ? (
             <div className="mb-6 space-y-4">
-              {showCEOOnlyChrome ? (
-                <>
+              <>
                   <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card">
                     <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      CEO inbox
+                      {me?.role === 'CEO' ? 'CEO inbox' : 'Your inbox'}
                     </span>
                     <button
                       type="button"
@@ -3428,40 +3674,10 @@ function MyEmailPageInner() {
                       syncBusy={liveSyncBusy}
                       nextIngestionAtIso={liveIngestSchedule?.nextIngestionAt ?? null}
                       scheduleReady={liveIngestSchedule != null}
+                      canManualSync={canRunCompanyWideSync}
                     />
                   ) : null}
-                </>
-              ) : (
-                <div className="rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Mailbox for this search
-                  </p>
-                  {historicalMailboxCandidates.length > 1 ? (
-                    <label className="mt-2 flex max-w-md flex-col gap-1 text-xs font-medium text-slate-600">
-                      Select inbox
-                      <select
-                        value={histMailboxId}
-                        onChange={(e) => setHistMailboxId(e.target.value)}
-                        className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                      >
-                        {historicalMailboxCandidates.map((mb) => (
-                          <option key={mb.id} value={mb.id}>
-                            {mb.name} · {mb.email}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  ) : historicalMailboxCandidates.length === 1 ? (
-                    <p className="mt-1 text-sm text-slate-700">
-                      {historicalMailboxCandidates[0].name} · {historicalMailboxCandidates[0].email}
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-sm text-amber-800">
-                      No tracked mailbox in your scope yet. Connect Gmail from the Team / Employees page.
-                    </p>
-                  )}
-                </div>
-              )}
+              </>
             </div>
           ) : null}
 
@@ -4316,7 +4532,7 @@ function MyEmailPageInner() {
                 </div>
               ) : null}
             </section>
-          ) : showCEOOnlyChrome ? (
+          ) : (
             <>
           {/* ── KPI strip — follow-up command center (scoped to tab) ── */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -4386,19 +4602,52 @@ function MyEmailPageInner() {
             <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="Follow-up views">
               {(
                 [
-                  ['action', 'Need your reply'],
-                  ['waiting', 'Waiting on them'],
-                  ['cc', "CC'd"],
-                  ['closed', 'Done'],
-                  ['noise', 'Low / noise'],
-                  ['all', 'All threads'],
-                  ...(ceoInboxMode === 'live' ? [['skipped', 'Skipped'] as const] : []),
+                  [
+                    'action',
+                    'Need your reply',
+                    'Threads already in your tracker where you owe a reply (last inbound newer than your reply, or SLA missed). Respects hide-low and stale rules.',
+                  ],
+                  [
+                    'waiting',
+                    'Waiting on them',
+                    'Threads in your tracker where you already replied at or after their last message.',
+                  ],
+                  [
+                    'cc',
+                    "CC'd",
+                    'Threads where the latest inbound had you only on Cc, not To.',
+                  ],
+                  [
+                    'closed',
+                    'Done',
+                    'Threads marked resolved (follow-up done) in your tracker.',
+                  ],
+                  [
+                    'noise',
+                    'Low / noise',
+                    'Threads the post-import AI marked LOW priority (newsletters, FYI, automated, etc.).',
+                  ],
+                  [
+                    'all',
+                    'All threads',
+                    'Every conversation in this view; optional status/priority filters apply.',
+                  ],
+                  ...(ceoInboxMode === 'live'
+                    ? ([
+                        [
+                          'skipped',
+                          'Skipped',
+                          'Messages Gmail sync did not import yet (Inbox AI not relevant, or before tracking start). Not the same list as other tabs until you add to inbox.',
+                        ],
+                      ] as const)
+                    : []),
                 ] as const
-              ).map(([id, label]) => (
+              ).map(([id, label, title]) => (
                 <button
                   key={id}
                   type="button"
                   role="tab"
+                  title={title}
                   aria-selected={mailTab === id}
                   onClick={() => setMailTab(id)}
                   className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
@@ -4417,12 +4666,34 @@ function MyEmailPageInner() {
                   {id === 'cc' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({ccScopedRows.length})</span>
                   ) : null}
+                  {id === 'closed' ? (
+                    <span className="ml-1.5 tabular-nums opacity-80">({scopedStats.done})</span>
+                  ) : null}
+                  {id === 'noise' ? (
+                    <span className="ml-1.5 tabular-nums opacity-80">({kpiLowNoiseTabCount})</span>
+                  ) : null}
+                  {id === 'all' ? (
+                    <span className="ml-1.5 tabular-nums opacity-80">({kpiAllThreadsTabCount})</span>
+                  ) : null}
                   {id === 'skipped' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({aiSkippedTotal})</span>
                   ) : null}
                 </button>
               ))}
             </div>
+
+            <p className="mt-3 max-w-3xl text-[11px] leading-relaxed text-slate-600">
+              <span className="font-medium text-slate-800">Need your reply</span> through{' '}
+              <span className="font-medium text-slate-800">All threads</span> show{' '}
+              <strong className="font-medium text-slate-700">conversations already saved</strong> in the portal. How they
+              sort (reply owed vs waiting, CC, done, low priority) follows your last messages, SLA, and AI-assigned
+              priority after import.{' '}
+              <span className="font-medium text-slate-800">Skipped</span> is{' '}
+              <strong className="font-medium text-slate-700">separate</strong>: mail Gmail sync chose not to store yet
+              (Inbox AI filter or before your tracking window). Those threads do{' '}
+              <strong className="font-medium text-slate-700">not</strong> appear in the other tabs until you use{' '}
+              <strong className="font-medium text-slate-700">Add to inbox</strong> on the Skipped list.
+            </p>
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               {mailTab !== 'skipped' && scopedPersonOptions.length > 1 ? (
@@ -4509,6 +4780,18 @@ function MyEmailPageInner() {
                     aiSkippedClearingId={aiSkippedClearingId}
                     onImportToInbox={(id) => void importAiSkippedToInbox(id)}
                     aiSkippedImportingId={aiSkippedImportingId}
+                    selectedIds={skippedSelectedIds}
+                    onToggleSelect={(id) =>
+                      setSkippedSelectedIds((prev) => {
+                        const n = new Set(prev);
+                        if (n.has(id)) n.delete(id);
+                        else n.add(id);
+                        return n;
+                      })
+                    }
+                    onSelectAllVisible={toggleSelectAllSkippedFiltered}
+                    onBulkClearSkip={() => void clearSelectedSkippedSkips()}
+                    skippedBulkClearing={skippedBulkClearing}
                   />
                 )}
               </div>
@@ -4668,19 +4951,22 @@ function MyEmailPageInner() {
               </>
             )}
           </section>
+          </div>
 
           {/* ── Mailboxes: CEO / Manager / Team are separate views (sidebar hash), not one scroll ── */}
           <section className="order-1">
             {myEmailTab === 'ceo' ? (
               <>
                 <div className="mb-3">
-                  <h2 className="text-lg font-bold text-slate-900">Your inbox (CEO)</h2>
+                  <h2 className="text-lg font-bold text-slate-900">
+                    {me.role === 'CEO' ? 'Your inbox (CEO)' : 'Your inbox'}
+                  </h2>
                 </div>
 
                 {mailboxes.length === 0 && (
                   <div className="mb-4 rounded-2xl border border-brand-200/80 bg-gradient-to-br from-indigo-50/90 to-white p-6 shadow-card">
                     <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
-                      Your inbox (CEO)
+                      {me.role === 'CEO' ? 'Your inbox (CEO)' : 'Your inbox'}
                     </p>
                     <h3 className="mt-1 text-base font-bold text-slate-900">
                       Connect your own Gmail
@@ -4868,9 +5154,8 @@ function MyEmailPageInner() {
               </>
             ) : null}
           </section>
-          </div>
             </>
-          ) : null}
+          )}
 
         </>
       )}
