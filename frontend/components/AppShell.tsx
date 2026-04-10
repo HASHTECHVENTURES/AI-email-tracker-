@@ -171,8 +171,9 @@ export function AppShell({
   const isCeo = role === 'CEO';
   const isHead = isDepartmentManagerRole(role);
   const isEmployee = role === 'EMPLOYEE';
-  const canActAsMailbox =
-    isHead && !isPlatformAdmin && !!(me?.linked_employee_id?.trim());
+  // VIEW toggle removed: role is fixed at login (HEAD = Manager, EMPLOYEE = Employee).
+  // Managers always see the Manager nav regardless of linked_employee_id.
+  const canActAsMailbox = false;
   const actAsMailbox = useActAsEmployeeMailboxView(canActAsMailbox);
   /** Employee portal nav, or manager viewing their linked mailbox. */
   const mailboxNav = isEmployee || actAsMailbox;
@@ -244,41 +245,7 @@ export function AppShell({
             </div>
           ) : null}
 
-          {canActAsMailbox ? (
-            <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50/90 px-3 py-2.5">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">View</p>
-              <div className="mt-2 flex rounded-lg bg-slate-200/90 p-0.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActAsEmployeeView(false);
-                    router.refresh();
-                  }}
-                  className={`min-w-0 flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition ${
-                    !actAsMailbox
-                      ? 'bg-white text-slate-900 shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Manager
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActAsEmployeeView(true);
-                    router.refresh();
-                  }}
-                  className={`min-w-0 flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition ${
-                    actAsMailbox
-                      ? 'bg-white text-slate-900 shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Mailbox
-                </button>
-              </div>
-            </div>
-          ) : null}
+          {/* VIEW toggle removed — role is fixed at login */}
 
           {/* Scroll lives on this wrapper (not <nav>) so overflow-y does not clip link text on the inline axis. */}
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]">
