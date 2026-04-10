@@ -507,6 +507,124 @@ function formatElapsedSince(startedAtMs: number): string {
   return `${m}m ${r}s`;
 }
 
+/** Latest `last_synced_at` among mailboxes (server’s last Gmail + processing pass for that row). */
+function pickLatestMailboxSyncIso(mailboxes: Mailbox[]): string | null {
+  let best = -1;
+  let iso: string | null = null;
+  for (const m of mailboxes) {
+    const raw = m.last_synced_at;
+    if (!raw) continue;
+    const t = Date.parse(raw);
+    if (!Number.isNaN(t) && t > best) {
+      best = t;
+      iso = raw;
+    }
+  }
+  return iso;
+}
+
+function formatLiveSyncRelative(iso: string, nowMs: number): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return 'Unknown';
+  const sec = Math.max(0, Math.floor((nowMs - t) / 1000));
+  if (sec < 15) return 'Just now';
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const h = Math.floor(min / 60);
+  if (h < 48) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
+function formatLiveSyncAbsolute(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+/** CEO Live Mails: friendly last-sync timer + exact date (from mailbox `last_synced_at`). */
+function LiveMailSyncBanner({ mailboxes }: { mailboxes: Mailbox[] }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((x) => x + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  void tick;
+  const nowMs = Date.now();
+  const connected = mailboxes.some((m) => m.gmail_connected);
+  const latestIso = pickLatestMailboxSyncIso(mailboxes);
+
+  if (!connected) {
+    return (
+      <div className="mb-6 rounded-2xl border border-slate-200/80 bg-slate-50/80 px-4 py-3 sm:px-5">
+        <p className="text-sm font-medium text-slate-700">Live mail sync</p>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Connect Gmail on your inbox card below — then you&apos;ll see when the last Gmail + AI sync finished.
+        </p>
+      </div>
+    );
+  }
+
+  if (!latestIso) {
+    return (
+      <div className="mb-6 rounded-2xl border border-amber-200/80 bg-amber-50/50 px-4 py-3 sm:px-5">
+        <p className="text-sm font-semibold text-amber-950">Live mail sync</p>
+        <p className="mt-1 text-xs leading-relaxed text-amber-900/80">
+          Gmail is connected. The first sync is starting — refresh in a moment to see the last run time.
+        </p>
+      </div>
+    );
+  }
+
+  const relative = formatLiveSyncRelative(latestIso, nowMs);
+  const absolute = formatLiveSyncAbsolute(latestIso);
+  const ageMin = (nowMs - Date.parse(latestIso)) / 60_000;
+  const looksFresh = ageMin < 20;
+
+  return (
+    <div className="mb-6 rounded-2xl border border-emerald-200/70 bg-gradient-to-br from-emerald-50/90 via-white to-slate-50/60 px-4 py-3.5 shadow-sm sm:px-5 sm:py-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+        <div className="flex items-start gap-3">
+          <div
+            className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700"
+            aria-hidden
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+              <path
+                fillRule="evenodd"
+                d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25ZM12.75 6a.75.75 0 0 0-1.5 0v6c0 .414.336.75.75.75h4.5a.75.75 0 0 0 0-1.5h-3.75V6Z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-semibold text-slate-900">Last Gmail &amp; AI sync</p>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                  looksFresh ? 'bg-emerald-200/80 text-emerald-900' : 'bg-slate-200/80 text-slate-600'
+                }`}
+              >
+                {looksFresh ? 'Recent' : 'Idle'}
+              </span>
+            </div>
+            <p className="mt-1 text-2xl font-bold tabular-nums tracking-tight text-slate-900" title={absolute}>
+              {relative}
+            </p>
+            <p className="mt-0.5 text-xs text-slate-500">{absolute}</p>
+          </div>
+        </div>
+        <p className="max-w-sm text-[11px] leading-relaxed text-slate-500 sm:text-right">
+          Live mail checks Gmail on a schedule, then runs AI on new messages. This time updates after each successful run
+          (refresh the page if you&apos;ve been away a while).
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function statusBadge(status: string) {
   const map: Record<string, string> = {
     MISSED: 'bg-red-100 text-red-800',
@@ -2268,22 +2386,26 @@ function MyEmailPageInner() {
             </div>
           ) : null}
 
+          {myEmailTab === 'ceo' && ceoInboxMode === 'live' ? (
+            <LiveMailSyncBanner mailboxes={ownMailboxes} />
+          ) : null}
+
           {myEmailTab === 'ceo' && ceoInboxMode === 'historical' ? (
             <section className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-card sm:p-5">
               <h2 className="text-lg font-bold text-slate-900">Historical Search</h2>
               <p className="mt-1 text-xs text-slate-500">
-                Uses the <strong className="font-medium text-slate-700">same CEO inbox</strong> as Live Mails (the one
-                you connected here). Pick a date range and click{' '}
-                <strong className="font-medium text-slate-700">Fetch from Gmail</strong>. Our AI pulls mail from that
-                period, classifies it, and shows important threads below.
+                Pick a date range and click{' '}
+                <strong className="font-medium text-slate-700">Fetch from Gmail</strong>. This runs a{' '}
+                <strong className="font-medium text-slate-700">separate on-demand job</strong> — it only processes mail
+                for the window you chose and shows results below. It uses the same{' '}
+                <strong className="font-medium text-slate-700">connected CEO inbox</strong> and the same app
+                credentials (Google link / AI) as Live Mails, but it is not the same process as ongoing Live tracking.
               </p>
               <p className="mt-2 rounded-lg border border-slate-100 bg-slate-50/90 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
-                <strong className="text-slate-800">Same storage as Live.</strong> Historical Search and Live Mails both
-                read and write the <strong className="font-medium text-slate-800">same</strong> saved threads — there is
-                no separate &quot;historical inbox&quot; that later drains into Live. If Live already synced an email,
-                a historical run may import little that is new; threads whose <em>last client message</em> falls in
-                your range still appear in the table below. New mail appearing in Live over time is normal background
-                sync (every few minutes), not old historical data &quot;leaking&quot; in.
+                <strong className="text-slate-800">Live vs Historical.</strong> Live Mails keeps syncing in the
+                background on its own schedule. Historical Search runs when you click Fetch for your selected dates only.
+                Do not treat them as one pipeline: they are two different flows that happen to use the same Gmail
+                connection and keys.
               </p>
               {ownMailboxes.length > 0 ? (
                 <p className="mt-2 text-[11px] text-slate-400">
