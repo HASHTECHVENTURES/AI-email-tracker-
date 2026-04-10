@@ -13,17 +13,10 @@ export class EmailIngestionController {
 
   @Get('run')
   async runIngestion(@Req() req: Request) {
-    if (!req.internalApiAuth) {
-      const ctx = getRequestContext(req);
-      if (ctx.role !== 'CEO' && ctx.role !== 'HEAD') {
-        throw new ForbiddenException(
-          'Only CEO, department manager, or internal API key can trigger a company sync run',
-        );
-      }
-    }
-
     const internal = Boolean(req.internalApiAuth);
+
     if (!internal) {
+      const ctx = getRequestContext(req);
       const s = await this.settingsService.getAll();
       if (!s.email_crawl_enabled) {
         return {
@@ -33,6 +26,42 @@ export class EmailIngestionController {
           timestamp: new Date().toISOString(),
           results: [],
         };
+      }
+
+      if (ctx.role === 'EMPLOYEE') {
+        if (!ctx.employeeId) {
+          throw new ForbiddenException(
+            'Your account is not linked to an employee mailbox. Contact your admin.',
+          );
+        }
+        try {
+          const results = await this.emailIngestionService.runIncrementalForSingleEmployee(
+            ctx.companyId,
+            ctx.employeeId,
+          );
+          return {
+            status: 'completed',
+            timestamp: new Date().toISOString(),
+            results,
+          };
+        } catch (err) {
+          if (err instanceof ConflictException) {
+            return {
+              status: 'running',
+              message:
+                'Ingestion is already running. Your request was accepted and current run will continue.',
+              timestamp: new Date().toISOString(),
+              results: [],
+            };
+          }
+          throw err;
+        }
+      }
+
+      if (ctx.role !== 'CEO' && ctx.role !== 'HEAD') {
+        throw new ForbiddenException(
+          'Only CEO, department manager, linked employee mailbox, or internal API key can trigger a sync run',
+        );
       }
     }
 

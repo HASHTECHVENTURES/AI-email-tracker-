@@ -237,6 +237,104 @@ export class EmailIngestionService {
     }
   }
 
+  /**
+   * Employee portal — "Run sync now" for **this** mailbox only (same `ingestForEmployee` path as cron).
+   */
+  async runIncrementalForSingleEmployee(companyId: string, employeeId: string): Promise<IngestionResult[]> {
+    const pre = await this.settingsService.getAll();
+    if (pre.email_ai_relevance_enabled && !this.relevanceModel) {
+      this.logger.warn(
+        'Inbox AI relevance is enabled in Settings but no Gemini API key is configured on the server.',
+      );
+    }
+
+    const emailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(companyId);
+    if (!emailCrawlOn) {
+      this.logger.debug(`Single-mailbox ingest skipped for company ${companyId} (platform email crawl off)`);
+      return [];
+    }
+
+    const em = await this.employeesService.getById(companyId, employeeId);
+    if (!em || em.active === false) {
+      throw new NotFoundException('Mailbox not found');
+    }
+
+    const hasOAuth = await this.oauthTokenService.hasToken(em.id);
+    if (!hasOAuth) {
+      return [
+        {
+          companyId,
+          employeeId: em.id,
+          employeeName: em.name,
+          newMessages: 0,
+          skippedFiltered: 0,
+          affectedThreads: 0,
+          conversationsUpdated: 0,
+          error: 'Gmail not connected',
+        },
+      ];
+    }
+
+    const employee: Employee = {
+      id: em.id,
+      name: em.name,
+      email: em.email,
+      companyId: em.companyId,
+      departmentId: em.departmentId,
+      active: em.active,
+      slaHoursDefault: em.slaHoursDefault,
+      aiEnabled: em.aiEnabled,
+      trackingStartAt: em.trackingStartAt ?? null,
+      trackingPaused: em.trackingPaused,
+    };
+
+    const acquired = await this.settingsService.tryAcquireIngestionLock();
+    if (!acquired) {
+      throw new ConflictException('Ingestion cycle is already running');
+    }
+
+    const cycleSettings = await this.settingsService.getAll();
+    const results: IngestionResult[] = [];
+
+    try {
+      try {
+        const result = await this.ingestForEmployee(companyId, employee, cycleSettings);
+        results.push(result);
+      } catch (err) {
+        this.logger.error(`Single-mailbox ingestion failed for ${employee.id}`, (err as Error).message);
+        results.push({
+          companyId,
+          employeeId: employee.id,
+          employeeName: employee.name,
+          newMessages: 0,
+          skippedFiltered: 0,
+          affectedThreads: 0,
+          conversationsUpdated: 0,
+          error: (err as Error).message,
+        });
+      }
+
+      await this.conversationsService.autoArchiveResolved();
+      await this.repairConversationsWithMissingSummaries();
+
+      await this.settingsService.markIngestionFinished({
+        status: 'success',
+        employees: results.length,
+        messages: results.reduce((sum, r) => sum + r.newMessages, 0),
+      });
+
+      return results;
+    } catch (err) {
+      await this.settingsService.markIngestionFinished({
+        status: 'failed',
+        error: (err as Error).message,
+        employees: results.length,
+        messages: results.reduce((sum, r) => sum + r.newMessages, 0),
+      });
+      throw err;
+    }
+  }
+
   private async ingestForEmployee(
     companyId: string,
     employee: Employee,

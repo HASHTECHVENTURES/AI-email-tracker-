@@ -1645,7 +1645,9 @@ export class EmployeesService {
     callerEmailNorm = '',
   ): Promise<OrgEmployeeDto> {
     if (ctx.role === 'EMPLOYEE') {
-      throw new ForbiddenException('Employees cannot update tracking window');
+      if (!ctx.employeeId || ctx.employeeId !== employeeId) {
+        throw new ForbiddenException('You can only update the tracking window for your own mailbox.');
+      }
     }
     const parsed = new Date(startAtIso);
     if (Number.isNaN(parsed.getTime())) {

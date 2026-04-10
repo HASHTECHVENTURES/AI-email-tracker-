@@ -2019,8 +2019,9 @@ function MyEmailPageInner() {
   /** Live + Historical inbox chrome (same surface as CEO) for all My Email roles. */
   const showFullInboxChrome =
     me?.role === 'CEO' || isDepartmentManagerRole(me?.role) || me?.role === 'EMPLOYEE';
-  /** CEO manual sync also allowed for department managers (HEAD); not for IC (cron still runs). */
-  const canRunCompanyWideSync = me?.role === 'CEO' || isDepartmentManagerRole(me?.role);
+  /** Manual "Run sync now" — CEO/HEAD (company crawl) or employee (their mailbox only via API). */
+  const canRunMyMailboxSync =
+    me?.role === 'CEO' || isDepartmentManagerRole(me?.role) || me?.role === 'EMPLOYEE';
 
   const historicalMailboxCandidates = useMemo(() => {
     if (me?.role === 'CEO' || isDepartmentManagerRole(me?.role)) return ownMailboxes;
@@ -3150,7 +3151,7 @@ function MyEmailPageInner() {
 
   const runLiveIngestionNow = useCallback(async () => {
     if (!token) return;
-    if (!canRunCompanyWideSync) return;
+    if (!canRunMyMailboxSync) return;
     const trackingIso = liveTrackingDateTimeToIso(liveTrackDate, liveTrackTime);
     if (!trackingIso) {
       setError('Choose a valid start date and time for live tracking.');
@@ -3215,7 +3216,7 @@ function MyEmailPageInner() {
     }
   }, [
     token,
-    canRunCompanyWideSync,
+    canRunMyMailboxSync,
     loadDashboard,
     loadLiveIngestSchedule,
     syncEmployeeIdsParam,
@@ -3403,7 +3404,7 @@ function MyEmailPageInner() {
       : isDepartmentManagerRole(me.role)
         ? 'Your inbox only. Gemini reads mail in your tracking window and keeps messages that may need a reply or follow-up.'
         : me.role === 'EMPLOYEE'
-          ? 'Live mail, follow-ups, and historical search for mailboxes you can access. Managers: your team’s connected mailboxes sync here automatically — employees do not need to share passwords; they connect Gmail in the employee portal and you see the same threads in Dashboard and My Email.'
+          ? 'Your inbox: live mail, follow-ups, and historical search — same My Email tools as leadership, scoped to your mailbox. Connect Gmail here, run sync when you need it, and track SLAs on your threads.'
           : 'My Email';
 
   const bulkDeleteBarPct =
@@ -3733,7 +3734,7 @@ function MyEmailPageInner() {
                       syncBusy={liveSyncBusy}
                       nextIngestionAtIso={liveIngestSchedule?.nextIngestionAt ?? null}
                       scheduleReady={liveIngestSchedule != null}
-                      canManualSync={canRunCompanyWideSync}
+                      canManualSync={canRunMyMailboxSync}
                     />
                   ) : null}
               </>
