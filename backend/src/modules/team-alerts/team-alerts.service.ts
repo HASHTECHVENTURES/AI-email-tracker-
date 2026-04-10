@@ -9,6 +9,7 @@ import {
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { RequestContext } from '../common/request-context';
+import { EmployeesService } from '../employees/employees.service';
 
 export interface TeamAlertDto {
   id: string;
@@ -41,7 +42,10 @@ export interface TeamAlertSentItem {
 export class TeamAlertsService {
   private readonly logger = new Logger(TeamAlertsService.name);
 
-  constructor(@Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient) {}
+  constructor(
+    @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
+    private readonly employeesService: EmployeesService,
+  ) {}
 
   async sendFromManager(ctx: RequestContext, fromUserId: string, employeeId: string, message: string) {
     if (ctx.role !== 'HEAD') {
@@ -115,7 +119,10 @@ export class TeamAlertsService {
     if (pErr || !parent) {
       throw new NotFoundException('Message not found');
     }
-    if (parent.company_id !== ctx.companyId || parent.employee_id !== ctx.employeeId) {
+
+    const { expandedIds } = await this.employeesService.getEmployeeAliasMapping(ctx.companyId, [ctx.employeeId]);
+
+    if (parent.company_id !== ctx.companyId || !expandedIds.includes(parent.employee_id)) {
       throw new ForbiddenException('You can only reply to messages sent to you');
     }
     if (parent.in_reply_to) {
@@ -126,7 +133,7 @@ export class TeamAlertsService {
       .from('team_alerts')
       .insert({
         company_id: ctx.companyId,
-        employee_id: ctx.employeeId,
+        employee_id: parent.employee_id,
         from_user_id: employeeUserId,
         body,
         in_reply_to: parentAlertId,
@@ -305,10 +312,12 @@ export class TeamAlertsService {
       throw new ForbiddenException('Only employees can load their manager alerts here');
     }
 
+    const { expandedIds } = await this.employeesService.getEmployeeAliasMapping(ctx.companyId, [ctx.employeeId]);
+
     const { data: rows, error } = await this.supabase
       .from('team_alerts')
       .select('id, body, created_at, read_at, from_user_id, in_reply_to')
-      .eq('employee_id', ctx.employeeId)
+      .in('employee_id', expandedIds)
       .order('created_at', { ascending: false })
       .limit(100);
 
@@ -403,7 +412,10 @@ export class TeamAlertsService {
     if (fetchErr || !row) {
       throw new NotFoundException('Alert not found');
     }
-    if (row.employee_id !== ctx.employeeId) {
+
+    const { expandedIds } = await this.employeesService.getEmployeeAliasMapping(ctx.companyId, [ctx.employeeId]);
+
+    if (!expandedIds.includes(row.employee_id)) {
       throw new ForbiddenException();
     }
 
@@ -438,7 +450,11 @@ export class TeamAlertsService {
     const inReplyTo = (row as { in_reply_to?: string | null }).in_reply_to ?? null;
 
     if (ctx.role === 'EMPLOYEE' || ctx.actAsEmployeePortal) {
-      if (!ctx.employeeId || row.employee_id !== ctx.employeeId) {
+      if (!ctx.employeeId) {
+        throw new ForbiddenException('You can only delete alerts on your own inbox');
+      }
+      const { expandedIds } = await this.employeesService.getEmployeeAliasMapping(ctx.companyId, [ctx.employeeId]);
+      if (!expandedIds.includes(row.employee_id)) {
         throw new ForbiddenException('You can only delete alerts on your own inbox');
       }
     } else if (ctx.role === 'HEAD') {
