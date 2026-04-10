@@ -325,7 +325,33 @@ export class EmailIngestionService {
       `Fetching emails for ${employee.name} list after ${listAfterDate.toISOString()}${resumeToken ? ' (resuming list)' : ''}; up to ${maxListPages} pages × ${listMaxResults} ids/run`,
     );
 
+    /**
+     * When `gmail_list_page_token` is set, we continue a multi-run list walk. That walk does not
+     * re-query page 1, so **brand-new** messages (always on the newest page) could be starved
+     * until the entire backlog finished. Always merge a fresh first page when resuming.
+     */
     const messageIds: string[] = [];
+    const idSeen = new Set<string>();
+    const pushIds = (ids: string[]) => {
+      for (const id of ids) {
+        if (!idSeen.has(id)) {
+          idSeen.add(id);
+          messageIds.push(id);
+        }
+      }
+    };
+
+    if (resumeToken) {
+      const head = await this.gmailService.listMessageIdsPage(employee.id, listQuery, {
+        maxResults: listMaxResults,
+        pageToken: null,
+      });
+      pushIds(head.ids);
+      this.logger.log(
+        `List resume: prepended ${head.ids.length} id(s) from newest page before backlog token`,
+      );
+    }
+
     let pageTokenLoop: string | null = resumeToken;
     let nextPageToken: string | null = null;
     let pagesFetched = 0;
@@ -335,7 +361,7 @@ export class EmailIngestionService {
         listQuery,
         { maxResults: listMaxResults, pageToken: pageTokenLoop },
       );
-      messageIds.push(...ids);
+      pushIds(ids);
       nextPageToken = np;
       pagesFetched = p + 1;
       if (!np) {
