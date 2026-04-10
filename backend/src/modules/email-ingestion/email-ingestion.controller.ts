@@ -15,8 +15,10 @@ export class EmailIngestionController {
   async runIngestion(@Req() req: Request) {
     if (!req.internalApiAuth) {
       const ctx = getRequestContext(req);
-      if (ctx.role !== 'CEO') {
-        throw new ForbiddenException('Only CEO or internal API key can trigger ingestion');
+      if (ctx.role !== 'CEO' && ctx.role !== 'HEAD') {
+        throw new ForbiddenException(
+          'Only CEO, department manager, or internal API key can trigger a company sync run',
+        );
       }
     }
 
