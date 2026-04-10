@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-type DeptRow = {
+export type CeoDeptDirectoryRow = {
   id: string;
   name: string;
   manager: { full_name: string | null; email: string } | null;
@@ -17,9 +17,14 @@ export type CeoScopeOrgEmployee = {
 };
 
 type Props = {
-  /** When the panel opens, draft selections sync from the dashboard. */
-  panelOpen: boolean;
-  departmentOptions: DeptRow[];
+  /**
+   * Slide-over: when the panel opens, draft selections sync from the dashboard.
+   * Full page (`embedded`): draft tracks `selected*` whenever they change.
+   */
+  panelOpen?: boolean;
+  /** Full-page scope UI — draft stays in sync with applied selection from the parent. */
+  embedded?: boolean;
+  departmentOptions: CeoDeptDirectoryRow[];
   orgEmployees: CeoScopeOrgEmployee[];
   selectedDepartmentIds: string[];
   selectedEmployeeIds: string[];
@@ -27,11 +32,11 @@ type Props = {
   loadingEmployees: boolean;
 };
 
-function managerLabel(d: DeptRow): string {
+function managerLabel(d: CeoDeptDirectoryRow): string {
   return d.manager?.full_name?.trim() || d.manager?.email?.trim() || 'Manager';
 }
 
-function isManagerMailbox(emp: CeoScopeOrgEmployee, departments: DeptRow[]): boolean {
+function isManagerMailbox(emp: CeoScopeOrgEmployee, departments: CeoDeptDirectoryRow[]): boolean {
   if (!emp.department_id || !emp.email?.trim()) return false;
   const dept = departments.find((x) => x.id === emp.department_id);
   const em = dept?.manager?.email?.trim().toLowerCase();
@@ -46,7 +51,8 @@ function checkboxClass(checked: boolean): string {
 }
 
 export function CeoDashboardScopePanel({
-  panelOpen,
+  panelOpen = true,
+  embedded = false,
   departmentOptions,
   orgEmployees,
   selectedDepartmentIds,
@@ -57,18 +63,26 @@ export function CeoDashboardScopePanel({
   const [draftDepts, setDraftDepts] = useState<string[]>([]);
   const [draftEmps, setDraftEmps] = useState<string[]>([]);
   const prevPanelOpen = useRef(false);
+  const embeddedSelectionSig = useRef<string | null>(null);
 
   useEffect(() => {
+    if (embedded) {
+      const sig = `${[...selectedDepartmentIds].sort().join(',')}|${[...selectedEmployeeIds].sort().join(',')}`;
+      if (embeddedSelectionSig.current === sig) return;
+      embeddedSelectionSig.current = sig;
+      setDraftDepts([...selectedDepartmentIds]);
+      setDraftEmps([...selectedEmployeeIds]);
+      return;
+    }
     if (panelOpen && !prevPanelOpen.current) {
       setDraftDepts([...selectedDepartmentIds]);
       setDraftEmps([...selectedEmployeeIds]);
     }
     prevPanelOpen.current = panelOpen;
-  }, [panelOpen, selectedDepartmentIds, selectedEmployeeIds]);
+  }, [embedded, panelOpen, selectedDepartmentIds, selectedEmployeeIds]);
 
   const draftDeptSet = new Set(draftDepts);
   const draftEmpSet = new Set(draftEmps);
-  const companyWide = draftDepts.length === 0 && draftEmps.length === 0;
 
   const managerDepts = departmentOptions
     .filter((d) => d.manager?.full_name?.trim() || d.manager?.email?.trim())
@@ -110,100 +124,96 @@ export function CeoDashboardScopePanel({
 
   const selectionSummary =
     draftDepts.length + draftEmps.length === 0
-      ? 'Company-wide'
+      ? 'No people filter — dashboard shows the full org'
       : [
-          draftDepts.length ? `${draftDepts.length} team${draftDepts.length === 1 ? '' : 's'}` : null,
-          draftEmps.length ? `${draftEmps.length} teammate${draftEmps.length === 1 ? '' : 's'}` : null,
+          draftDepts.length ? `${draftDepts.length} manager${draftDepts.length === 1 ? '' : 's'} (team scope)` : null,
+          draftEmps.length ? `${draftEmps.length} employee${draftEmps.length === 1 ? '' : 's'}` : null,
         ]
           .filter(Boolean)
           .join(' · ');
 
+  const listMaxH = embedded
+    ? 'max-h-[min(52vh,22rem)] sm:max-h-[min(60vh,28rem)]'
+    : 'max-h-[min(40vh,18rem)]';
+
   return (
     <div className="flex min-h-0 flex-col pb-2">
       <p className="text-[13px] leading-relaxed text-slate-600">
-        Select <span className="font-medium text-slate-800">one or more</span> teams and/or teammates, then tap{' '}
-        <span className="font-medium text-slate-800">Apply</span>. Managers = whole team; teammates = one mailbox each.
+        Select <span className="font-medium text-slate-800">managers</span> (entire team) and/or{' '}
+        <span className="font-medium text-slate-800">employees</span> (one mailbox each), then tap{' '}
+        <span className="font-medium text-slate-800">Apply</span>.
       </p>
 
-      <label className={`mt-4 ${rowWrap(companyWide)}`}>
-        <input
-          type="checkbox"
-          checked={companyWide}
-          onChange={() => clearDraft()}
-          className={checkboxClass(companyWide)}
-          aria-label="Entire company"
-        />
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold text-slate-900">Entire company</span>
-          <span className="mt-0.5 block text-xs text-slate-500">No team or people filter — executive view for everyone</span>
-        </span>
-      </label>
+      <div className="mt-6 grid grid-cols-1 gap-8 lg:grid-cols-2 lg:gap-10">
+        <div className="min-w-0">
+          <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Managers</p>
+          {managerDepts.length === 0 ? (
+            <p className="text-xs text-slate-400">Assign managers to departments to list them here.</p>
+          ) : (
+            <ul
+              className={`space-y-1.5 overflow-y-auto overscroll-y-contain pr-0.5 [scrollbar-gutter:stable] ${listMaxH}`}
+              aria-label="Managers"
+            >
+              {managerDepts.map((d) => {
+                const checked = draftDeptSet.has(d.id);
+                return (
+                  <li key={d.id}>
+                    <label className={rowWrap(checked)}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleDraftDept(d.id)}
+                        className={checkboxClass(checked)}
+                        aria-label={`Manager ${managerLabel(d)}, team ${d.name}`}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-semibold text-slate-900">{managerLabel(d)}</span>
+                        <span className="mt-0.5 block text-xs text-slate-500">{d.name}</span>
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
 
-      <div className="mt-5">
-        <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Managers (teams)</p>
-        {managerDepts.length === 0 ? (
-          <p className="text-xs text-slate-400">Assign managers to departments to list them here.</p>
-        ) : (
-          <ul className="space-y-1.5" aria-label="Managers">
-            {managerDepts.map((d) => {
-              const checked = draftDeptSet.has(d.id);
-              return (
-                <li key={d.id}>
-                  <label className={rowWrap(checked)}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleDraftDept(d.id)}
-                      className={checkboxClass(checked)}
-                      aria-label={`Team ${d.name}`}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm font-semibold text-slate-900">{managerLabel(d)}</span>
-                      <span className="mt-0.5 block text-xs text-slate-500">Team: {d.name}</span>
-                    </span>
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-
-      <div className="mt-5">
-        <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Teammates</p>
-        {loadingEmployees ? (
-          <p className="text-xs text-slate-400">Loading…</p>
-        ) : teammateRows.length === 0 ? (
-          <p className="text-xs text-slate-400">No teammate mailboxes yet.</p>
-        ) : (
-          <ul
-            className="max-h-[min(40vh,18rem)] space-y-1.5 overflow-y-auto overscroll-y-contain pr-0.5 [scrollbar-gutter:stable]"
-            aria-label="Teammates"
-          >
-            {teammateRows.map((e) => {
-              const checked = draftEmpSet.has(e.id);
-              return (
-                <li key={e.id}>
-                  <label className={rowWrap(checked)}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleDraftEmp(e.id)}
-                      className={checkboxClass(checked)}
-                      aria-label={e.name}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm font-semibold text-slate-900">{e.name}</span>
-                      {e.department_name && e.department_name !== '—' ? (
-                        <span className="mt-0.5 block text-xs text-slate-500">{e.department_name}</span>
-                      ) : null}
-                    </span>
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+        <div className="min-w-0">
+          <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Employees</p>
+          {loadingEmployees ? (
+            <p className="text-xs text-slate-400">Loading…</p>
+          ) : teammateRows.length === 0 ? (
+            <p className="text-xs text-slate-400">No employee mailboxes yet.</p>
+          ) : (
+            <ul
+              className={`space-y-1.5 overflow-y-auto overscroll-y-contain pr-0.5 [scrollbar-gutter:stable] ${listMaxH}`}
+              aria-label="Employees"
+            >
+              {teammateRows.map((e) => {
+                const checked = draftEmpSet.has(e.id);
+                return (
+                  <li key={e.id}>
+                    <label className={rowWrap(checked)}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleDraftEmp(e.id)}
+                        className={checkboxClass(checked)}
+                        aria-label={e.name}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-semibold text-slate-900">{e.name}</span>
+                        {e.department_name && e.department_name !== '—' ? (
+                          <span className="mt-0.5 block text-xs text-slate-500">{e.department_name}</span>
+                        ) : null}
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       </div>
 
       <div className="sticky bottom-0 mt-6 border-t border-slate-100 bg-white pt-4">
@@ -214,7 +224,7 @@ export function CeoDashboardScopePanel({
             onClick={() => onApply([...new Set(draftDepts)], [...new Set(draftEmps)])}
             className="flex-1 rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md hover:opacity-95"
           >
-            Apply to dashboard
+            Apply and open dashboard
           </button>
           <button
             type="button"

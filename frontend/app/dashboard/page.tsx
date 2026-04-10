@@ -1,13 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth, type AuthMe as Me } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
-import { CeoDashboardScopePanel } from '@/components/CeoDashboardScopePanel';
+import type { CeoDeptDirectoryRow } from '@/components/CeoDashboardScopePanel';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { TimeGreeting } from '@/components/TimeGreeting';
 import { Badge } from '@/components/Badge';
@@ -91,20 +91,6 @@ type DashboardPayload = {
   }[];
 };
 
-type CeoDeptDirectoryRow = {
-  id: string;
-  name: string;
-  manager: { full_name: string | null; email: string } | null;
-};
-
-type CeoOrgEmployeeRow = {
-  id: string;
-  name: string;
-  email: string;
-  department_id: string | null;
-  department_name: string;
-};
-
 type TeamAlertItem = {
   id: string;
   body: string;
@@ -181,67 +167,6 @@ function TeamHealthDot({ health }: { health: TeamHealth }) {
   );
 }
 
-/** CEO command center: slide-over for departments / managers / people filters (opened from sidebar). */
-function CeoScopeSlideOver({
-  open,
-  onClose,
-  children,
-}: {
-  open: boolean;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [open]);
-
-  if (!open) return null;
-
-  return (
-    <>
-      <div
-        className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-[1px]"
-        aria-hidden
-        onClick={onClose}
-      />
-      <aside
-        className="fixed inset-y-0 right-0 z-[101] flex w-full max-w-md flex-col border-l border-slate-200/80 bg-white shadow-2xl shadow-slate-900/15"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="ceo-scope-panel-title"
-      >
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
-          <h2 id="ceo-scope-panel-title" className="min-w-0 truncate text-sm font-bold text-slate-900">
-            Managers & teammates
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-          >
-            Close
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">{children}</div>
-      </aside>
-    </>
-  );
-}
-
 export default function DashboardPage() {
   const router = useRouter();
   const { me, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
@@ -257,9 +182,6 @@ export default function DashboardPage() {
   const [ceoDeptOptions, setCeoDeptOptions] = useState<CeoDeptDirectoryRow[]>([]);
   /** CEO: multi-select mailboxes; empty = all people in current dept / company slice. */
   const [ceoEmployeeIds, setCeoEmployeeIds] = useState<string[]>([]);
-  const [ceoScopePanelOpen, setCeoScopePanelOpen] = useState(false);
-  const [ceoOrgEmployees, setCeoOrgEmployees] = useState<CeoOrgEmployeeRow[]>([]);
-  const [ceoOrgEmployeesLoading, setCeoOrgEmployeesLoading] = useState(false);
   const ceoScopeRestoredRef = useRef(false);
   const [reassignTarget, setReassignTarget] = useState<ConversationRow | null>(null);
   /** Per-row resolve: a single boolean disabled every Resolve on the page. */
@@ -317,12 +239,6 @@ export default function DashboardPage() {
     const q = qs.toString();
     return `/dashboard${q ? `?${q}` : ''}`;
   }, [filterStatus, filterPriority, filterEmployee, filterDepartmentIds, ceoEmployeeIds, me?.role]);
-
-  const applyCeoScope = useCallback((departmentIds: string[], employeeIds: string[]) => {
-    setFilterDepartmentIds([...new Set(departmentIds)]);
-    setCeoEmployeeIds([...new Set(employeeIds)]);
-    setCeoScopePanelOpen(false);
-  }, []);
 
   const refresh = useCallback(async () => {
     if (!token) return;
@@ -485,31 +401,6 @@ export default function DashboardPage() {
       if (!r.ok || cancelled) return;
       const rows = (await r.json()) as CeoDeptDirectoryRow[];
       setCeoDeptOptions(Array.isArray(rows) ? rows : []);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [token, me?.role]);
-
-  useEffect(() => {
-    if (!token || me?.role !== 'CEO') {
-      setCeoOrgEmployees([]);
-      setCeoOrgEmployeesLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setCeoOrgEmployeesLoading(true);
-    void (async () => {
-      const r = await apiFetch('/employees', token);
-      if (!r.ok || cancelled) {
-        if (!cancelled) setCeoOrgEmployeesLoading(false);
-        return;
-      }
-      const rows = (await r.json()) as CeoOrgEmployeeRow[];
-      if (!cancelled) {
-        setCeoOrgEmployees(Array.isArray(rows) ? rows : []);
-        setCeoOrgEmployeesLoading(false);
-      }
     })();
     return () => {
       cancelled = true;
@@ -717,50 +608,8 @@ export default function DashboardPage() {
 
   const titleEyebrow = <TimeGreeting fullName={me.full_name} email={me.email} />;
 
-  const ceoPanelProps = {
-    panelOpen: ceoScopePanelOpen,
-    departmentOptions: ceoDeptOptions,
-    orgEmployees: ceoOrgEmployees,
-    selectedDepartmentIds: filterDepartmentIds,
-    selectedEmployeeIds: ceoEmployeeIds,
-    onApply: applyCeoScope,
-    loadingEmployees: ceoOrgEmployeesLoading,
-  };
-
-  const ceoScopeTriggersDesktop = isCeo ? (
-    <button
-      type="button"
-      onClick={() => setCeoScopePanelOpen(true)}
-      title="Managers & teammates — tap to load the dashboard"
-      className="block w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium text-slate-600 hover:bg-white/80 hover:text-slate-900"
-    >
-      Choose scope
-    </button>
-  ) : undefined;
-
-  const ceoScopeTriggersMobile = isCeo ? (
-    <button
-      type="button"
-      onClick={() => setCeoScopePanelOpen(true)}
-      title="Managers & teammates — dashboard scope"
-      className="inline-flex shrink-0 rounded-lg border border-slate-200/80 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-    >
-      Scope
-    </button>
-  ) : undefined;
-
-  const ceoScopeSlideOver = isCeo ? (
-    <CeoScopeSlideOver open={ceoScopePanelOpen} onClose={() => setCeoScopePanelOpen(false)}>
-      <div aria-label="Dashboard scope">
-        <CeoDashboardScopePanel {...ceoPanelProps} />
-      </div>
-    </CeoScopeSlideOver>
-  ) : null;
-
   if (!dash) {
     return (
-      <>
-        {ceoScopeSlideOver}
         <AppShell
           role={me.role}
           companyName={me.company_name ?? null}
@@ -775,8 +624,6 @@ export default function DashboardPage() {
           mailboxCrawlEnabled={status == null ? undefined : status.email_crawl_enabled !== false}
           onRefresh={() => void refresh()}
           onSignOut={() => void ctxSignOut()}
-          ceoDashboardScopeTriggerDesktop={ceoScopeTriggersDesktop}
-          ceoDashboardScopeTriggerMobile={ceoScopeTriggersMobile}
         >
         {authFlashBanner}
         {error ? (
@@ -802,7 +649,6 @@ export default function DashboardPage() {
           <PageSkeleton />
         )}
         </AppShell>
-      </>
     );
   }
 
@@ -993,7 +839,6 @@ export default function DashboardPage() {
 
   return (
     <>
-      {ceoScopeSlideOver}
       <AppShell
         role={me.role}
         companyName={me.company_name ?? null}
@@ -1008,8 +853,6 @@ export default function DashboardPage() {
         mailboxCrawlEnabled={status == null ? undefined : status.email_crawl_enabled !== false}
         onRefresh={() => void refresh()}
         onSignOut={() => void ctxSignOut()}
-        ceoDashboardScopeTriggerDesktop={ceoScopeTriggersDesktop}
-        ceoDashboardScopeTriggerMobile={ceoScopeTriggersMobile}
       >
         {authFlashBanner}
         {isCeo ? (
@@ -1686,7 +1529,6 @@ export default function DashboardPage() {
 
           </>
         )}
-
       </AppShell>
 
       {reassignTarget ? (

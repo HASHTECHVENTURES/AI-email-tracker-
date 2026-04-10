@@ -24,10 +24,6 @@ type AppShellProps = {
   onRefresh?: () => void;
   onSignOut: () => void;
   children: ReactNode;
-  /** CEO dashboard only: opens the command-center scope panel (desktop sidebar, under main links). */
-  ceoDashboardScopeTriggerDesktop?: ReactNode;
-  /** CEO dashboard only: compact control in the mobile nav strip. */
-  ceoDashboardScopeTriggerMobile?: ReactNode;
 };
 
 function isManagerRole(role: string): boolean {
@@ -146,8 +142,6 @@ export function AppShell({
   onRefresh,
   onSignOut,
   children,
-  ceoDashboardScopeTriggerDesktop,
-  ceoDashboardScopeTriggerMobile,
 }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
@@ -313,14 +307,17 @@ export function AppShell({
                   Settings
                 </SafeLink>
               ) : null}
+
+              {isCeo && !isPlatformAdmin ? (
+                <SafeLink
+                  href="/dashboard/scope"
+                  className={navItemClass(pathname === '/dashboard/scope')}
+                >
+                  Dashboard scope
+                </SafeLink>
+              ) : null}
             </div>
             </nav>
-
-            {pathname === '/dashboard' && ceoDashboardScopeTriggerDesktop ? (
-              <div className="mt-4 border-t border-slate-100 pt-4">
-                {ceoDashboardScopeTriggerDesktop}
-              </div>
-            ) : null}
           </div>
 
           <div className="mt-auto shrink-0 border-t border-slate-100 pt-4">
@@ -453,8 +450,10 @@ export function AppShell({
                   Settings
                 </SafeLink>
               ) : null}
-              {pathname === '/dashboard' && ceoDashboardScopeTriggerMobile ? (
-                <>{ceoDashboardScopeTriggerMobile}</>
+              {isCeo && !isPlatformAdmin ? (
+                <SafeLink href="/dashboard/scope" className={navMobileClass(pathname === '/dashboard/scope')}>
+                  Scope
+                </SafeLink>
               ) : null}
             </nav>
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
