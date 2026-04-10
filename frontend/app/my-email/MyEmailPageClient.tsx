@@ -947,6 +947,7 @@ function CeoLiveSyncStrip({
   nextIngestionAtIso,
   scheduleReady,
   canManualSync = true,
+  recentManualSyncAtMs = null,
 }: {
   mailboxes: Mailbox[];
   liveTrackDate: string;
@@ -961,6 +962,8 @@ function CeoLiveSyncStrip({
   scheduleReady: boolean;
   /** Employees rely on the scheduled crawl; CEO/managers can trigger a company run. */
   canManualSync?: boolean;
+  /** Set when Run sync now succeeded; cleared when `last_synced_at` appears on a mailbox. */
+  recentManualSyncAtMs?: number | null;
 }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -972,6 +975,10 @@ function CeoLiveSyncStrip({
   const nowMs = Date.now();
   const connected = mailboxes.some((m) => isMailboxGmailConnected(m));
   const latestIso = pickLatestMailboxSyncIso(mailboxes);
+  const awaitingAfterRun =
+    !latestIso &&
+    recentManualSyncAtMs != null &&
+    nowMs - recentManualSyncAtMs < 120_000;
   const parsedNext = nextIngestionAtIso ? Date.parse(nextIngestionAtIso) : NaN;
   /** Always show the timer when the server gave a next slot — never replace it with “Running…” (lock state can stick). */
   const nextTickMs =
@@ -1017,9 +1024,22 @@ function CeoLiveSyncStrip({
                 </p>
                 <p className="text-xs text-slate-600">{formatLiveSyncAbsolute(latestIso)}</p>
               </>
+            ) : syncBusy ? (
+              <p className="mt-1 text-sm leading-relaxed text-slate-700">
+                <span className="font-semibold text-brand-800">Sync in progress.</span> Last sync time appears here when
+                this run finishes and the inbox updates.
+              </p>
+            ) : awaitingAfterRun ? (
+              <p className="mt-1 text-sm leading-relaxed text-slate-700">
+                <span className="font-semibold text-slate-800">Sync was triggered.</span> Last sync time fills in shortly
+                after the server finishes (often under a minute). Use Refresh in the header if the page doesn&apos;t
+                update.
+              </p>
             ) : (
-              <p className="mt-1 text-sm font-medium text-amber-900">
-                No completed sync yet — use <strong>Run sync now</strong> or wait for the next automatic run.
+              <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                Last sync time appears after the first completed mailbox run. Use{' '}
+                <span className="font-medium text-slate-800">Run sync now</span> or wait for the next automatic sync
+                {scheduleReady && nextTickMs != null ? ' (timer on the right)' : ''}.
               </p>
             )}
             <div className="mt-4 flex flex-col gap-2 rounded-xl border border-brand-100 bg-white/80 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-end">
@@ -1234,6 +1254,8 @@ function MyEmailPageInner() {
   const [togglePauseLoadingId, setTogglePauseLoadingId] = useState<string | null>(null);
   /** CEO Live Mails: manual GET /email-ingestion/run */
   const [liveSyncBusy, setLiveSyncBusy] = useState(false);
+  /** After a successful run, `last_synced_at` can lag — show a calmer line until it appears. */
+  const [liveSyncAwaitingTimestamp, setLiveSyncAwaitingTimestamp] = useState<number | null>(null);
   /** CEO Live: next cron from GET /settings/runtime (null = not loaded yet). */
   const [liveIngestSchedule, setLiveIngestSchedule] = useState<{
     nextIngestionAt: string | null;
@@ -1995,6 +2017,12 @@ function MyEmailPageInner() {
     if (ceoEmailNorm === '') return [];
     return mailboxes.filter((mb) => mb.email.trim().toLowerCase() === ceoEmailNorm);
   }, [mailboxes, ceoEmailNorm, me?.linked_employee_id, me?.role]);
+
+  useEffect(() => {
+    if (pickLatestMailboxSyncIso(ownMailboxes)) {
+      setLiveSyncAwaitingTimestamp(null);
+    }
+  }, [ownMailboxes]);
 
   /** App shell strip: green “In sync” only when *your* inbox row has Gmail connected (not company crawl alone). */
   const headerInboxGmailConnected = useMemo(
@@ -3200,6 +3228,7 @@ function MyEmailPageInner() {
         );
         return;
       }
+      setLiveSyncAwaitingTimestamp(Date.now());
       if (j.status === 'running') {
         setSuccess('A sync is already running — wait a moment, then refresh.');
       } else {
@@ -3735,6 +3764,7 @@ function MyEmailPageInner() {
                       nextIngestionAtIso={liveIngestSchedule?.nextIngestionAt ?? null}
                       scheduleReady={liveIngestSchedule != null}
                       canManualSync={canRunMyMailboxSync}
+                      recentManualSyncAtMs={liveSyncAwaitingTimestamp}
                     />
                   ) : null}
               </>
