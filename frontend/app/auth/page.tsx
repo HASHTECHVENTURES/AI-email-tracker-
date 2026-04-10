@@ -194,6 +194,7 @@ function AuthPageInner() {
 
   const [phase, setPhase] = useState<Phase>('boot');
   const [tab, setTab] = useState<TabMode>('login');
+  const [loginRole, setLoginRole] = useState<SignupRole | ''>('');
   const [signupRole, setSignupRole] = useState<SignupRole>('ceo');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -390,6 +391,14 @@ function AuthPageInner() {
     refreshMe,
   ]);
 
+  /** Map SignupRole UI value → backend API role string. */
+  function signupRoleToApiRole(r: SignupRole | ''): string | null {
+    if (r === 'ceo') return 'CEO';
+    if (r === 'manager') return 'HEAD';
+    if (r === 'employee') return 'EMPLOYEE';
+    return null;
+  }
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     clearFeedback();
@@ -399,6 +408,10 @@ function AuthPageInner() {
       const trimmedEmail = email.trim();
       if (!trimmedEmail || !password) {
         setInfo('Email and password are required.');
+        return;
+      }
+      if (!loginRole) {
+        setInfo('Please select your role before signing in.');
         return;
       }
       const { error } = await supabase.auth.signInWithPassword({
@@ -424,6 +437,20 @@ function AuthPageInner() {
       if (await redirectIfPlatformAdmin(session.access_token)) {
         return;
       }
+
+      // Validate selected role against actual DB role
+      const selectedApiRole = signupRoleToApiRole(loginRole);
+      const actualRole = status.user?.role;
+      if (selectedApiRole && actualRole && actualRole !== 'PLATFORM_ADMIN' && selectedApiRole !== actualRole) {
+        const roleLabel = (r: string) =>
+          r === 'CEO' ? 'CEO' : r === 'HEAD' ? 'Manager' : r === 'EMPLOYEE' ? 'Employee' : r;
+        setInfoVariant('default');
+        setInfo(
+          `Your account is registered as ${roleLabel(actualRole)}, not ${roleLabel(selectedApiRole)}. Please select "${roleLabel(actualRole)}" and try again.`,
+        );
+        return;
+      }
+
       if (status.needs_onboarding) {
         const pending = readPendingSignup();
         if (pending?.full_name && pending?.company_name) {
@@ -671,6 +698,23 @@ function AuthPageInner() {
                 <p className="mt-1 text-sm text-gray-500">Sign in to your account</p>
               </div>
               <form onSubmit={handleLogin} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700" htmlFor="login-role">
+                    Sign in as
+                  </label>
+                  <select
+                    id="login-role"
+                    required
+                    value={loginRole}
+                    onChange={(ev) => setLoginRole(ev.target.value as SignupRole | '')}
+                    className={`mt-1.5 ${inputClass} cursor-pointer`}
+                  >
+                    <option value="" disabled>Select your role…</option>
+                    <option value="ceo">CEO</option>
+                    <option value="manager">Manager</option>
+                    <option value="employee">Employee</option>
+                  </select>
+                </div>
                 <label className="block text-sm font-medium text-gray-700">
                   Email
                   <input
