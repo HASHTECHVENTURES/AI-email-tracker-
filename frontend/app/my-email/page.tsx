@@ -543,11 +543,33 @@ function formatLiveSyncAbsolute(iso: string): string {
   return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-/** CEO Live Mails: friendly last-sync timer + exact date (from mailbox `last_synced_at`). */
-function LiveMailSyncBanner({ mailboxes }: { mailboxes: Mailbox[] }) {
+/** Visual cadence ~2 minutes (matches server scheduled ingest interval); wall-clock aligned for UX countdown. */
+const LIVE_INGEST_INTERVAL_MS = 120_000;
+
+function msUntilNextTwoMinuteTick(now = Date.now()): number {
+  return LIVE_INGEST_INTERVAL_MS - (now % LIVE_INGEST_INTERVAL_MS);
+}
+
+function formatCountdownMmSs(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, '0')}`;
+}
+
+/** CEO Live Mails: last sync + countdown + manual sync (always between toggle and KPIs). */
+function CeoLiveSyncStrip({
+  mailboxes,
+  onSyncNow,
+  syncBusy,
+}: {
+  mailboxes: Mailbox[];
+  onSyncNow: () => void;
+  syncBusy: boolean;
+}) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    const id = window.setInterval(() => setTick((x) => x + 1), 30_000);
+    const id = window.setInterval(() => setTick((x) => x + 1), 1000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -555,40 +577,25 @@ function LiveMailSyncBanner({ mailboxes }: { mailboxes: Mailbox[] }) {
   const nowMs = Date.now();
   const connected = mailboxes.some((m) => m.gmail_connected);
   const latestIso = pickLatestMailboxSyncIso(mailboxes);
+  const nextTickMs = msUntilNextTwoMinuteTick(nowMs);
 
   if (!connected) {
     return (
-      <div className="mb-6 rounded-2xl border border-slate-200/80 bg-slate-50/80 px-4 py-3 sm:px-5">
-        <p className="text-sm font-medium text-slate-700">Live mail sync</p>
-        <p className="mt-0.5 text-xs text-slate-500">
-          Connect Gmail on your inbox card below — then you&apos;ll see when the last Gmail + AI sync finished.
+      <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/90 px-4 py-4 sm:px-5">
+        <p className="text-sm font-semibold text-slate-800">Gmail &amp; AI sync</p>
+        <p className="mt-1 text-xs leading-relaxed text-slate-600">
+          Connect Gmail on your inbox card below. Then you&apos;ll see last sync time and can run a sync manually.
         </p>
       </div>
     );
   }
-
-  if (!latestIso) {
-    return (
-      <div className="mb-6 rounded-2xl border border-amber-200/80 bg-amber-50/50 px-4 py-3 sm:px-5">
-        <p className="text-sm font-semibold text-amber-950">Live mail sync</p>
-        <p className="mt-1 text-xs leading-relaxed text-amber-900/80">
-          Gmail is connected. The first sync is starting — refresh in a moment to see the last run time.
-        </p>
-      </div>
-    );
-  }
-
-  const relative = formatLiveSyncRelative(latestIso, nowMs);
-  const absolute = formatLiveSyncAbsolute(latestIso);
-  const ageMin = (nowMs - Date.parse(latestIso)) / 60_000;
-  const looksFresh = ageMin < 20;
 
   return (
-    <div className="mb-6 rounded-2xl border border-emerald-200/70 bg-gradient-to-br from-emerald-50/90 via-white to-slate-50/60 px-4 py-3.5 shadow-sm sm:px-5 sm:py-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
-        <div className="flex items-start gap-3">
+    <div className="rounded-2xl border-2 border-brand-200/90 bg-gradient-to-br from-brand-50/95 via-white to-violet-50/40 px-4 py-4 shadow-md shadow-brand-600/10 sm:px-5 sm:py-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
           <div
-            className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700"
+            className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-600 text-white shadow-sm"
             aria-hidden
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
@@ -600,26 +607,44 @@ function LiveMailSyncBanner({ mailboxes }: { mailboxes: Mailbox[] }) {
             </svg>
           </div>
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-semibold text-slate-900">Last Gmail &amp; AI sync</p>
-              <span
-                className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
-                  looksFresh ? 'bg-emerald-200/80 text-emerald-900' : 'bg-slate-200/80 text-slate-600'
-                }`}
-              >
-                {looksFresh ? 'Recent' : 'Idle'}
-              </span>
-            </div>
-            <p className="mt-1 text-2xl font-bold tabular-nums tracking-tight text-slate-900" title={absolute}>
-              {relative}
+            <p className="text-xs font-bold uppercase tracking-wide text-brand-800">Live mail · Gmail &amp; AI</p>
+            {latestIso ? (
+              <>
+                <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">
+                  Last sync{' '}
+                  <span className="text-brand-700">{formatLiveSyncRelative(latestIso, nowMs)}</span>
+                </p>
+                <p className="text-xs text-slate-600">{formatLiveSyncAbsolute(latestIso)}</p>
+              </>
+            ) : (
+              <p className="mt-1 text-sm font-medium text-amber-900">
+                No completed sync yet — use <strong>Run sync now</strong> or wait for the next automatic run.
+              </p>
+            )}
+            <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+              The server usually checks Gmail about every <strong className="font-medium text-slate-700">2 minutes</strong>
+              . Timer below is a rough countdown to the next slot. If nothing appears in Follow-ups, confirm{' '}
+              <strong className="font-medium text-slate-700">Mailbox crawl</strong> is on in Settings, then run sync.
             </p>
-            <p className="mt-0.5 text-xs text-slate-500">{absolute}</p>
           </div>
         </div>
-        <p className="max-w-sm text-[11px] leading-relaxed text-slate-500 sm:text-right">
-          Live mail checks Gmail on a schedule, then runs AI on new messages. This time updates after each successful run
-          (refresh the page if you&apos;ve been away a while).
-        </p>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center lg:flex-col lg:items-stretch xl:flex-row xl:items-center">
+          <div className="rounded-xl border border-white/80 bg-white/90 px-4 py-3 text-center shadow-sm sm:min-w-[10rem]">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Next check (~estimate)</p>
+            <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-900">
+              {formatCountdownMmSs(nextTickMs)}
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={syncBusy}
+            onClick={onSyncNow}
+            className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-brand-600/25 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {syncBusy ? 'Running sync…' : 'Run sync now'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -727,6 +752,8 @@ function MyEmailPageInner() {
   const [slaSavingId, setSlaSavingId] = useState<string | null>(null);
 
   const [togglePauseLoadingId, setTogglePauseLoadingId] = useState<string | null>(null);
+  /** CEO Live Mails: manual GET /email-ingestion/run */
+  const [liveSyncBusy, setLiveSyncBusy] = useState(false);
   const [operationStartingId, setOperationStartingId] = useState<string | null>(null);
   const [pipeline, setPipeline] = useState<{
     mailboxId: string;
@@ -1907,6 +1934,41 @@ function MyEmailPageInner() {
     return [...scopeMailboxIds].sort().join(',');
   }, [filterMailbox, scopeMailboxIds]);
 
+  const runLiveIngestionNow = useCallback(async () => {
+    if (!token) return;
+    setLiveSyncBusy(true);
+    setError(null);
+    try {
+      const res = await apiFetch('/email-ingestion/run', token);
+      const j = (await res.json().catch(() => ({}))) as {
+        status?: string;
+        message?: string;
+      };
+      if (!res.ok) {
+        setError(j.message ?? 'Could not run sync.');
+        return;
+      }
+      if (j.status === 'skipped') {
+        setError(
+          j.message ??
+            'Mailbox crawl is off. Open Settings, turn on mailbox crawl, then try Run sync again.',
+        );
+        return;
+      }
+      if (j.status === 'running') {
+        setSuccess('A sync is already running — wait a moment, then refresh.');
+      } else {
+        setSuccess('Sync finished. Updating your inbox…');
+      }
+      await loadDashboard(token, syncEmployeeIdsParam || undefined);
+      window.setTimeout(() => {
+        void loadDashboard(token, syncEmployeeIdsParam || undefined);
+      }, 2500);
+    } finally {
+      setLiveSyncBusy(false);
+    }
+  }, [token, loadDashboard, syncEmployeeIdsParam]);
+
   const pipelineStep2Done =
     pipeline != null && (!pipeline.running || pipeline.status !== 'running');
   const pipelineStep3Done = pipeline != null && pipeline.status === 'success';
@@ -2348,46 +2410,51 @@ function MyEmailPageInner() {
       ) : (
         <>
           {myEmailTab === 'ceo' ? (
-            <div className="mb-6 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card">
-              <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                CEO inbox
-              </span>
-              <button
-                type="button"
-                onClick={() => setCeoInboxMode('live')}
-                className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
-                  ceoInboxMode === 'live'
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
-                }`}
-              >
-                Live Mails
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCeoInboxMode('historical');
-                  if (!histEndDate || !histStartDate) {
-                    const end = new Date();
-                    const start = new Date();
-                    start.setDate(start.getDate() - 30);
-                    setHistEndDate(formatLocalYmd(end));
-                    setHistStartDate(formatLocalYmd(start));
-                  }
-                }}
-                className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
-                  ceoInboxMode === 'historical'
-                    ? 'bg-slate-900 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
-                }`}
-              >
-                Historical Search
-              </button>
+            <div className="mb-6 space-y-4">
+              <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card">
+                <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  CEO inbox
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCeoInboxMode('live')}
+                  className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
+                    ceoInboxMode === 'live'
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
+                  }`}
+                >
+                  Live Mails
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCeoInboxMode('historical');
+                    if (!histEndDate || !histStartDate) {
+                      const end = new Date();
+                      const start = new Date();
+                      start.setDate(start.getDate() - 30);
+                      setHistEndDate(formatLocalYmd(end));
+                      setHistStartDate(formatLocalYmd(start));
+                    }
+                  }}
+                  className={`rounded-full px-4 py-2 text-xs font-semibold shadow-sm transition-colors ${
+                    ceoInboxMode === 'historical'
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200/90'
+                  }`}
+                >
+                  Historical Search
+                </button>
+              </div>
+              {ceoInboxMode === 'live' ? (
+                <CeoLiveSyncStrip
+                  mailboxes={ownMailboxes}
+                  onSyncNow={() => void runLiveIngestionNow()}
+                  syncBusy={liveSyncBusy}
+                />
+              ) : null}
             </div>
-          ) : null}
-
-          {myEmailTab === 'ceo' && ceoInboxMode === 'live' ? (
-            <LiveMailSyncBanner mailboxes={ownMailboxes} />
           ) : null}
 
           {myEmailTab === 'ceo' && ceoInboxMode === 'historical' ? (
@@ -3096,9 +3163,6 @@ function MyEmailPageInner() {
               <>
                 <div className="mb-3">
                   <h2 className="text-lg font-bold text-slate-900">Your inbox (CEO)</h2>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Only your CEO login mailbox appears here.
-                  </p>
                 </div>
 
                 {mailboxes.length === 0 && (

@@ -91,6 +91,25 @@ export function TrackedMailboxCard({
           </div>
         ) : null}
       </div>
+
+      {mb.gmail_connected ? (
+        <p className="mt-3 border-t border-slate-100 pt-2 text-[10px] leading-snug text-slate-500">
+          {mb.last_synced_at ? (
+            <>
+              <span className="font-semibold text-slate-600">Last Gmail sync: </span>
+              {new Date(mb.last_synced_at).toLocaleString(undefined, {
+                dateStyle: 'medium',
+                timeStyle: 'short',
+              })}
+            </>
+          ) : (
+            <span className="text-amber-800">
+              No sync recorded yet — use <strong className="font-medium">Run sync now</strong> above or wait for the
+              automatic run.
+            </span>
+          )}
+        </p>
+      ) : null}
     </div>
   );
 }
