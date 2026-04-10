@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch, oauthErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { PasswordInput } from '@/components/PasswordInput';
@@ -104,7 +105,7 @@ function EmployeesPageInner() {
   const [addError, setAddError] = useState<string | null>(null);
   const [addSuccess, setAddSuccess] = useState<string | null>(null);
   const [addSaving, setAddSaving] = useState(false);
-  const isManager = me?.role === 'HEAD' || me?.role === 'MANAGER';
+  const isManager = isDepartmentManagerRole(me?.role);
   const isCeo = me?.role === 'CEO';
   const myEmailNorm = me?.email?.trim().toLowerCase() ?? '';
   const managerDepartmentName =
@@ -151,7 +152,7 @@ function EmployeesPageInner() {
       router.replace('/dashboard');
       return;
     }
-    if ((user.role === 'HEAD' || user.role === 'MANAGER') && user.department_id) {
+    if (isDepartmentManagerRole(user.role) && user.department_id) {
       setDepartmentId(user.department_id);
     }
     void loadLists(token);
@@ -180,7 +181,7 @@ function EmployeesPageInner() {
   }, [authLoading, token, searchParams, pathname, router]);
 
   useEffect(() => {
-    if (!me || (me.role !== 'HEAD' && me.role !== 'MANAGER')) {
+    if (!me || !isDepartmentManagerRole(me.role)) {
       setDashStats({});
       return;
     }
@@ -443,7 +444,7 @@ function EmployeesPageInner() {
     } = await supabase.auth.getSession();
     if (!session || !me) return;
     const dep =
-      (me.role === 'HEAD' || me.role === 'MANAGER') && me.department_id ? me.department_id : addDeptId.trim();
+      isDepartmentManagerRole(me.role) && me.department_id ? me.department_id : addDeptId.trim();
     if (!dep) {
       setAddError(isManager ? 'Your account has no department assigned.' : 'Select a department.');
       return;

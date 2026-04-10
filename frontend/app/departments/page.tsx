@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { PasswordInput } from '@/components/PasswordInput';
@@ -102,7 +103,7 @@ export default function DepartmentsPage() {
     }
     (async () => {
       await load(token);
-      if (authMe.role === 'HEAD' || authMe.role === 'MANAGER') {
+      if (isDepartmentManagerRole(authMe.role)) {
         await loadTeam(token);
       }
     })();
@@ -318,7 +319,7 @@ export default function DepartmentsPage() {
     );
   }
   const isCeo = me.role === 'CEO';
-  const isHead = me.role === 'HEAD' || me.role === 'MANAGER';
+  const isHead = isDepartmentManagerRole(me.role);
 
   return (
     <AppShell

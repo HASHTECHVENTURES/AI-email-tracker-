@@ -12,6 +12,7 @@ import { PageSkeleton } from '@/components/PageSkeleton';
 import { TimeGreeting } from '@/components/TimeGreeting';
 import { Badge } from '@/components/Badge';
 import { conversationReadPath } from '@/lib/conversation-read';
+import { isDepartmentManagerRole } from '@/lib/roles';
 import { ReassignModal } from '@/components/ReassignModal';
 import { TeamAlertReplyModal } from '@/components/TeamAlertReplyModal';
 
@@ -595,7 +596,7 @@ export default function DashboardPage() {
   }
 
   const isEmployee = me.role === 'EMPLOYEE';
-  const isHead = me.role === 'HEAD' || me.role === 'MANAGER';
+  const isHead = isDepartmentManagerRole(me.role);
   const isCeo = !isEmployee && !isHead;
   const dashboardSubtitle = isEmployee
     ? 'Your follow-ups and SLA.'

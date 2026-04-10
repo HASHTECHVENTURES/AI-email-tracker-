@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
 
@@ -320,7 +321,7 @@ export default function SettingsPage() {
       </AppShell>
     );
   }
-  const isHead = me.role === 'HEAD' || me.role === 'MANAGER';
+  const isHead = isDepartmentManagerRole(me.role);
   const isCeo = me.role === 'CEO';
 
   return (

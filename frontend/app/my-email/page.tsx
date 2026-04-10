@@ -25,6 +25,7 @@ import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { TrackedMailboxCard } from '@/components/my-email/TrackedMailboxCard';
 import { conversationReadPath } from '@/lib/conversation-read';
+import { isDepartmentManagerRole } from '@/lib/roles';
 
 type Mailbox = {
   id: string;
@@ -1362,8 +1363,7 @@ function MyEmailPageInner() {
     /** My Email: CEO full workspace; HEAD/EMPLOYEE — Historical Search (scoped mailboxes). */
     if (
       me.role !== 'CEO' &&
-      me.role !== 'HEAD' &&
-      me.role !== 'MANAGER' &&
+      !isDepartmentManagerRole(me.role) &&
       me.role !== 'EMPLOYEE'
     ) {
       router.replace('/dashboard');
@@ -1950,13 +1950,9 @@ function MyEmailPageInner() {
 
   /** Live + Historical inbox chrome (same surface as CEO) for all My Email roles. */
   const showFullInboxChrome =
-    me?.role === 'CEO' ||
-    me?.role === 'HEAD' ||
-    me?.role === 'MANAGER' ||
-    me?.role === 'EMPLOYEE';
-  /** CEO manual sync also allowed for department managers; not for IC (cron still runs). */
-  const canRunCompanyWideSync =
-    me?.role === 'CEO' || me?.role === 'HEAD' || me?.role === 'MANAGER';
+    me?.role === 'CEO' || isDepartmentManagerRole(me?.role) || me?.role === 'EMPLOYEE';
+  /** CEO manual sync also allowed for department managers (HEAD); not for IC (cron still runs). */
+  const canRunCompanyWideSync = me?.role === 'CEO' || isDepartmentManagerRole(me?.role);
 
   const historicalMailboxCandidates = useMemo(() => {
     if (me?.role === 'CEO') return ownMailboxes;
@@ -3186,8 +3182,7 @@ function MyEmailPageInner() {
       !token ||
       !me ||
       (me.role !== 'CEO' &&
-        me.role !== 'HEAD' &&
-        me.role !== 'MANAGER' &&
+        !isDepartmentManagerRole(me.role) &&
         me.role !== 'EMPLOYEE')
     )
       return;
@@ -3309,12 +3304,7 @@ function MyEmailPageInner() {
     );
   }
 
-  if (
-    me.role !== 'CEO' &&
-    me.role !== 'HEAD' &&
-    me.role !== 'MANAGER' &&
-    me.role !== 'EMPLOYEE'
-  ) {
+  if (me.role !== 'CEO' && !isDepartmentManagerRole(me.role) && me.role !== 'EMPLOYEE') {
     return (
       <AppShell
         role={me.role}
@@ -3327,8 +3317,7 @@ function MyEmailPageInner() {
     );
   }
 
-  const isManagerOrIc =
-    me.role === 'HEAD' || me.role === 'MANAGER' || me.role === 'EMPLOYEE';
+  const isManagerOrIc = isDepartmentManagerRole(me.role) || me.role === 'EMPLOYEE';
 
   const pageTitle =
     me.role === 'CEO'
@@ -3624,7 +3613,7 @@ function MyEmailPageInner() {
         <PageSkeleton />
       ) : (
         <>
-          {me.role === 'HEAD' || me.role === 'MANAGER' ? (
+          {isDepartmentManagerRole(me.role) ? (
             <div
               className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/60 bg-white p-3 shadow-card"
               role="tablist"

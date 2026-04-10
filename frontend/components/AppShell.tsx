@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
+import { isDepartmentManagerRole } from '@/lib/roles';
 
 type AppShellProps = {
   role: string;
@@ -27,7 +28,7 @@ type AppShellProps = {
 };
 
 function isManagerRole(role: string): boolean {
-  return role === 'HEAD' || role === 'MANAGER';
+  return isDepartmentManagerRole(role);
 }
 
 function navItemClass(active: boolean): string {

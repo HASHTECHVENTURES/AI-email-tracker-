@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import Link from 'next/link';
@@ -70,7 +71,7 @@ export default function ManagerMessagesPage() {
       router.replace('/admin');
       return;
     }
-    if (me.role !== 'HEAD' && me.role !== 'MANAGER') {
+    if (!isDepartmentManagerRole(me.role)) {
       router.replace('/dashboard');
       return;
     }
