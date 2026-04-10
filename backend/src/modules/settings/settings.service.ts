@@ -54,6 +54,7 @@ export interface SystemSettings {
 }
 
 export interface RuntimeStatus {
+  /** True only while a crawl holds the lock and it is not past the stale threshold (see tryAcquireIngestionLock). */
   ingestionRunning: boolean;
   lastIngestionStartedAt: string | null;
   lastIngestionFinishedAt: string | null;
@@ -194,6 +195,19 @@ export class SettingsService {
     await this.setMany(pairs);
   }
 
+  /**
+   * Same age rule as {@link tryAcquireIngestionLock}: a lock older than this is treated as abandoned
+   * so GET /settings/runtime does not report `ingestionRunning: true` forever after a crashed deploy.
+   */
+  private isIngestionLockStale(startedAtIso: string | null | undefined): boolean {
+    const s = startedAtIso?.trim();
+    if (!s) return true;
+    const t = new Date(s).getTime();
+    if (Number.isNaN(t)) return true;
+    const maxMs = 5 * 60_000;
+    return Date.now() - t > maxMs;
+  }
+
   async getRuntimeStatus(companyId?: string): Promise<RuntimeStatus> {
     const { data, error } = await this.supabase
       .from('system_settings')
@@ -260,9 +274,13 @@ export class SettingsService {
         ? Math.max(0, Math.ceil((nextReportMs - serverNow) / 1000))
         : null;
 
+    const lastIngestionStartedAt = map.get('last_ingestion_started_at') ?? null;
+    const rawIngestionRunning = map.get('ingestion_running') === 'true';
+    const ingestionRunning = rawIngestionRunning && !this.isIngestionLockStale(lastIngestionStartedAt);
+
     return {
-      ingestionRunning: map.get('ingestion_running') === 'true',
-      lastIngestionStartedAt: map.get('last_ingestion_started_at') ?? null,
+      ingestionRunning,
+      lastIngestionStartedAt,
       lastIngestionFinishedAt: lastFinished,
       lastIngestionStatus:
         (map.get('last_ingestion_status') as 'success' | 'failed' | 'idle' | undefined) ?? 'idle',

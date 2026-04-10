@@ -849,6 +849,15 @@ function formatCountdownMmSs(ms: number): string {
   return `${m}:${String(r).padStart(2, '0')}`;
 }
 
+/** Same 5m window as server lock recovery — stale “ingestion running” must not freeze the countdown UI. */
+function isLiveIngestionLockActive(apiSaysRunning: boolean, startedAtIso: string | null | undefined): boolean {
+  if (!apiSaysRunning) return false;
+  if (!startedAtIso?.trim()) return false;
+  const t = Date.parse(startedAtIso);
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t <= 5 * 60_000;
+}
+
 /** CEO Live Mails: last sync + countdown + manual sync (always between toggle and KPIs). */
 function CeoLiveSyncStrip({
   mailboxes,
@@ -860,6 +869,7 @@ function CeoLiveSyncStrip({
   syncBusy,
   nextIngestionAtIso,
   ingestionRunning,
+  lastIngestionStartedAt,
   scheduleReady,
 }: {
   mailboxes: Mailbox[];
@@ -872,6 +882,7 @@ function CeoLiveSyncStrip({
   /** From GET /settings/runtime — next UTC cron slot, matches server schedule. */
   nextIngestionAtIso: string | null;
   ingestionRunning: boolean;
+  lastIngestionStartedAt: string | null;
   /** False until the first `/settings/runtime` response for this view. */
   scheduleReady: boolean;
 }) {
@@ -885,9 +896,10 @@ function CeoLiveSyncStrip({
   const nowMs = Date.now();
   const connected = mailboxes.some((m) => m.gmail_connected);
   const latestIso = pickLatestMailboxSyncIso(mailboxes);
+  const serverRunning = isLiveIngestionLockActive(ingestionRunning, lastIngestionStartedAt);
   const parsedNext = nextIngestionAtIso ? Date.parse(nextIngestionAtIso) : NaN;
   const nextTickMs =
-    nextIngestionAtIso && !ingestionRunning && !Number.isNaN(parsedNext)
+    nextIngestionAtIso && !serverRunning && !syncBusy && !Number.isNaN(parsedNext)
       ? Math.max(0, parsedNext - nowMs)
       : null;
 
@@ -967,7 +979,7 @@ function CeoLiveSyncStrip({
                 <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-400">…</p>
                 <p className="mt-1 text-[10px] text-slate-500">Loading schedule…</p>
               </>
-            ) : ingestionRunning || syncBusy ? (
+            ) : serverRunning || syncBusy ? (
               <p className="mt-1 text-lg font-bold tabular-nums text-brand-700">Running…</p>
             ) : nextTickMs != null ? (
               <>
@@ -1142,6 +1154,7 @@ function MyEmailPageInner() {
   const [liveIngestSchedule, setLiveIngestSchedule] = useState<{
     nextIngestionAt: string | null;
     ingestionRunning: boolean;
+    lastIngestionStartedAt: string | null;
   } | null>(null);
   /** CEO Live: local date/time → saved as `tracking_start_at` before each manual sync. */
   const [liveTrackDate, setLiveTrackDate] = useState('');
@@ -1231,13 +1244,18 @@ function MyEmailPageInner() {
     if (!token) return;
     const res = await apiFetch('/settings/runtime', token);
     if (!res.ok) {
-      setLiveIngestSchedule({ nextIngestionAt: null, ingestionRunning: false });
+      setLiveIngestSchedule({
+        nextIngestionAt: null,
+        ingestionRunning: false,
+        lastIngestionStartedAt: null,
+      });
       return;
     }
     const rt = (await res.json()) as RuntimeStatus;
     setLiveIngestSchedule({
       nextIngestionAt: rt.nextIngestionAt ?? null,
       ingestionRunning: Boolean(rt.ingestionRunning),
+      lastIngestionStartedAt: rt.lastIngestionStartedAt ?? null,
     });
   }, [token]);
 
@@ -3433,6 +3451,7 @@ function MyEmailPageInner() {
                       syncBusy={liveSyncBusy}
                       nextIngestionAtIso={liveIngestSchedule?.nextIngestionAt ?? null}
                       ingestionRunning={liveIngestSchedule?.ingestionRunning ?? false}
+                      lastIngestionStartedAt={liveIngestSchedule?.lastIngestionStartedAt ?? null}
                       scheduleReady={liveIngestSchedule != null}
                     />
                   ) : null}
