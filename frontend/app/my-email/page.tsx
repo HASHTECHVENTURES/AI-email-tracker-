@@ -1116,7 +1116,7 @@ function MyEmailPageInner() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { me, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
+  const { me, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
 
   const [dash, setDash] = useState<DashboardPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1974,6 +1974,26 @@ function MyEmailPageInner() {
       ),
     [mailboxes, ceoEmailNorm],
   );
+
+  /** App shell strip: green “In sync” only when *your* inbox row has Gmail connected (not company crawl alone). */
+  const headerInboxGmailConnected = useMemo(
+    () => ownMailboxes.some((m) => m.gmail_connected),
+    [ownMailboxes],
+  );
+  const headerOwnInboxLastSyncLabel = useMemo(() => {
+    let bestIso: string | null = null;
+    let bestMs = 0;
+    for (const m of ownMailboxes) {
+      if (!m.last_synced_at) continue;
+      const t = Date.parse(m.last_synced_at);
+      if (Number.isFinite(t) && t >= bestMs) {
+        bestMs = t;
+        bestIso = m.last_synced_at;
+      }
+    }
+    if (!bestIso) return null;
+    return `Your inbox · Last sync ${new Date(bestIso).toLocaleString()}`;
+  }, [ownMailboxes]);
 
   /** Live + Historical inbox chrome (same surface as CEO) for all My Email roles. */
   const showFullInboxChrome =
@@ -3305,10 +3325,12 @@ function MyEmailPageInner() {
     }
   }
 
+  const shellRoleForLoading = me?.role ?? shellRoleHint ?? 'EMPLOYEE';
+
   if (!me || authLoading) {
     return (
       <AppShell
-        role="CEO"
+        role={shellRoleForLoading}
         title="My Email"
         subtitle="Loading..."
         onSignOut={() => void ctxSignOut()}
@@ -3523,6 +3545,8 @@ function MyEmailPageInner() {
       userDisplayName={me.full_name?.trim() || me.email}
       title={pageTitle}
       subtitle={shellSubtitle}
+      isActive={headerInboxGmailConnected}
+      lastSyncLabel={headerOwnInboxLastSyncLabel}
       onSignOut={() => void ctxSignOut()}
     >
       {ingestWithoutAiPrompt && (

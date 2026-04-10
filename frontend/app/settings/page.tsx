@@ -74,7 +74,7 @@ type DiagnosticsPayload = {
 
 export default function SettingsPage() {
   const router = useRouter();
-  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
+  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
   const [me, setMe] = useState<Me | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [runtime, setRuntime] = useState<Runtime | null>(null);
@@ -316,7 +316,12 @@ export default function SettingsPage() {
 
   if (!me || authLoading) {
     return (
-      <AppShell role="CEO" title="Settings" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
+      <AppShell
+        role={me?.role ?? shellRoleHint ?? 'EMPLOYEE'}
+        title="Settings"
+        subtitle="Loading…"
+        onSignOut={() => void ctxSignOut()}
+      >
         <PageSkeleton />
       </AppShell>
     );

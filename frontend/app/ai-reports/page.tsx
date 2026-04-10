@@ -80,7 +80,7 @@ function SectionCard({
 
 export default function AiReportsPage() {
   const router = useRouter();
-  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
+  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
   const [me, setMe] = useState<Me | null>(null);
   const [reports, setReports] = useState<AiReport[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -247,7 +247,12 @@ export default function AiReportsPage() {
 
   if (!me || authLoading) {
     return (
-      <AppShell role="CEO" title="Reports" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
+      <AppShell
+        role={me?.role ?? shellRoleHint ?? 'EMPLOYEE'}
+        title="Reports"
+        subtitle="Loading…"
+        onSignOut={() => void ctxSignOut()}
+      >
         <PageSkeleton />
       </AppShell>
     );

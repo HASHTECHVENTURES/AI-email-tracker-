@@ -59,7 +59,7 @@ function EmployeesPageInner() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
+  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
   const [me, setMe] = useState<Me | null>(null);
   const [dashStats, setDashStats] = useState<Record<string, { pending: number; missed: number }>>({});
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
@@ -503,7 +503,12 @@ function EmployeesPageInner() {
 
   if (!me || authLoading) {
     return (
-      <AppShell role="CEO" title="Employees" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
+      <AppShell
+        role={me?.role ?? shellRoleHint ?? 'EMPLOYEE'}
+        title="Employees"
+        subtitle="Loading…"
+        onSignOut={() => void ctxSignOut()}
+      >
         <PageSkeleton />
       </AppShell>
     );

@@ -170,7 +170,7 @@ function TeamHealthDot({ health }: { health: TeamHealth }) {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { me, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
+  const { me, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [dash, setDash] = useState<DashboardPayload | null>(null);
   const [status, setStatus] = useState<SystemStatus | null>(null);
@@ -582,10 +582,12 @@ export default function DashboardPage() {
     return [...rows].sort((a, b) => Number(b.delay_hours) - Number(a.delay_hours));
   }, [dash?.needs_attention]);
 
+  const shellRoleForLoading = me?.role ?? shellRoleHint ?? 'EMPLOYEE';
+
   if (!me || authLoading) {
     return (
       <AppShell
-        role="CEO"
+        role={shellRoleForLoading}
         title="Dashboard"
         subtitle="Loading…"
         onSignOut={() => void ctxSignOut()}

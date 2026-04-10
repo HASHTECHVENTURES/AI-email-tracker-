@@ -64,6 +64,11 @@ type AuthState = {
   /** Department manager (HEAD): active team for API scope (`x-manager-department-id`). */
   managerActiveDepartmentId: string | null;
   setManagerActiveDepartmentId: (id: string) => void;
+  /**
+   * Last resolved app role (persisted in sessionStorage) so AppShell can avoid flashing CEO-only nav
+   * while `/auth/me` is still loading after refresh or OAuth.
+   */
+  shellRoleHint: string | null;
 };
 
 const AuthContext = createContext<AuthState>({
@@ -75,7 +80,36 @@ const AuthContext = createContext<AuthState>({
   refreshMe: async () => {},
   managerActiveDepartmentId: null,
   setManagerActiveDepartmentId: () => {},
+  shellRoleHint: null,
 });
+
+const SHELL_ROLE_STORAGE_KEY = 'ai_et_shell_role_v1';
+
+function readShellRoleFromStorage(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const v = sessionStorage.getItem(SHELL_ROLE_STORAGE_KEY)?.trim();
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeShellRoleToStorage(role: string) {
+  try {
+    sessionStorage.setItem(SHELL_ROLE_STORAGE_KEY, role);
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearShellRoleStorage() {
+  try {
+    sessionStorage.removeItem(SHELL_ROLE_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 export function useAuth() {
   return useContext(AuthContext);
@@ -88,6 +122,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [managerActiveDepartmentId, setManagerActiveDepartmentIdState] = useState<string | null>(null);
+  const [shellRoleHint, setShellRoleHint] = useState<string | null>(null);
+
+  useEffect(() => {
+    const r = readShellRoleFromStorage();
+    if (r) setShellRoleHint(r);
+  }, []);
 
   const loadProfile = useCallback(async (accessToken: string) => {
     let meRes: Response;
@@ -97,6 +137,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setError('Cannot reach API server. Check backend URL or whether backend is running.');
       setMe(null);
       setManagerActiveDepartmentIdState(null);
+      setShellRoleHint(null);
       return;
     }
     if (!meRes.ok) {
@@ -107,6 +148,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setToken(null);
         setError(null);
         setManagerActiveDepartmentIdState(null);
+        setShellRoleHint(null);
+        clearShellRoleStorage();
         return;
       }
       // Signed in to Supabase but no `users` row yet — backend returns 403 ONBOARDING_REQUIRED (see AppAuthGuard).
@@ -127,17 +170,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setMe(null);
           setError(null);
           setManagerActiveDepartmentIdState(null);
+          setShellRoleHint(null);
+          clearShellRoleStorage();
           return;
         }
       }
       setError('Could not load profile.');
       setMe(null);
       setManagerActiveDepartmentIdState(null);
+      setShellRoleHint(null);
       return;
     }
     const parsed = (await meRes.json()) as AuthMe;
     setMe(parsed);
     setManagerActiveDepartmentIdState(resolveManagerActiveDept(parsed));
+    setShellRoleHint(parsed.role);
+    writeShellRoleToStorage(parsed.role);
     setError(null);
   }, []);
 
@@ -189,6 +237,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setToken(null);
         setError(null);
         setManagerActiveDepartmentIdState(null);
+        setShellRoleHint(null);
+        clearShellRoleStorage();
         try {
           localStorage.removeItem(MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY);
         } catch {
@@ -211,6 +261,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setMe(null);
     setToken(null);
     setManagerActiveDepartmentIdState(null);
+    setShellRoleHint(null);
+    clearShellRoleStorage();
     try {
       localStorage.removeItem(MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY);
     } catch {
@@ -239,6 +291,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       refreshMe,
       managerActiveDepartmentId,
       setManagerActiveDepartmentId,
+      shellRoleHint,
     }),
     [
       me,
@@ -249,6 +302,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       refreshMe,
       managerActiveDepartmentId,
       setManagerActiveDepartmentId,
+      shellRoleHint,
     ],
   );
 

@@ -18,7 +18,7 @@ const SCOPE_KEY = 'ai_et_ceo_dashboard_scope_v1';
 
 export default function DashboardScopePage() {
   const router = useRouter();
-  const { me, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
+  const { me, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
   const [filterDepartmentIds, setFilterDepartmentIds] = useState<string[]>([]);
   const [ceoEmployeeIds, setCeoEmployeeIds] = useState<string[]>([]);
   const [ceoDeptOptions, setCeoDeptOptions] = useState<CeoDeptDirectoryRow[]>([]);
@@ -144,10 +144,12 @@ export default function DashboardScopePage() {
     router.push('/dashboard');
   }, [router]);
 
+  const shellRoleForLoading = me?.role ?? shellRoleHint ?? 'EMPLOYEE';
+
   if (!me || authLoading) {
     return (
       <AppShell
-        role="CEO"
+        role={shellRoleForLoading}
         title="Dashboard scope"
         subtitle="Loading…"
         onSignOut={() => void ctxSignOut()}

@@ -42,7 +42,7 @@ type TeamMember = {
 export default function DepartmentsPage() {
   const router = useRouter();
   const pathname = usePathname();
-  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
+  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
   const [rows, setRows] = useState<Department[]>([]);
   const [name, setName] = useState('');
   const [managerEmail, setManagerEmail] = useState('');
@@ -313,7 +313,12 @@ export default function DepartmentsPage() {
   const me = authMe as Me | null;
   if (!me || authLoading) {
     return (
-      <AppShell role="CEO" title="Departments" subtitle="Loading…" onSignOut={() => void ctxSignOut()}>
+      <AppShell
+        role={me?.role ?? shellRoleHint ?? 'EMPLOYEE'}
+        title="Departments"
+        subtitle="Loading…"
+        onSignOut={() => void ctxSignOut()}
+      >
         <PageSkeleton />
       </AppShell>
     );
