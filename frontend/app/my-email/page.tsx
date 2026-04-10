@@ -1457,6 +1457,18 @@ function MyEmailPageInner() {
     });
   }, [tabSourceRows, threadSearch]);
 
+  /** Newest activity first so “Live” isn’t visually dominated by old missed threads (API orders by updated_at). */
+  const searchFilteredTabRowsSorted = useMemo(() => {
+    const rows = [...searchFilteredTabRows];
+    const activityMs = (c: ConversationRow) => {
+      const client = c.last_client_msg_at ? new Date(c.last_client_msg_at).getTime() : 0;
+      const reply = c.last_employee_reply_at ? new Date(c.last_employee_reply_at).getTime() : 0;
+      return Math.max(client, reply);
+    };
+    rows.sort((a, b) => activityMs(b) - activityMs(a));
+    return rows;
+  }, [searchFilteredTabRows]);
+
   const historicalFilteredRows = useMemo(() => {
     const q = threadSearch.trim().toLowerCase();
     if (!q) return historicalRows;
@@ -1481,10 +1493,10 @@ function MyEmailPageInner() {
   }, [historicalRows, threadSearch]);
 
   const pagedTabRows = useMemo(
-    () => searchFilteredTabRows.slice(0, mailListPage * MAIL_PAGE_SIZE),
-    [searchFilteredTabRows, mailListPage],
+    () => searchFilteredTabRowsSorted.slice(0, mailListPage * MAIL_PAGE_SIZE),
+    [searchFilteredTabRowsSorted, mailListPage],
   );
-  const hasMoreTabRows = searchFilteredTabRows.length > pagedTabRows.length;
+  const hasMoreTabRows = searchFilteredTabRowsSorted.length > pagedTabRows.length;
 
   const syncEmployeeIdsParam = useMemo(() => {
     const m = filterMailbox.trim();
@@ -2372,6 +2384,12 @@ function MyEmailPageInner() {
                   AI continuously reads each email and writes summaries, sets priority, and identifies contacts. Use the{' '}
                   <strong className="font-medium text-slate-600">CC&apos;d</strong> tab for threads where you were only on
                   Cc (not To) on the latest message.
+                </p>
+                <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                  <strong className="font-medium text-slate-600">Live Mails</strong> is continuous Gmail sync — not “only
+                  this month.” Any thread that still needs a reply or is overdue stays here until you answer from this
+                  inbox (so we see the sent message), tap <strong className="font-medium text-slate-600">Resolve</strong>,
+                  or delete the row. Rows are sorted with the most recent activity first.
                 </p>
               </div>
               <input
