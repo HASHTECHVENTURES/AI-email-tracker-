@@ -72,6 +72,7 @@ export default function DepartmentsPage() {
   const [secondaryRosterEmail, setSecondaryRosterEmail] = useState('');
   const [secondaryRosterDeptId, setSecondaryRosterDeptId] = useState('');
   const [secondaryRosterSaving, setSecondaryRosterSaving] = useState(false);
+  const [advancedAction, setAdvancedAction] = useState<'secondary' | 'convert' | 'password' | null>(null);
 
   const load = useCallback(async (token: string) => {
     const res = await apiFetch('/departments', token);
@@ -468,8 +469,8 @@ export default function DepartmentsPage() {
 
       {isCeo ? (
         <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
-          <h2 className="text-base font-semibold text-slate-900">Assign manager</h2>
-          <p className="mt-1 text-sm text-slate-500">Invite by email or create an account with password.</p>
+          <h2 className="text-base font-semibold text-slate-900">Manager assignment</h2>
+          <p className="mt-1 text-sm text-slate-500">Assign manager to team.</p>
           <form onSubmit={(e) => void assignManager(e)} className="mt-4 flex max-w-xl flex-col gap-3">
             <select
               value={managerDepartmentId}
@@ -477,7 +478,7 @@ export default function DepartmentsPage() {
               className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
               required
             >
-              <option value="">Select department</option>
+              <option value="">Select team</option>
               {rows.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
             <input
@@ -494,20 +495,18 @@ export default function DepartmentsPage() {
               placeholder="Manager email"
               required
             />
-            <p className="text-xs text-slate-500">If they are new, set a portal password below (min 8 characters).</p>
             <PasswordInput
               value={managerPassword}
               onChange={(e) => setManagerPasswordInput(e.target.value)}
               className="min-h-[48px] rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
-              placeholder="Password if new user (min 8 chars)"
-              title="Required when this email has no account yet"
+              placeholder="Password for new login (optional)"
               autoComplete="new-password"
             />
             <button
               type="submit"
               className="min-h-[48px] w-full rounded-lg bg-gray-900 px-5 text-sm font-medium text-white transition-all duration-200 hover:bg-black hover:shadow-md sm:w-auto sm:self-start"
             >
-              Assign Manager
+              Assign manager
             </button>
           </form>
         </section>
@@ -515,119 +514,146 @@ export default function DepartmentsPage() {
 
       {isCeo ? (
         <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
-          <h2 className="text-base font-semibold text-slate-900">Manager + also on another team</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Example: keep someone as <span className="font-medium text-slate-700">support manager</span> and also list them
-            on <span className="font-medium text-slate-700">tech</span> under Sudhir. Same login and password; email is
-            still ingested once (no duplicate tracking).
-          </p>
-          <form onSubmit={(e) => void submitSecondaryTeamRoster(e)} className="mt-4 flex max-w-xl flex-col gap-3">
-            <input
-              type="email"
-              value={secondaryRosterEmail}
-              onChange={(e) => setSecondaryRosterEmail(e.target.value)}
-              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
-              placeholder="Manager’s login email"
-              required
-              autoComplete="off"
-            />
-            <select
-              value={secondaryRosterDeptId}
-              onChange={(e) => setSecondaryRosterDeptId(e.target.value)}
-              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
-              required
-            >
-              <option value="">Also show them on this team’s roster</option>
-              {rows.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              disabled={secondaryRosterSaving}
-              className="min-h-[48px] w-full rounded-lg bg-indigo-600 px-5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50 sm:w-auto sm:self-start"
-            >
-              {secondaryRosterSaving ? 'Saving…' : 'Add to team roster'}
-            </button>
-          </form>
-        </section>
-      ) : null}
+          <h2 className="text-base font-semibold text-slate-900">Advanced manager actions</h2>
+          <p className="mt-1 text-sm text-slate-500">Use only when needed.</p>
 
-      {isCeo ? (
-        <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
-          <h2 className="text-base font-semibold text-slate-900">Manager → employee portal only</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Use only when they should <span className="font-medium text-slate-700">stop managing</span> and use the same
-            login as a normal employee on one team (same email and password).
-          </p>
-          <form onSubmit={(e) => void submitConvertManagerToEmployee(e)} className="mt-4 flex max-w-xl flex-col gap-3">
-            <input
-              type="email"
-              value={convertEmail}
-              onChange={(e) => setConvertEmail(e.target.value)}
-              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
-              placeholder="Manager’s login email (e.g. karmaterra427@gmail.com)"
-              required
-              autoComplete="off"
-            />
-            <select
-              value={convertDeptId}
-              onChange={(e) => setConvertDeptId(e.target.value)}
-              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
-              required
-            >
-              <option value="">Team they join as employee</option>
-              {rows.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
+          <div className="mt-4 flex flex-wrap gap-2">
             <button
-              type="submit"
-              disabled={convertSaving}
-              className="min-h-[48px] w-full rounded-lg border border-amber-200 bg-amber-50 px-5 text-sm font-medium text-amber-950 transition hover:bg-amber-100 disabled:opacity-50 sm:w-auto sm:self-start"
+              type="button"
+              onClick={() => setAdvancedAction((a) => (a === 'secondary' ? null : 'secondary'))}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                advancedAction === 'secondary'
+                  ? 'bg-indigo-600 text-white'
+                  : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
             >
-              {convertSaving ? 'Updating…' : 'Move to employee portal'}
+              Add manager to another team
             </button>
-          </form>
-        </section>
-      ) : null}
+            <button
+              type="button"
+              onClick={() => setAdvancedAction((a) => (a === 'convert' ? null : 'convert'))}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                advancedAction === 'convert'
+                  ? 'bg-amber-600 text-white'
+                  : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              Move manager to employee portal
+            </button>
+            <button
+              type="button"
+              onClick={() => setAdvancedAction((a) => (a === 'password' ? null : 'password'))}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                advancedAction === 'password'
+                  ? 'bg-slate-900 text-white'
+                  : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              Reset manager password
+            </button>
+          </div>
 
-      {isCeo ? (
-        <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
-          <h2 className="text-base font-semibold text-slate-900">Manager password</h2>
-          <p className="mt-1 text-sm text-slate-500">Set a new password when needed. Existing passwords are never shown.</p>
-          <form
-            onSubmit={(e) => void handleManagerPasswordReset(e)}
-            className="mt-4 flex max-w-xl flex-col gap-3"
-          >
-            <select
-              value={passwordDepartmentId}
-              onChange={(e) => setPasswordDepartmentId(e.target.value)}
-              className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
-              required
+          {advancedAction === 'secondary' ? (
+            <form onSubmit={(e) => void submitSecondaryTeamRoster(e)} className="mt-5 flex max-w-xl flex-col gap-3">
+              <p className="text-sm text-slate-500">Add existing manager to another team roster.</p>
+              <input
+                type="email"
+                value={secondaryRosterEmail}
+                onChange={(e) => setSecondaryRosterEmail(e.target.value)}
+                className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                placeholder="Manager login email"
+                required
+                autoComplete="off"
+              />
+              <select
+                value={secondaryRosterDeptId}
+                onChange={(e) => setSecondaryRosterDeptId(e.target.value)}
+                className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                required
+              >
+                <option value="">Select team</option>
+                {rows.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                disabled={secondaryRosterSaving}
+                className="min-h-[48px] w-full rounded-lg bg-indigo-600 px-5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50 sm:w-auto sm:self-start"
+              >
+                {secondaryRosterSaving ? 'Saving…' : 'Add to team'}
+              </button>
+            </form>
+          ) : null}
+
+          {advancedAction === 'convert' ? (
+            <form onSubmit={(e) => void submitConvertManagerToEmployee(e)} className="mt-5 flex max-w-xl flex-col gap-3">
+              <p className="text-sm text-slate-500">Remove manager role and keep same login as employee.</p>
+              <input
+                type="email"
+                value={convertEmail}
+                onChange={(e) => setConvertEmail(e.target.value)}
+                className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                placeholder="Manager login email"
+                required
+                autoComplete="off"
+              />
+              <select
+                value={convertDeptId}
+                onChange={(e) => setConvertDeptId(e.target.value)}
+                className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                required
+              >
+                <option value="">Select employee team</option>
+                {rows.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                disabled={convertSaving}
+                className="min-h-[48px] w-full rounded-lg border border-amber-200 bg-amber-50 px-5 text-sm font-medium text-amber-950 transition hover:bg-amber-100 disabled:opacity-50 sm:w-auto sm:self-start"
+              >
+                {convertSaving ? 'Updating…' : 'Move to employee portal'}
+              </button>
+            </form>
+          ) : null}
+
+          {advancedAction === 'password' ? (
+            <form
+              onSubmit={(e) => void handleManagerPasswordReset(e)}
+              className="mt-5 flex max-w-xl flex-col gap-3"
             >
-              <option value="">Select department</option>
-              {rows.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
-            <PasswordInput
-              value={newManagerPassword}
-              onChange={(e) => setNewManagerPassword(e.target.value)}
-              className="min-h-[48px] rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
-              placeholder="New password (min 8 chars)"
-              required
-              autoComplete="new-password"
-            />
-            <button
-              type="submit"
-              className="min-h-[48px] w-full rounded-lg bg-gray-900 px-5 text-sm font-medium text-white transition-all duration-200 hover:bg-black hover:shadow-md sm:w-auto sm:self-start"
-            >
-              Update Password
-            </button>
-          </form>
+              <p className="text-sm text-slate-500">Set a new password for current manager login.</p>
+              <select
+                value={passwordDepartmentId}
+                onChange={(e) => setPasswordDepartmentId(e.target.value)}
+                className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                required
+              >
+                <option value="">Select team</option>
+                {rows.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+              <PasswordInput
+                value={newManagerPassword}
+                onChange={(e) => setNewManagerPassword(e.target.value)}
+                className="min-h-[48px] rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                placeholder="New password (min 8 chars)"
+                required
+                autoComplete="new-password"
+              />
+              <button
+                type="submit"
+                className="min-h-[48px] w-full rounded-lg bg-gray-900 px-5 text-sm font-medium text-white transition-all duration-200 hover:bg-black hover:shadow-md sm:w-auto sm:self-start"
+              >
+                Update password
+              </button>
+            </form>
+          ) : null}
         </section>
       ) : null}
 

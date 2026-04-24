@@ -1237,6 +1237,10 @@ function MyEmailPageInner() {
   const [skippedBulkClearing, setSkippedBulkClearing] = useState(false);
 
   const [filterMailbox, setFilterMailbox] = useState('');
+  /** CEO Manager-mail view: optional subset of manager inboxes to display/filter. */
+  const [managerScopeMailboxIds, setManagerScopeMailboxIds] = useState<string[]>([]);
+  /** CEO Employee-mail view: optional subset of employee inboxes to display/filter. */
+  const [employeeScopeMailboxIds, setEmployeeScopeMailboxIds] = useState<string[]>([]);
   /** Extra filters only for the “All threads” tab. */
   const [allTabStatus, setAllTabStatus] = useState('');
   const [allTabPriority, setAllTabPriority] = useState('');
@@ -2084,14 +2088,6 @@ function MyEmailPageInner() {
   }, [token, showFullInboxChrome, myEmailTab, ceoInboxMode, loadLiveIngestSchedule]);
 
   useEffect(() => {
-    if (ownMailboxes.length === 0) return;
-    setAiSkippedMailboxId((prev) => {
-      if (prev && ownMailboxes.some((m) => m.id === prev)) return prev;
-      return ownMailboxes.find((m) => isMailboxGmailConnected(m))?.id ?? ownMailboxes[0].id;
-    });
-  }, [ownMailboxes]);
-
-  useEffect(() => {
     setAiSkippedOffset(0);
   }, [aiSkippedMailboxId]);
 
@@ -2892,6 +2888,17 @@ function MyEmailPageInner() {
     [mailboxes, ceoEmailNorm],
   );
 
+  useEffect(() => {
+    const allowed = new Set(managerMailboxes.map((m) => m.id));
+    setManagerScopeMailboxIds((prev) => prev.filter((id) => allowed.has(id)));
+  }, [managerMailboxes]);
+
+  const managerScopedMailboxes = useMemo(() => {
+    if (managerScopeMailboxIds.length === 0) return managerMailboxes;
+    const selected = new Set(managerScopeMailboxIds);
+    return managerMailboxes.filter((m) => selected.has(m.id));
+  }, [managerMailboxes, managerScopeMailboxIds]);
+
   /** Individual contributors & other team mailboxes (not the CEO inbox, not a manager row). */
   const teamMailboxesOnly = useMemo(
     () =>
@@ -2904,17 +2911,48 @@ function MyEmailPageInner() {
     [mailboxes, ceoEmailNorm],
   );
 
+  useEffect(() => {
+    const allowed = new Set(teamMailboxesOnly.map((m) => m.id));
+    setEmployeeScopeMailboxIds((prev) => prev.filter((id) => allowed.has(id)));
+  }, [teamMailboxesOnly]);
+
+  const teamScopedMailboxes = useMemo(() => {
+    if (employeeScopeMailboxIds.length === 0) return teamMailboxesOnly;
+    const selected = new Set(employeeScopeMailboxIds);
+    return teamMailboxesOnly.filter((m) => selected.has(m.id));
+  }, [teamMailboxesOnly, employeeScopeMailboxIds]);
+
+  const skippedMailboxCandidates = useMemo(() => {
+    if (myEmailTab === 'ceo') return ownMailboxes;
+    if (myEmailTab === 'manager') return managerScopedMailboxes;
+    return teamScopedMailboxes;
+  }, [myEmailTab, ownMailboxes, managerScopedMailboxes, teamScopedMailboxes]);
+
+  useEffect(() => {
+    if (skippedMailboxCandidates.length === 0) {
+      setAiSkippedMailboxId('');
+      return;
+    }
+    setAiSkippedMailboxId((prev) => {
+      if (prev && skippedMailboxCandidates.some((m) => m.id === prev)) return prev;
+      return (
+        skippedMailboxCandidates.find((m) => isMailboxGmailConnected(m))?.id ??
+        skippedMailboxCandidates[0].id
+      );
+    });
+  }, [skippedMailboxCandidates]);
+
   const scopeMailboxIds = useMemo(() => {
     const ids = new Set<string>();
     if (myEmailTab === 'ceo') {
       ownMailboxes.forEach((m) => ids.add(m.id));
     } else if (myEmailTab === 'manager') {
-      managerMailboxes.forEach((m) => ids.add(m.id));
+      managerScopedMailboxes.forEach((m) => ids.add(m.id));
     } else {
-      teamMailboxesOnly.forEach((m) => ids.add(m.id));
+      teamScopedMailboxes.forEach((m) => ids.add(m.id));
     }
     return ids;
-  }, [myEmailTab, ownMailboxes, managerMailboxes, teamMailboxesOnly]);
+  }, [myEmailTab, ownMailboxes, managerScopedMailboxes, teamScopedMailboxes]);
 
   const scopedConversations = useMemo(
     () => conversations.filter((c) => scopeMailboxIds.has(c.employee_id)),
@@ -3303,9 +3341,9 @@ function MyEmailPageInner() {
 
   const mailboxesForInboxShortcuts = useMemo(() => {
     if (myEmailTab === 'ceo') return ownMailboxes;
-    if (myEmailTab === 'manager') return managerMailboxes;
-    return teamMailboxesOnly;
-  }, [myEmailTab, ownMailboxes, managerMailboxes, teamMailboxesOnly]);
+    if (myEmailTab === 'manager') return managerScopedMailboxes;
+    return teamScopedMailboxes;
+  }, [myEmailTab, ownMailboxes, managerScopedMailboxes, teamScopedMailboxes]);
 
   useEffect(() => {
     const allowed = new Set(searchFilteredTabRows.map((c) => c.conversation_id));
@@ -4805,8 +4843,34 @@ function MyEmailPageInner() {
                 <p className="mt-1 text-xs text-slate-600">
                   Department heads only.
                 </p>
+                {managerMailboxes.length > 1 ? (
+                  <div className="mt-3 max-w-sm">
+                    <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Managers in view
+                      <select
+                        multiple
+                        value={managerScopeMailboxIds}
+                        onChange={(e) =>
+                          setManagerScopeMailboxIds(
+                            Array.from(e.currentTarget.selectedOptions).map((o) => o.value),
+                          )
+                        }
+                        className="mt-1.5 min-h-[6rem] w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 shadow-sm focus:border-brand-500 focus:outline-none"
+                      >
+                        {managerMailboxes.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} · {m.email}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Select one or more managers. Leave unselected to show all.
+                    </p>
+                  </div>
+                ) : null}
                 <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {managerMailboxes.map((mb) => (
+                  {managerScopedMailboxes.map((mb) => (
                     <div key={mb.id} className="space-y-2">
                       <TrackedMailboxCard
                         mb={mb}
@@ -4820,9 +4884,11 @@ function MyEmailPageInner() {
                     </div>
                   ))}
                 </div>
-                {managerMailboxes.length === 0 ? (
+                {managerScopedMailboxes.length === 0 ? (
                   <p className="mt-3 text-center text-sm text-slate-500">
-                    No manager inboxes yet.
+                    {managerMailboxes.length === 0
+                      ? 'No manager inboxes yet.'
+                      : 'No manager inbox matches this selection.'}
                   </p>
                 ) : null}
               </div>
@@ -4830,71 +4896,7 @@ function MyEmailPageInner() {
 
             {myEmailTab === 'team' ? (
               <>
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-lg font-bold text-slate-900">Team mailboxes</h2>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAddForm((v) => {
-                        const open = !v;
-                        if (open) {
-                          setAddName('');
-                          setAddEmail('');
-                        }
-                        return open;
-                      });
-                    }}
-                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
-                  >
-                    {showAddForm ? 'Cancel' : '+ Add another mailbox'}
-                  </button>
-                </div>
-
-                {showAddForm && (
-                  <div className="mb-4 rounded-2xl border border-slate-200/60 bg-white p-5 shadow-card">
-                    <p className="mb-3 text-sm font-semibold text-slate-700">
-                      Add someone else&apos;s mailbox (IC, shared inbox, etc.)
-                    </p>
-                    <p className="mb-3 text-xs text-slate-500">
-                      Enter <strong>their</strong> full name and work email — not yours.
-                    </p>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <input
-                        type="text"
-                        placeholder="Full name"
-                        value={addName}
-                        onChange={(e) => setAddName(e.target.value)}
-                        className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                      />
-                      <input
-                        type="email"
-                        placeholder="Email address"
-                        value={addEmail}
-                        onChange={(e) => setAddEmail(e.target.value)}
-                        className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                      />
-                    </div>
-                    <div className="mt-3 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => void addMailbox()}
-                        disabled={adding || !addName.trim() || !addEmail.trim()}
-                        className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-2 text-xs font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95 disabled:opacity-50"
-                      >
-                        {adding ? 'Adding...' : 'Add mailbox'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {mailboxes.length === 0 && showAddForm ? (
-                  <div className="mb-4 rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-center shadow-card">
-                    <p className="text-sm text-slate-600">
-                      Fill in the form above to add a tracked mailbox, or cancel and add people from{' '}
-                      <strong>Employees</strong> first.
-                    </p>
-                  </div>
-                ) : null}
+                <h2 className="mb-3 text-lg font-bold text-slate-900">Team mailboxes</h2>
 
                 <div
                   id="team-mailboxes-ceo"
@@ -4904,8 +4906,34 @@ function MyEmailPageInner() {
                     Individual contributors and other org mail — <strong>not</strong> your CEO login and{' '}
                     <strong>not</strong> department manager rows (those are under Manager mail).
                   </p>
+                  {teamMailboxesOnly.length > 1 ? (
+                    <div className="mt-3 max-w-sm">
+                      <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        Employees in view
+                        <select
+                          multiple
+                          value={employeeScopeMailboxIds}
+                          onChange={(e) =>
+                            setEmployeeScopeMailboxIds(
+                              Array.from(e.currentTarget.selectedOptions).map((o) => o.value),
+                            )
+                          }
+                          className="mt-1.5 min-h-[7rem] w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 shadow-sm focus:border-brand-500 focus:outline-none"
+                        >
+                          {teamMailboxesOnly.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name} · {m.email}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        Select one, two, or any number of employee inboxes. Leave unselected to show all.
+                      </p>
+                    </div>
+                  ) : null}
                   <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {teamMailboxesOnly.map((mb) => (
+                    {teamScopedMailboxes.map((mb) => (
                       <div key={mb.id} className="space-y-2">
                         <TrackedMailboxCard
                           mb={mb}
@@ -4919,10 +4947,16 @@ function MyEmailPageInner() {
                       </div>
                     ))}
                   </div>
-                  {teamMailboxesOnly.length === 0 ? (
+                  {teamScopedMailboxes.length === 0 ? (
                     <p className="mt-3 text-center text-sm text-slate-500">
-                      No team mailboxes yet. Add people on <strong>Employees</strong> or use{' '}
-                      <strong>+ Add another mailbox</strong> above.
+                      {teamMailboxesOnly.length === 0 ? (
+                        <>
+                          No team mailboxes yet. Add people on <strong>Employees</strong> or use{' '}
+                          <strong>+ Add another mailbox</strong> above.
+                        </>
+                      ) : (
+                        'No employee mailbox matches this selection.'
+                      )}
                     </p>
                   ) : null}
                 </div>
@@ -5096,13 +5130,13 @@ function MyEmailPageInner() {
 
             {mailTab === 'skipped' && ceoInboxMode === 'live' ? (
               <div className="mt-6">
-                {!ownMailboxes.some((m) => isMailboxGmailConnected(m)) ? (
+                {!skippedMailboxCandidates.some((m) => isMailboxGmailConnected(m)) ? (
                   <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center text-sm text-slate-600">
                     Connect Gmail on a mailbox card below to load skipped-message history.
                   </div>
                 ) : (
                   <SkippedMailsTabTable
-                    mailboxes={ownMailboxes}
+                    mailboxes={skippedMailboxCandidates}
                     rows={searchFilteredSkippedRows}
                     unfilteredPageCount={aiSkippedRows.length}
                     aiSkippedMailboxId={aiSkippedMailboxId}

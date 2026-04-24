@@ -267,11 +267,7 @@ export default function PlatformAdminPage() {
       onSignOut={() => void signOut()}
     >
       <p className="text-sm text-slate-500">
-        <Link href="/settings" className="font-medium text-brand-600 hover:underline">
-          Settings
-        </Link>
-        {' · '}
-        <Link href="/dashboard" className="font-medium text-brand-600 hover:underline">
+        <Link href="/admin" className="font-medium text-brand-600 hover:underline">
           Dashboard
         </Link>
       </p>

@@ -59,7 +59,7 @@ function SafeLink(props: ComponentProps<typeof Link>) {
 function onMyEmailHashNavClick(
   e: MouseEvent<HTMLAnchorElement>,
   pathname: string,
-  tab: 'ceo' | 'manager',
+  tab: 'ceo' | 'manager' | 'team',
 ) {
   if (pathname !== '/my-email') return;
   e.preventDefault();
@@ -67,7 +67,7 @@ function onMyEmailHashNavClick(
     if (window.location.hash) window.location.hash = '';
     return;
   }
-  const id = 'manager-mailboxes';
+  const id = tab === 'manager' ? 'manager-mailboxes' : 'team-mailboxes-ceo';
   if (window.location.hash !== `#${id}`) {
     window.location.hash = id;
   }
@@ -199,6 +199,8 @@ export function AppShell({
     locHash !== '#team-mailboxes-ceo';
   const managerMailFocus =
     pathname === '/my-email' && locHash === '#manager-mailboxes';
+  const employeeMailFocus =
+    pathname === '/my-email' && locHash === '#team-mailboxes-ceo';
   const managerMessagesActive = pathname === '/manager-messages';
   const teamMailSyncActive = pathname === '/team-mail-sync';
   const brandTitle = companyName?.trim() || 'AI Auto Mail';
@@ -252,15 +254,9 @@ export function AppShell({
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]">
             <nav aria-label="Main">
               <div className="flex flex-col gap-1.5 pb-1">
-              {isPlatformAdmin ? (
-                <SafeLink href="/admin" className={navItemClass(pathname === '/admin')}>
-                  Platform admin
-                </SafeLink>
-              ) : (
-                <SafeLink href="/dashboard" className={navItemClass(pathname === '/dashboard')}>
-                  Dashboard
-                </SafeLink>
-              )}
+              <SafeLink href={isPlatformAdmin ? '/admin' : '/dashboard'} className={navItemClass(pathname === '/dashboard' || pathname === '/admin')}>
+                Dashboard
+              </SafeLink>
 
               {showMyEmail ? (
                 <>
@@ -272,13 +268,22 @@ export function AppShell({
                     My Email
                   </SafeLink>
                   {showMyEmailCeoHashNav ? (
-                    <SafeLink
-                      href="/my-email#manager-mailboxes"
-                      className={navItemClass(managerMailFocus)}
-                      onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
-                    >
-                      Manager mail
-                    </SafeLink>
+                    <>
+                      <SafeLink
+                        href="/my-email#manager-mailboxes"
+                        className={navItemClass(managerMailFocus)}
+                        onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
+                      >
+                        Manager mail
+                      </SafeLink>
+                      <SafeLink
+                        href="/my-email#team-mailboxes-ceo"
+                        className={navItemClass(employeeMailFocus)}
+                        onClick={(e) => onMyEmailHashNavClick(e, pathname, 'team')}
+                      >
+                        Employee mail
+                      </SafeLink>
+                    </>
                   ) : null}
                 </>
               ) : null}
@@ -402,15 +407,9 @@ export function AppShell({
               className="app-shell-mobile-nav-links mt-2 flex flex-wrap gap-1.5"
               aria-label="Main mobile"
             >
-              {isPlatformAdmin ? (
-                <SafeLink href="/admin" className={navMobileClass(pathname === '/admin')}>
-                  Admin
-                </SafeLink>
-              ) : (
-                <SafeLink href="/dashboard" className={navMobileClass(pathname === '/dashboard')}>
-                  Dashboard
-                </SafeLink>
-              )}
+              <SafeLink href={isPlatformAdmin ? '/admin' : '/dashboard'} className={navMobileClass(pathname === '/dashboard' || pathname === '/admin')}>
+                Dashboard
+              </SafeLink>
               {showMyEmail ? (
                 <>
                   <SafeLink
@@ -421,13 +420,22 @@ export function AppShell({
                     My Email
                   </SafeLink>
                   {showMyEmailCeoHashNav ? (
-                    <SafeLink
-                      href="/my-email#manager-mailboxes"
-                      className={navMobileClass(managerMailFocus)}
-                      onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
-                    >
-                      Manager mail
-                    </SafeLink>
+                    <>
+                      <SafeLink
+                        href="/my-email#manager-mailboxes"
+                        className={navMobileClass(managerMailFocus)}
+                        onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
+                      >
+                        Manager mail
+                      </SafeLink>
+                      <SafeLink
+                        href="/my-email#team-mailboxes-ceo"
+                        className={navMobileClass(employeeMailFocus)}
+                        onClick={(e) => onMyEmailHashNavClick(e, pathname, 'team')}
+                      >
+                        Employee mail
+                      </SafeLink>
+                    </>
                   ) : null}
                 </>
               ) : null}

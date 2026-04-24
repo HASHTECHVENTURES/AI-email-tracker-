@@ -224,8 +224,15 @@ function AuthPageInner() {
 
   const readPendingSignup = (): PendingSignup | null => {
     if (typeof window === 'undefined') return null;
-    const raw =
-      localStorage.getItem(PENDING_KEY) ?? sessionStorage.getItem(PENDING_KEY);
+    const safeGet = (s: Storage | undefined, key: string): string | null => {
+      if (!s || typeof s.getItem !== 'function') return null;
+      try {
+        return s.getItem(key);
+      } catch {
+        return null;
+      }
+    };
+    const raw = safeGet(globalThis.localStorage, PENDING_KEY) ?? safeGet(globalThis.sessionStorage, PENDING_KEY);
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw) as PendingSignup;
@@ -238,13 +245,29 @@ function AuthPageInner() {
 
   const persistPending = (p: PendingSignup) => {
     const s = JSON.stringify(p);
-    sessionStorage.setItem(PENDING_KEY, s);
-    localStorage.setItem(PENDING_KEY, s);
+    try {
+      if (typeof sessionStorage?.setItem === 'function') sessionStorage.setItem(PENDING_KEY, s);
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (typeof localStorage?.setItem === 'function') localStorage.setItem(PENDING_KEY, s);
+    } catch {
+      /* ignore */
+    }
   };
 
   const clearPending = useCallback(() => {
-    localStorage.removeItem(PENDING_KEY);
-    sessionStorage.removeItem(PENDING_KEY);
+    try {
+      if (typeof localStorage?.removeItem === 'function') localStorage.removeItem(PENDING_KEY);
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (typeof sessionStorage?.removeItem === 'function') sessionStorage.removeItem(PENDING_KEY);
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   /** Platform operators must never enter tenant onboarding; send them directly to /admin. */
