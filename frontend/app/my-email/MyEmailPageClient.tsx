@@ -2521,6 +2521,34 @@ function MyEmailPageInner() {
     void loadAiSkippedCount();
   }, [showFullInboxChrome, ceoInboxMode, token, aiSkippedMailboxId, loadAiSkippedCount]);
 
+  /** Keep skipped badge fresh even when user stays on non-skipped tabs. */
+  useEffect(() => {
+    if (!showFullInboxChrome || ceoInboxMode !== 'live') return;
+    if (!token || !aiSkippedMailboxId) return;
+    const POLL_MS = 20_000;
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void loadAiSkippedCount();
+    };
+    const id = window.setInterval(tick, POLL_MS);
+    return () => window.clearInterval(id);
+  }, [showFullInboxChrome, ceoInboxMode, token, aiSkippedMailboxId, loadAiSkippedCount]);
+
+  useEffect(() => {
+    if (!showFullInboxChrome || ceoInboxMode !== 'live') return;
+    if (!token || !aiSkippedMailboxId) return;
+    const onVisible = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void loadAiSkippedCount();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [showFullInboxChrome, ceoInboxMode, token, aiSkippedMailboxId, loadAiSkippedCount]);
+
   /** Drop selections for rows that disappeared after refresh or pagination. */
   useEffect(() => {
     const pageIds = new Set(aiSkippedRows.map((r) => r.provider_message_id));
