@@ -1229,6 +1229,7 @@ function MyEmailPageInner() {
   const [aiSkippedMailboxId, setAiSkippedMailboxId] = useState('');
   const [aiSkippedRows, setAiSkippedRows] = useState<AiSkippedMailItem[]>([]);
   const [aiSkippedTotal, setAiSkippedTotal] = useState(0);
+  const [aiSkippedCountSyncedAt, setAiSkippedCountSyncedAt] = useState<string | null>(null);
   const [aiSkippedLoading, setAiSkippedLoading] = useState(false);
   const [aiSkippedOffset, setAiSkippedOffset] = useState(0);
   const [aiSkippedClearingId, setAiSkippedClearingId] = useState<string | null>(null);
@@ -2192,6 +2193,7 @@ function MyEmailPageInner() {
       const data = (await res.json()) as { items?: AiSkippedMailItem[]; total?: number };
       setAiSkippedRows(Array.isArray(data.items) ? data.items : []);
       setAiSkippedTotal(typeof data.total === 'number' ? data.total : 0);
+      setAiSkippedCountSyncedAt(new Date().toISOString());
     } catch (e) {
       if (!silent) {
         setError(e instanceof Error ? e.message : 'Could not load messages Inbox AI skipped.');
@@ -2214,6 +2216,7 @@ function MyEmailPageInner() {
       if (!res.ok) return;
       const data = (await res.json()) as { total?: number };
       setAiSkippedTotal(typeof data.total === 'number' ? data.total : 0);
+      setAiSkippedCountSyncedAt(new Date().toISOString());
     } catch {
       // Non-blocking badge refresh; keep current value on transient failures.
     }
@@ -5020,6 +5023,16 @@ function MyEmailPageInner() {
             <div className="flex flex-col gap-3 border-b border-slate-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Follow-ups</h2>
+                {showFullInboxChrome && ceoInboxMode === 'live' && aiSkippedMailboxId ? (
+                  <p className="mt-1 text-xs text-slate-500">
+                    Skipped count updated:{' '}
+                    <span className="font-medium tabular-nums text-slate-700">
+                      {aiSkippedCountSyncedAt
+                        ? new Date(aiSkippedCountSyncedAt).toLocaleTimeString()
+                        : '…'}
+                    </span>
+                  </p>
+                ) : null}
               </div>
               <input
                 type="search"
