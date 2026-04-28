@@ -231,8 +231,19 @@ export class GmailService {
     const bodyText = this.extractBestBodyText(msg.payload ?? {});
     const labelIds = (msg.labelIds ?? []) as string[];
 
+    const mailbox = employeeEmail.trim().toLowerCase();
+    const fromNorm = fromEmail.trim().toLowerCase();
+    const toNorm = toEmails.map((e) => e.trim().toLowerCase()).filter(Boolean);
+    const ccNorm = ccEmails.map((e) => e.trim().toLowerCase()).filter(Boolean);
+    const recipientSet = new Set([...toNorm, ...ccNorm]);
+
+    /**
+     * Self-addressed test mail (from me -> to me only) should be treated as inbound so
+     * it appears in follow-up views for validation. Regular sent mail remains outbound.
+     */
+    const selfAddressedOnly = fromNorm === mailbox && recipientSet.size === 1 && recipientSet.has(mailbox);
     const direction: 'INBOUND' | 'OUTBOUND' =
-      fromEmail.toLowerCase() === employeeEmail.toLowerCase() ? 'OUTBOUND' : 'INBOUND';
+      fromNorm === mailbox && !selfAddressedOnly ? 'OUTBOUND' : 'INBOUND';
 
     return {
       providerMessageId: msg.id!,
