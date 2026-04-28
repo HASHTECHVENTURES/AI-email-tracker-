@@ -948,8 +948,6 @@ export default function DashboardPage() {
               ))}
             </section>
 
-            {historicalSearchCard}
-
             {(dash.ceo_employee_mailbox_rollups?.length ?? 0) > 0 ? (
               <section className={cardClass}>
                 <div className="mb-5 border-b border-slate-100 pb-4">
