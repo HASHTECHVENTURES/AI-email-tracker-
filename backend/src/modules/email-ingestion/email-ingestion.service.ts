@@ -521,15 +521,24 @@ export class EmailIngestionService {
     for (const msgId of messageIds) {
       if (await this.messageInDatabase(employee.id, msgId)) continue;
 
-      const wasSkipped = await this.skipRecorded(employee.id, msgId);
-      if (wasSkipped) {
+      const skipKind = await this.getRecordedSkipKind(employee.id, msgId);
+      if (skipKind) {
         const outboundPeek = await this.gmailService.peekIsOutboundFrom(
           employee.id,
           employee.email,
           msgId,
         );
-        if (!outboundPeek) continue;
-        await this.clearIngestionSkip(employee.id, msgId);
+        if (outboundPeek) {
+          await this.clearIngestionSkip(employee.id, msgId);
+        } else if (skipKind === 'ai_irrelevant') {
+          /**
+           * Re-evaluate previously AI-skipped inbound messages with the latest classifier/guardrails.
+           * Without this, historical false negatives stay hidden forever unless manually cleared.
+           */
+          await this.clearIngestionSkip(employee.id, msgId);
+        } else {
+          continue;
+        }
       }
 
       try {
@@ -841,14 +850,22 @@ export class EmailIngestionService {
     return row != null;
   }
 
-  private async skipRecorded(employeeId: string, providerMessageId: string): Promise<boolean> {
+  private async getRecordedSkipKind(
+    employeeId: string,
+    providerMessageId: string,
+  ): Promise<'before_tracking' | 'ai_irrelevant' | 'legacy' | null> {
     const { data: sk } = await this.supabase
       .from('email_ingestion_skips')
-      .select('provider_message_id')
+      .select('provider_message_id, skip_kind')
       .eq('employee_id', employeeId)
       .eq('provider_message_id', providerMessageId)
       .maybeSingle();
-    return sk != null;
+    if (!sk) return null;
+    const kind = String((sk as { skip_kind?: string | null }).skip_kind ?? '').trim().toLowerCase();
+    if (kind === 'before_tracking' || kind === 'ai_irrelevant' || kind === 'legacy') {
+      return kind;
+    }
+    return 'legacy';
   }
 
   private async clearIngestionSkip(employeeId: string, providerMessageId: string): Promise<void> {
@@ -867,7 +884,7 @@ export class EmailIngestionService {
     providerMessageId: string,
   ): Promise<boolean> {
     if (await this.messageInDatabase(employeeId, providerMessageId)) return true;
-    return this.skipRecorded(employeeId, providerMessageId);
+    return (await this.getRecordedSkipKind(employeeId, providerMessageId)) != null;
   }
 
   /** Persist skip ledger row (live sync, historical fetch, etc.). */
