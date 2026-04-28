@@ -475,29 +475,46 @@ export class EmailIngestionService {
     }
 
     if (messageIds.length === 0 && !nextPageToken) {
-      this.logger.log(`No new messages for ${employee.name}`);
-      await this.persistMailSyncState(employee.id, syncState, {
-        lastProcessedAt: new Date(),
-        clearListProgress: true,
+      /**
+       * Safety fallback: Gmail indexing / cursor timing can occasionally return no IDs
+       * right after recent messages arrive. Probe a short recent window before declaring
+       * "no new messages" so user-facing inboxes don't appear stuck at zero.
+       */
+      const fallbackQuery = `${buildGmailInboxListQuery(null)} newer_than:7d`;
+      const fallback = await this.gmailService.listMessageIdsPage(employee.id, fallbackQuery, {
+        maxResults: Math.min(120, listMaxResults),
+        pageToken: null,
       });
-      /** Same as a full batch: run completed — record per-mailbox sync time (was missing; UI showed a false “no sync” warning). */
-      await this.supabase
-        .from('employees')
-        .update({
-          last_synced_at: new Date().toISOString(),
-          gmail_status: 'CONNECTED',
-        })
-        .eq('id', employee.id)
-        .eq('company_id', companyId);
-      return {
-        companyId,
-        employeeId: employee.id,
-        employeeName: employee.name,
-        newMessages: 0,
-        skippedFiltered: 0,
-        affectedThreads: 0,
-        conversationsUpdated: 0,
-      };
+      pushIds(fallback.ids);
+      if (fallback.ids.length > 0) {
+        this.logger.log(
+          `Zero-id cursor fallback recovered ${fallback.ids.length} recent message(s) for ${employee.name}`,
+        );
+      } else {
+        this.logger.log(`No new messages for ${employee.name}`);
+        await this.persistMailSyncState(employee.id, syncState, {
+          lastProcessedAt: new Date(),
+          clearListProgress: true,
+        });
+        /** Same as a full batch: run completed — record per-mailbox sync time (was missing; UI showed a false “no sync” warning). */
+        await this.supabase
+          .from('employees')
+          .update({
+            last_synced_at: new Date().toISOString(),
+            gmail_status: 'CONNECTED',
+          })
+          .eq('id', employee.id)
+          .eq('company_id', companyId);
+        return {
+          companyId,
+          employeeId: employee.id,
+          employeeName: employee.name,
+          newMessages: 0,
+          skippedFiltered: 0,
+          affectedThreads: 0,
+          conversationsUpdated: 0,
+        };
+      }
     }
 
     const companyAiOn = await this.companyPolicyService.isAiEnabledForCompany(companyId);
