@@ -366,7 +366,11 @@ export class EmailIngestionService {
     }
 
     const portalLinked = await this.employeesService.hasPortalEmployeeLink(companyId, employee.id);
-    if (portalLinked && !cycleSettings.email_crawl_employee_mailboxes_enabled) {
+    const mailboxType = await this.employeesService.getMailboxType(employee.id);
+    const isSelfMailbox = mailboxType === 'SELF';
+
+    // SELF mailboxes (CEO / manager My Email) must still ingest when global crawl is on.
+    if (!isSelfMailbox && portalLinked && !cycleSettings.email_crawl_employee_mailboxes_enabled) {
       this.logger.debug(`Ingest skipped (employee-portal mailbox crawl off): ${employee.name}`);
       return {
         companyId,
@@ -378,7 +382,7 @@ export class EmailIngestionService {
         conversationsUpdated: 0,
       };
     }
-    if (!portalLinked && !cycleSettings.email_crawl_team_mailboxes_enabled) {
+    if (!isSelfMailbox && !portalLinked && !cycleSettings.email_crawl_team_mailboxes_enabled) {
       this.logger.debug(`Ingest skipped (team mailbox crawl off): ${employee.name}`);
       return {
         companyId,
