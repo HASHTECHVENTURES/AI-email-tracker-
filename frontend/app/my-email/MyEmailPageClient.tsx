@@ -2201,6 +2201,24 @@ function MyEmailPageInner() {
     }
   }, [token, aiSkippedMailboxId, aiSkippedOffset]);
 
+  /** Keep the Skipped tab badge accurate even before opening that tab. */
+  const loadAiSkippedCount = useCallback(async () => {
+    if (!token || !aiSkippedMailboxId) return;
+    try {
+      const params = new URLSearchParams({
+        employee_id: aiSkippedMailboxId,
+        limit: '1',
+        offset: '0',
+      });
+      const res = await apiFetch(`/self-tracking/ai-skipped-mails?${params}`, token);
+      if (!res.ok) return;
+      const data = (await res.json()) as { total?: number };
+      setAiSkippedTotal(typeof data.total === 'number' ? data.total : 0);
+    } catch {
+      // Non-blocking badge refresh; keep current value on transient failures.
+    }
+  }, [token, aiSkippedMailboxId]);
+
   const loadHistWindowSkippedMails = useCallback(async () => {
     if (!token || !effectiveHistoricalMailboxId) return;
     const bounds = localYmdRangeToIsoBounds(histStartDate, histEndDate);
@@ -2496,6 +2514,12 @@ function MyEmailPageInner() {
     aiSkippedOffset,
     loadAiSkippedMails,
   ]);
+
+  useEffect(() => {
+    if (!showFullInboxChrome || ceoInboxMode !== 'live') return;
+    if (!token || !aiSkippedMailboxId) return;
+    void loadAiSkippedCount();
+  }, [showFullInboxChrome, ceoInboxMode, token, aiSkippedMailboxId, loadAiSkippedCount]);
 
   /** Drop selections for rows that disappeared after refresh or pagination. */
   useEffect(() => {
