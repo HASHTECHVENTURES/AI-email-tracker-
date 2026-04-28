@@ -28,21 +28,56 @@ export class OauthTokenService {
     return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   }
 
-  async hasToken(employeeId: string): Promise<boolean> {
-    const { data, error } = await this.supabase
+  /**
+   * Backward-compat: OAuth may be connected on an alias employee row sharing the same email.
+   * Resolve to the row that actually has a token before reads/refresh.
+   */
+  private async resolveTokenEmployeeId(employeeId: string): Promise<string | null> {
+    const direct = await this.supabase
       .from('employee_oauth_tokens')
       .select('employee_id')
       .eq('employee_id', employeeId)
       .maybeSingle();
-    if (error) return false;
-    return data !== null;
+    if (!direct.error && direct.data) return employeeId;
+
+    const { data: base } = await this.supabase
+      .from('employees')
+      .select('company_id, email')
+      .eq('id', employeeId)
+      .maybeSingle();
+    const companyId = (base as { company_id?: string } | null)?.company_id;
+    const email = (base as { email?: string } | null)?.email?.trim().toLowerCase();
+    if (!companyId || !email) return null;
+
+    const { data: aliases } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('email', email);
+    const ids = ((aliases ?? []) as Array<{ id: string }>).map((r) => r.id);
+    if (ids.length === 0) return null;
+
+    const { data: tokenRow } = await this.supabase
+      .from('employee_oauth_tokens')
+      .select('employee_id, updated_at')
+      .in('employee_id', ids)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return (tokenRow as { employee_id?: string } | null)?.employee_id ?? null;
+  }
+
+  async hasToken(employeeId: string): Promise<boolean> {
+    const resolved = await this.resolveTokenEmployeeId(employeeId);
+    return resolved != null;
   }
 
   async getValidAccessToken(employeeId: string): Promise<string> {
+    const tokenEmployeeId = (await this.resolveTokenEmployeeId(employeeId)) ?? employeeId;
     const { data, error } = await this.supabase
       .from('employee_oauth_tokens')
       .select('*')
-      .eq('employee_id', employeeId)
+      .eq('employee_id', tokenEmployeeId)
       .single();
 
     if (error || !data) {
@@ -54,17 +89,18 @@ export class OauthTokenService {
     const bufferMs = 60_000;
 
     if (Date.now() + bufferMs >= expiresAt) {
-      return this.refresh(employeeId, row);
+      return this.refresh(tokenEmployeeId, row);
     }
 
     return this.encryptionService.decrypt(row.access_token_enc);
   }
 
   async getRefreshToken(employeeId: string): Promise<string> {
+    const tokenEmployeeId = (await this.resolveTokenEmployeeId(employeeId)) ?? employeeId;
     const { data, error } = await this.supabase
       .from('employee_oauth_tokens')
       .select('refresh_token_enc')
-      .eq('employee_id', employeeId)
+      .eq('employee_id', tokenEmployeeId)
       .single();
 
     if (error || !data) {
@@ -78,10 +114,11 @@ export class OauthTokenService {
 
   /** When Google omits refresh_token on re-consent, reuse the stored one. */
   async getExistingRefreshTokenPlaintext(employeeId: string): Promise<string | null> {
+    const tokenEmployeeId = (await this.resolveTokenEmployeeId(employeeId)) ?? employeeId;
     const { data, error } = await this.supabase
       .from('employee_oauth_tokens')
       .select('refresh_token_enc')
-      .eq('employee_id', employeeId)
+      .eq('employee_id', tokenEmployeeId)
       .maybeSingle();
     if (error || !data) return null;
     try {
