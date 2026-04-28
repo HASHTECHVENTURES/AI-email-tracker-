@@ -47,6 +47,7 @@ Return ONLY the JSON object. No markdown, no explanation.`;
 export class AiEnrichmentService {
   private readonly logger = new Logger(AiEnrichmentService.name);
   private readonly model;
+  private monthlyQuotaExhausted = false;
 
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
@@ -118,6 +119,10 @@ export class AiEnrichmentService {
       return this.fallback();
     }
 
+    if (this.monthlyQuotaExhausted) {
+      return this.fallback();
+    }
+
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const prompt = `${SYSTEM_PROMPT}\n\n--- EMAIL THREAD ---\n\n${threadText}`;
@@ -128,6 +133,15 @@ export class AiEnrichmentService {
       } catch (err) {
         const msg = (err as Error).message ?? String(err);
         const is429 = /429|quota|rate.limit/i.test(msg);
+        const isMonthly = /monthly|exceeded its/i.test(msg);
+
+        if (is429 && isMonthly) {
+          this.monthlyQuotaExhausted = true;
+          this.logger.error(
+            `Gemini monthly quota exhausted — skipping AI enrichment for remaining emails. ${msg.slice(0, 200)}`,
+          );
+          return this.fallback();
+        }
 
         if (is429 && attempt < retries) {
           const secMatch = msg.match(/retry in (\d+(\.\d+)?)\s*s/i);

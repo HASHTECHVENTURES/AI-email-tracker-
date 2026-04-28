@@ -21,6 +21,8 @@ export interface Employee {
   autoAiEnabled?: boolean;
   /** ISO timestamp — only ingest/analyze mail at or after this time (from mail_sync_state.start_date). */
   startTrackingAt?: string | null;
+  /** `SELF` = CEO/manager self-tracking inbox; `TEAM` / null = org directory mailbox */
+  mailboxType?: 'SELF' | 'TEAM' | null;
 }
 
 export interface EmailMessage {

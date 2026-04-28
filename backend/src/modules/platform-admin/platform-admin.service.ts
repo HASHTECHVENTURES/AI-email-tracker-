@@ -19,6 +19,61 @@ export interface PlatformCompanyRow {
   employee_count: number;
 }
 
+export interface CompanyDetailUser {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+  created_at: string;
+  linked_employee_id: string | null;
+}
+
+export interface CompanyDetailEmployee {
+  id: string;
+  name: string;
+  email: string;
+  mailbox_type: string | null;
+  gmail_status: string | null;
+  is_active: boolean;
+  ai_enabled: boolean;
+  tracking_paused: boolean;
+  tracking_start_at: string | null;
+  last_synced_at: string | null;
+  department_name: string | null;
+  conversation_count: number;
+  message_count: number;
+}
+
+export interface CompanyAiUsage {
+  ai_classified_messages: number;
+  ai_enriched_conversations: number;
+  ai_quota_fallback_messages: number;
+  executive_reports_generated: number;
+  historical_search_runs: number;
+  last_executive_report_at: string | null;
+  last_historical_search_at: string | null;
+}
+
+export interface CompanyDetail {
+  id: string;
+  name: string;
+  created_at: string;
+  admin_ai_enabled: boolean;
+  admin_email_crawl_enabled: boolean;
+  users: CompanyDetailUser[];
+  employees: CompanyDetailEmployee[];
+  ai_usage: CompanyAiUsage;
+  totals: {
+    users: number;
+    employees: number;
+    active_mailboxes: number;
+    connected_mailboxes: number;
+    conversations: number;
+    messages: number;
+    departments: number;
+  };
+}
+
 export interface PlatformStats {
   companies_registered: number;
   total_users: number;
@@ -214,6 +269,180 @@ export class PlatformAdminService {
     if (!data?.length) {
       throw new NotFoundException('Company not found');
     }
+  }
+
+  async getCompanyDetail(companyId: string): Promise<CompanyDetail> {
+    const { data: company, error: cErr } = await this.supabase
+      .from('companies')
+      .select('id, name, created_at, admin_ai_enabled, admin_email_crawl_enabled')
+      .eq('id', companyId)
+      .maybeSingle();
+
+    if (cErr || !company) {
+      throw new NotFoundException('Company not found');
+    }
+
+    const c = company as {
+      id: string;
+      name: string;
+      created_at: string;
+      admin_ai_enabled?: boolean;
+      admin_email_crawl_enabled?: boolean;
+    };
+
+    const [usersRes, empsRes, deptsRes, convoCountRes, msgCountRes] = await Promise.all([
+      this.supabase
+        .from('users')
+        .select('id, email, full_name, role, created_at, linked_employee_id')
+        .eq('company_id', companyId)
+        .order('role')
+        .order('created_at'),
+      this.supabase
+        .from('employees')
+        .select(
+          'id, name, email, mailbox_type, gmail_status, is_active, ai_enabled, tracking_paused, tracking_start_at, last_synced_at, department_id',
+        )
+        .eq('company_id', companyId)
+        .order('mailbox_type')
+        .order('name'),
+      this.supabase
+        .from('departments')
+        .select('id, name')
+        .eq('company_id', companyId),
+      this.supabase
+        .from('conversations')
+        .select('*', { count: 'exact', head: true })
+        .eq('company_id', companyId),
+      this.supabase
+        .from('email_messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('company_id', companyId),
+    ]);
+
+    const users = ((usersRes.data ?? []) as CompanyDetailUser[]);
+    const deptMap = new Map<string, string>();
+    for (const d of (deptsRes.data ?? []) as { id: string; name: string }[]) {
+      deptMap.set(d.id, d.name);
+    }
+
+    const empRows = (empsRes.data ?? []) as Array<{
+      id: string;
+      name: string;
+      email: string;
+      mailbox_type: string | null;
+      gmail_status: string | null;
+      is_active: boolean;
+      ai_enabled: boolean;
+      tracking_paused: boolean;
+      tracking_start_at: string | null;
+      last_synced_at: string | null;
+      department_id: string | null;
+    }>;
+
+    const convoCounts = new Map<string, number>();
+    const msgCounts = new Map<string, number>();
+    for (const e of empRows) {
+      const [{ count: cc }, { count: mc }] = await Promise.all([
+        this.supabase.from('conversations').select('*', { count: 'exact', head: true }).eq('employee_id', e.id),
+        this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('employee_id', e.id),
+      ]);
+      convoCounts.set(e.id, cc ?? 0);
+      msgCounts.set(e.id, mc ?? 0);
+    }
+
+    const employees: CompanyDetailEmployee[] = empRows.map((e) => ({
+      id: e.id,
+      name: e.name,
+      email: e.email,
+      mailbox_type: e.mailbox_type,
+      gmail_status: e.gmail_status,
+      is_active: e.is_active !== false,
+      ai_enabled: e.ai_enabled !== false,
+      tracking_paused: e.tracking_paused === true,
+      tracking_start_at: e.tracking_start_at,
+      last_synced_at: e.last_synced_at,
+      department_name: e.department_id ? deptMap.get(e.department_id) ?? null : null,
+      conversation_count: convoCounts.get(e.id) ?? 0,
+      message_count: msgCounts.get(e.id) ?? 0,
+    }));
+
+    const [
+      aiClassifiedRes,
+      aiQuotaFallbackRes,
+      aiEnrichedRes,
+      execReportsRes,
+      histRunsRes,
+      lastReportRes,
+      lastHistRes,
+    ] = await Promise.all([
+      this.supabase
+        .from('email_messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('company_id', companyId)
+        .not('relevance_reason', 'is', null),
+      this.supabase
+        .from('email_messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('company_id', companyId)
+        .ilike('relevance_reason', '%quota exhausted%'),
+      this.supabase
+        .from('conversations')
+        .select('*', { count: 'exact', head: true })
+        .eq('company_id', companyId)
+        .neq('summary', ''),
+      this.supabase
+        .from('dashboard_reports')
+        .select('*', { count: 'exact', head: true })
+        .eq('company_id', companyId),
+      this.supabase
+        .from('historical_search_runs')
+        .select('*', { count: 'exact', head: true })
+        .eq('company_id', companyId),
+      this.supabase
+        .from('dashboard_reports')
+        .select('created_at')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      this.supabase
+        .from('historical_search_runs')
+        .select('created_at')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const aiUsage: CompanyAiUsage = {
+      ai_classified_messages: aiClassifiedRes.count ?? 0,
+      ai_enriched_conversations: aiEnrichedRes.count ?? 0,
+      ai_quota_fallback_messages: aiQuotaFallbackRes.count ?? 0,
+      executive_reports_generated: execReportsRes.count ?? 0,
+      historical_search_runs: histRunsRes.count ?? 0,
+      last_executive_report_at: (lastReportRes.data as { created_at: string } | null)?.created_at ?? null,
+      last_historical_search_at: (lastHistRes.data as { created_at: string } | null)?.created_at ?? null,
+    };
+
+    return {
+      id: c.id,
+      name: c.name,
+      created_at: c.created_at,
+      admin_ai_enabled: c.admin_ai_enabled !== false,
+      admin_email_crawl_enabled: c.admin_email_crawl_enabled !== false,
+      users,
+      employees,
+      ai_usage: aiUsage,
+      totals: {
+        users: users.length,
+        employees: employees.length,
+        active_mailboxes: employees.filter((e) => e.is_active).length,
+        connected_mailboxes: employees.filter((e) => e.gmail_status === 'CONNECTED').length,
+        conversations: convoCountRes.count ?? 0,
+        messages: msgCountRes.count ?? 0,
+        departments: deptMap.size,
+      },
+    };
   }
 
   async deleteCompany(companyId: string): Promise<void> {

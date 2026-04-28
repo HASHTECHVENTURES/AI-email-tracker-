@@ -102,6 +102,14 @@ export class EmailIngestionService {
   private readonly logger = new Logger(EmailIngestionService.name);
   private readonly relevanceModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | null;
 
+  /**
+   * Set to `true` when a Gemini 429 error mentions "monthly" quota exhaustion.
+   * Once set, all subsequent relevance calls in the same cycle skip retries and
+   * treat emails as relevant so the inbox isn't empty while AI is unavailable.
+   * Reset at the start of each ingestion cycle.
+   */
+  private monthlyQuotaExhausted = false;
+
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
     private readonly employeesService: EmployeesService,
@@ -153,6 +161,8 @@ export class EmailIngestionService {
       throw new ConflictException('Ingestion cycle is already running');
     }
 
+    this.monthlyQuotaExhausted = false;
+
     const { data: companies, error: companiesErr } = await this.supabase.from('companies').select('id');
     if (companiesErr) {
       await this.settingsService.markIngestionFinished({
@@ -164,18 +174,41 @@ export class EmailIngestionService {
       throw companiesErr;
     }
 
+    const companyIds = (companies ?? []).map((r) => (r as { id: string }).id);
+
+    const { data: priorityRows } = await this.supabase
+      .from('employees')
+      .select('company_id')
+      .eq('is_active', true)
+      .eq('roster_duplicate', false)
+      .eq('mailbox_type', 'SELF')
+      .eq('gmail_status', 'CONNECTED')
+      .is('last_synced_at', null);
+    const neverSyncedCompanies = new Set(
+      (priorityRows ?? []).map((r) => (r as { company_id: string }).company_id),
+    );
+    companyIds.sort((a, b) => {
+      const aPri = neverSyncedCompanies.has(a) ? 0 : 1;
+      const bPri = neverSyncedCompanies.has(b) ? 0 : 1;
+      return aPri - bPri;
+    });
+
     const results: IngestionResult[] = [];
     const cycleSettings = await this.settingsService.getAll();
 
     try {
-      for (const row of companies ?? []) {
-        const companyId = (row as { id: string }).id;
+      for (const companyId of companyIds) {
         const emailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(companyId);
         if (!emailCrawlOn) {
           this.logger.debug(`Ingestion skipped for company ${companyId} (platform email crawl off)`);
           continue;
         }
         const employees = await this.employeesService.listActive(companyId);
+        employees.sort((a, b) => {
+          const aIsSelf = a.mailboxType === 'SELF' ? 0 : 1;
+          const bIsSelf = b.mailboxType === 'SELF' ? 0 : 1;
+          return aIsSelf - bIsSelf;
+        });
 
         for (const employee of employees) {
           const hasOAuth = await this.oauthTokenService.hasToken(employee.id);
@@ -247,6 +280,8 @@ export class EmailIngestionService {
         'Inbox AI relevance is enabled in Settings but no Gemini API key is configured on the server.',
       );
     }
+
+    this.monthlyQuotaExhausted = false;
 
     const emailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(companyId);
     if (!emailCrawlOn) {
@@ -368,6 +403,9 @@ export class EmailIngestionService {
     const portalLinked = await this.employeesService.hasPortalEmployeeLink(companyId, employee.id);
     const mailboxType = await this.employeesService.getMailboxType(employee.id);
     const isSelfMailbox = mailboxType === 'SELF';
+    this.logger.log(
+      `[ingest-debug] mailbox=${employee.email} id=${employee.id} type=${mailboxType} portalLinked=${portalLinked} trackingStart=${tracking.trackingStartAt ?? 'null'} paused=${tracking.trackingPaused === true}`,
+    );
 
     // SELF mailboxes (CEO / manager My Email) must still ingest when global crawl is on.
     if (!isSelfMailbox && portalLinked && !cycleSettings.email_crawl_employee_mailboxes_enabled) {
@@ -473,6 +511,9 @@ export class EmailIngestionService {
       }
       pageTokenLoop = np;
     }
+    this.logger.log(
+      `[ingest-debug] gmail-list mailbox=${employee.email} ids=${messageIds.length} pages=${pagesFetched} hasNext=${nextPageToken ? 'yes' : 'no'} resumed=${resumeToken ? 'yes' : 'no'} queryAfter=${listAfterDate.toISOString()}`,
+    );
 
     if (messageIds.length === 0 && !nextPageToken) {
       /**
@@ -533,6 +574,11 @@ export class EmailIngestionService {
     const messages: EmailMessage[] = [];
     const affectedThreads = new Set<string>();
     let skippedFiltered = 0;
+    let skippedFromExistingBeforeTracking = 0;
+    let retriedFromAiSkip = 0;
+    let skippedFromExistingUnknown = 0;
+    let skippedBeforeTrackingWindow = 0;
+    let skippedByAiDecision = 0;
     let batchLatestSent: Date | null = null;
 
     for (const msgId of messageIds) {
@@ -553,7 +599,10 @@ export class EmailIngestionService {
            * Without this, historical false negatives stay hidden forever unless manually cleared.
            */
           await this.clearIngestionSkip(employee.id, msgId);
+          retriedFromAiSkip += 1;
         } else {
+          if (skipKind === 'before_tracking') skippedFromExistingBeforeTracking += 1;
+          else skippedFromExistingUnknown += 1;
           continue;
         }
       }
@@ -568,6 +617,7 @@ export class EmailIngestionService {
         const startAt = new Date(tracking.trackingStartAt);
         if (msg.sentAt < startAt) {
           skippedFiltered += 1;
+          skippedBeforeTrackingWindow += 1;
           await this.recordIngestionSkip(employee.id, msg.providerMessageId, {
             skip_kind: 'before_tracking',
             skip_reason: 'Sent before your tracking start time.',
@@ -600,6 +650,7 @@ export class EmailIngestionService {
         );
         if (!decision.relevant) {
           skippedFiltered += 1;
+          skippedByAiDecision += 1;
           const reasonText =
             decision.reason?.trim() ||
             (allowGeminiRelevance && this.relevanceModel
@@ -627,6 +678,9 @@ export class EmailIngestionService {
         this.logger.warn(`Failed to fetch message ${msgId}: ${(err as Error).message}`);
       }
     }
+    this.logger.log(
+      `[ingest-debug] decision mailbox=${employee.email} considered=${messageIds.length} stored=${messages.length} skipped=${skippedFiltered} affectedThreads=${affectedThreads.size}`,
+    );
 
     if (messages.length > 0) {
       await this.storeMessages(companyId, employee.id, messages);
@@ -729,6 +783,10 @@ export class EmailIngestionService {
   } | null> {
     if (!this.relevanceModel) return null;
 
+    if (this.monthlyQuotaExhausted) {
+      return { relevant: true, reason: 'Monthly AI quota exhausted — kept by default.' };
+    }
+
     const retries = 2;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
@@ -748,6 +806,15 @@ export class EmailIngestionService {
       } catch (err) {
         const msg = (err as Error).message ?? String(err);
         const is429 = /\b429\b|quota|Quota|rate|Rate|resource_exhausted/i.test(msg);
+        const isMonthly = /monthly|exceeded its/i.test(msg);
+
+        if (is429 && isMonthly) {
+          this.monthlyQuotaExhausted = true;
+          this.logger.error(
+            `Gemini monthly quota exhausted — all remaining emails will be stored as relevant. ${msg.slice(0, 200)}`,
+          );
+          return { relevant: true, reason: 'Monthly AI quota exhausted — kept by default.' };
+        }
 
         if (is429 && attempt < retries) {
           const secMatch = msg.match(/retry in (\d+(\.\d+)?)\s*s/i);

@@ -84,6 +84,7 @@ export type HistoricalProgressFn = (e: HistoricalProgressEvent) => void;
 export class HistoricalFetchService {
   private readonly logger = new Logger(HistoricalFetchService.name);
   private readonly relevanceModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | null;
+  private monthlyQuotaExhausted = false;
 
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
@@ -116,6 +117,7 @@ export class HistoricalFetchService {
     onProgress?: HistoricalProgressFn,
     options?: { abortSignal?: AbortSignal; createdByUserId?: string },
   ): Promise<HistoricalFetchResult> {
+    this.monthlyQuotaExhausted = false;
     const signal = options?.abortSignal;
     const startMs = Date.parse(startIso);
     const endMs = Date.parse(endIso);
@@ -473,6 +475,9 @@ export class HistoricalFetchService {
 
   private async callGeminiRelevance(prompt: string): Promise<{ relevant: boolean; reason: string | null } | null> {
     if (!this.relevanceModel) return null;
+    if (this.monthlyQuotaExhausted) {
+      return { relevant: true, reason: 'Monthly AI quota exhausted — kept by default.' };
+    }
     try {
       const result = await this.relevanceModel.generateContent(prompt);
       const text = result.response.text().replace(/```json\s*/gi, '').replace(/```/g, '').trim();
@@ -485,7 +490,17 @@ export class HistoricalFetchService {
       }
       return null;
     } catch (err) {
-      this.logger.warn(`Gemini relevance error: ${(err as Error).message?.slice(0, 200)}`);
+      const msg = (err as Error).message ?? String(err);
+      const is429 = /\b429\b|quota|Quota|rate|Rate|resource_exhausted/i.test(msg);
+      const isMonthly = /monthly|exceeded its/i.test(msg);
+      if (is429 && isMonthly) {
+        this.monthlyQuotaExhausted = true;
+        this.logger.error(
+          `Gemini monthly quota exhausted — remaining emails kept as relevant. ${msg.slice(0, 200)}`,
+        );
+        return { relevant: true, reason: 'Monthly AI quota exhausted — kept by default.' };
+      }
+      this.logger.warn(`Gemini relevance error: ${msg.slice(0, 200)}`);
       return null;
     }
   }

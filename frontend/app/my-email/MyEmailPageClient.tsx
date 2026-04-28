@@ -2637,6 +2637,16 @@ function MyEmailPageInner() {
   }, [showHistoricalShell, token, loadHistoricalSavedRuns]);
 
   useEffect(() => {
+    if (!showHistoricalShell || !token || !me) return;
+    if (historicalSearched || historicalLoading) return;
+    if (historicalRunsLoading) return;
+    if (historicalSavedRuns.length === 0) return;
+    if (searchParams.get('historicalRun')?.trim()) return;
+    const latest = historicalSavedRuns[0];
+    void applySavedHistoricalRun(latest);
+  }, [showHistoricalShell, token, me, historicalSearched, historicalLoading, historicalRunsLoading, historicalSavedRuns, searchParams, applySavedHistoricalRun]);
+
+  useEffect(() => {
     const rid = searchParams.get('historicalRun')?.trim();
     if (!rid || !token || !me) return;
     if (historicalRunUrlHandledRef.current === rid) return;
@@ -3305,7 +3315,25 @@ function MyEmailPageInner() {
         }
       }
       liveTrackSourceRef.current = `${targets[0].id}:${trackingIso}`;
-      const res = await apiFetch('/email-ingestion/run', token);
+      const runReq = apiFetch('/email-ingestion/run', token);
+      const timed = await Promise.race([
+        runReq.then((res) => ({ kind: 'response' as const, res })),
+        new Promise<{ kind: 'timeout' }>((resolve) =>
+          window.setTimeout(() => resolve({ kind: 'timeout' }), 5000),
+        ),
+      ]);
+      if (timed.kind === 'timeout') {
+        setLiveSyncAwaitingTimestamp(Date.now());
+        setSuccess('Sync started. It is still running in background; refreshing inbox now.');
+        await loadDashboard(token, syncEmployeeIdsParam || undefined);
+        void loadLiveIngestSchedule();
+        window.setTimeout(() => {
+          void loadDashboard(token, syncEmployeeIdsParam || undefined);
+          void loadLiveIngestSchedule();
+        }, 2500);
+        return;
+      }
+      const res = timed.res;
       const j = (await res.json().catch(() => ({}))) as {
         status?: string;
         message?: string;

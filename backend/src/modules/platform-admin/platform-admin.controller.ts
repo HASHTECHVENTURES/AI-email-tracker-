@@ -69,6 +69,12 @@ export class PlatformAdminController {
     return { ok: true };
   }
 
+  @Get('companies/:id/detail')
+  @UseGuards(PlatformAdminGuard)
+  companyDetail(@Param('id') id: string) {
+    return this.platformAdminService.getCompanyDetail(id);
+  }
+
   @Delete('companies/:id')
   @UseGuards(PlatformAdminGuard)
   async deleteCompany(@Param('id') id: string) {

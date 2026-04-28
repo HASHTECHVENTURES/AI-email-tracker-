@@ -279,6 +279,7 @@ export class SelfTrackingService {
         };
       });
 
+
     const needs_attention = conversations.filter(
       (c) =>
         c.follow_up_status === 'MISSED' ||
@@ -332,6 +333,7 @@ export class SelfTrackingService {
       limit: CEO_SYNCED_MAIL_PAGE_LIMIT,
       offset: 0,
     });
+
     
     // Remap synced mail employee ids and names
     for (const item of synced.items) {

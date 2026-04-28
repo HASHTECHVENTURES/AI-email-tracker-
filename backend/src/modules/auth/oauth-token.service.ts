@@ -197,9 +197,14 @@ export class OauthTokenService {
 
       return newAccessToken;
     } catch (err) {
-      this.logger.error(`OAuth refresh failed for ${employeeId}`, (err as Error).message);
+      this.logger.error(
+        `OAuth refresh failed for ${employeeId}: ${(err as Error).message}. ` +
+          'If "unauthorized_client": verify GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET match the Google Cloud project, ' +
+          'and the OAuth consent screen is published (not Testing). Reconnect Gmail from the portal.',
+      );
       const msg = String((err as Error).message || '').toLowerCase();
-      const status = msg.includes('invalid_grant') || msg.includes('revoked') ? 'REVOKED' : 'EXPIRED';
+      const status =
+        msg.includes('invalid_grant') || msg.includes('revoked') ? 'REVOKED' : 'EXPIRED';
       await this.supabase
         .from('employees')
         .update({ gmail_status: status })

@@ -254,9 +254,36 @@ export function AppShell({
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]">
             <nav aria-label="Main">
               <div className="flex flex-col gap-1.5 pb-1">
-              <SafeLink href={isPlatformAdmin ? '/admin' : '/dashboard'} className={navItemClass(pathname === '/dashboard' || pathname === '/admin')}>
-                Dashboard
-              </SafeLink>
+              {isPlatformAdmin ? (
+                <>
+                  <a
+                    href="/admin"
+                    className={navItemClass(pathname === '/admin' && !locHash)}
+                    onClick={(e) => {
+                      if (pathname === '/admin') {
+                        e.preventDefault();
+                        window.history.replaceState(null, '', '/admin');
+                        window.dispatchEvent(new HashChangeEvent('hashchange'));
+                      }
+                    }}
+                  >
+                    Dashboard
+                  </a>
+                  <a href="/admin#companies" className={navItemClass(pathname === '/admin' && locHash === '#companies')}>
+                    Companies
+                  </a>
+                  <a href="/admin#add-company" className={navItemClass(pathname === '/admin' && locHash === '#add-company')}>
+                    Add company
+                  </a>
+                  <a href="/admin#kill-switches" className={navItemClass(pathname === '/admin' && locHash === '#kill-switches')}>
+                    Kill switches
+                  </a>
+                </>
+              ) : (
+                <SafeLink href="/dashboard" className={navItemClass(pathname === '/dashboard')}>
+                  Dashboard
+                </SafeLink>
+              )}
 
               {showMyEmail ? (
                 <>
@@ -407,9 +434,36 @@ export function AppShell({
               className="app-shell-mobile-nav-links mt-2 flex flex-wrap gap-1.5"
               aria-label="Main mobile"
             >
-              <SafeLink href={isPlatformAdmin ? '/admin' : '/dashboard'} className={navMobileClass(pathname === '/dashboard' || pathname === '/admin')}>
-                Dashboard
-              </SafeLink>
+              {isPlatformAdmin ? (
+                <>
+                  <a
+                    href="/admin"
+                    className={navMobileClass(pathname === '/admin' && !locHash)}
+                    onClick={(e) => {
+                      if (pathname === '/admin') {
+                        e.preventDefault();
+                        window.history.replaceState(null, '', '/admin');
+                        window.dispatchEvent(new HashChangeEvent('hashchange'));
+                      }
+                    }}
+                  >
+                    Dashboard
+                  </a>
+                  <a href="/admin#companies" className={navMobileClass(pathname === '/admin' && locHash === '#companies')}>
+                    Companies
+                  </a>
+                  <a href="/admin#add-company" className={navMobileClass(pathname === '/admin' && locHash === '#add-company')}>
+                    Add company
+                  </a>
+                  <a href="/admin#kill-switches" className={navMobileClass(pathname === '/admin' && locHash === '#kill-switches')}>
+                    Kill switches
+                  </a>
+                </>
+              ) : (
+                <SafeLink href="/dashboard" className={navMobileClass(pathname === '/dashboard')}>
+                  Dashboard
+                </SafeLink>
+              )}
               {showMyEmail ? (
                 <>
                   <SafeLink
