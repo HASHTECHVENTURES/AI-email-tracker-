@@ -179,6 +179,9 @@ export interface SimplifiedDashboardResponse {
 export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
   private readonly aiModel;
+  /** Cached default SLA hours — refreshed every 5 min to avoid a per-request DB read. */
+  private slaHoursCache: { value: number; expiresAt: number } | null = null;
+  private readonly SLA_CACHE_TTL_MS = 5 * 60_000;
 
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
@@ -400,20 +403,22 @@ export class DashboardService {
     const canonFor = (eid: string) => aliasToTargetMap.get(eid) ?? eid;
     const uniqueCanon = [...new Set(selectedEmployeeIds.map(canonFor))];
 
-    const { data: emps, error: eErr } = await this.supabase
-      .from('employees')
-      .select('id, name, department_id')
-      .eq('company_id', companyId)
-      .in('id', uniqueCanon);
+    // Fetch employee names and department names in parallel (independent queries).
+    const [{ data: emps, error: eErr }, { data: deptRows }] = await Promise.all([
+      this.supabase
+        .from('employees')
+        .select('id, name, department_id')
+        .eq('company_id', companyId)
+        .in('id', uniqueCanon),
+      this.supabase
+        .from('departments')
+        .select('id, name')
+        .eq('company_id', companyId),
+    ]);
     if (eErr) {
       this.logger.warn(`buildCeoEmployeeMailboxRollups employees: ${eErr.message}`);
     }
     const empById = new Map((emps ?? []).map((e: { id: string; name: string; department_id: string | null }) => [e.id, e]));
-
-    const { data: deptRows } = await this.supabase
-      .from('departments')
-      .select('id, name')
-      .eq('company_id', companyId);
     const deptName = new Map((deptRows ?? []).map((d: { id: string; name: string }) => [d.id, d.name]));
 
     const rows: CeoEmployeeMailboxRollup[] = [];
@@ -1256,7 +1261,21 @@ ${dataBlock}`;
           priority: filters?.priority,
         });
 
-    const [report, all, onboarding, employeeFilterOptions, ceo_department_rollups, actorEmployeeId] = await Promise.all([
+    // Build RequestContext up-front so historicalRunsPromise can join the parallel block.
+    const ctx: RequestContext = {
+      companyId,
+      role: scope.role,
+      userId: scope.userId,
+      employeeId: scope.employeeId,
+      departmentId: scope.departmentId,
+    };
+
+    const historicalRunsPromise =
+      actorEmail && (scope.role === 'CEO' || scope.role === 'HEAD' || scope.role === 'EMPLOYEE')
+        ? this.selfTrackingService.listHistoricalSearchRuns(ctx, actorEmail, 8)
+        : Promise.resolve<HistoricalSearchRunListItem[] | undefined>(undefined);
+
+    const [report, all, onboarding, employeeFilterOptions, ceo_department_rollups, actorEmployeeId, historicalSearchRuns] = await Promise.all([
       reportPromise,
       conversationsPromise,
       this.getOnboardingSnapshot(companyId),
@@ -1279,6 +1298,7 @@ ${dataBlock}`;
       scope.role === 'EMPLOYEE' || !actorEmail
         ? Promise.resolve<string | null>(null)
         : this.getEmployeeIdByEmail(companyId, actorEmail),
+      historicalRunsPromise,
     ]);
 
     const visibleConversations = actorEmployeeId
@@ -1337,22 +1357,9 @@ ${dataBlock}`;
       };
     }
 
-    if (
-      actorEmail &&
-      (scope.role === 'CEO' || scope.role === 'HEAD' || scope.role === 'EMPLOYEE')
-    ) {
-      const ctx: RequestContext = {
-        companyId,
-        role: scope.role,
-        userId: scope.userId,
-        employeeId: scope.employeeId,
-        departmentId: scope.departmentId,
-      };
-      out.historical_search_runs = await this.selfTrackingService.listHistoricalSearchRuns(
-        ctx,
-        actorEmail,
-        8,
-      );
+    // historical_search_runs was fetched in parallel above — assign directly.
+    if (historicalSearchRuns !== undefined) {
+      out.historical_search_runs = historicalSearchRuns;
     }
 
     return out;
@@ -1411,7 +1418,8 @@ ${dataBlock}`;
     } else if (departmentId) {
       q = q.eq('department_id', departmentId);
     }
-    const [{ data, error }, deptsRes, headsRes] = await Promise.all([
+    // Run all four independent queries in parallel: employees, departments, HEAD users, manager memberships.
+    const [{ data, error }, deptsRes, headsRes, mgrMemsRes] = await Promise.all([
       q,
       this.supabase.from('departments').select('id, name').eq('company_id', companyId),
       this.supabase
@@ -1419,6 +1427,10 @@ ${dataBlock}`;
         .select('email, department_id, linked_employee_id')
         .eq('company_id', companyId)
         .eq('role', 'HEAD'),
+      this.supabase
+        .from('manager_department_memberships')
+        .select('department_id, user_id')
+        .eq('company_id', companyId),
     ]);
     if (error) {
       this.logger.warn(`getEmployeeFilterOptions: ${error.message}`);
@@ -1436,12 +1448,8 @@ ${dataBlock}`;
       const link = row.linked_employee_id as string | null | undefined;
       if (link) managerByLinkedId.add(link);
     }
-    const { data: mgrMems, error: mgrMemErr } = await this.supabase
-      .from('manager_department_memberships')
-      .select('department_id, user_id')
-      .eq('company_id', companyId);
-    if (!mgrMemErr && mgrMems?.length) {
-      const uids = [...new Set((mgrMems as { user_id: string }[]).map((r) => r.user_id))];
+    if (!mgrMemsRes.error && mgrMemsRes.data?.length) {
+      const uids = [...new Set((mgrMemsRes.data as { user_id: string }[]).map((r) => r.user_id))];
       const { data: mgrUsers } = await this.supabase.from('users').select('id, email').in('id', uids);
       const emailByUser = new Map(
         (mgrUsers ?? []).map((u: { id: string; email: string }) => [
@@ -1449,7 +1457,7 @@ ${dataBlock}`;
           u.email.trim().toLowerCase(),
         ]),
       );
-      for (const m of mgrMems as { department_id: string; user_id: string }[]) {
+      for (const m of mgrMemsRes.data as { department_id: string; user_id: string }[]) {
         const em = emailByUser.get(m.user_id);
         if (em && m.department_id) managerDeptEmail.add(`${m.department_id}:${em}`);
       }
@@ -1527,12 +1535,17 @@ ${dataBlock}`;
   }
 
   private async getDefaultSlaHours(): Promise<number> {
+    if (this.slaHoursCache && Date.now() < this.slaHoursCache.expiresAt) {
+      return this.slaHoursCache.value;
+    }
     const { data } = await this.supabase
       .from('system_settings')
       .select('value')
       .eq('key', 'default_sla_hours')
       .maybeSingle();
     const n = Number((data as { value?: string } | null)?.value ?? '24');
-    return Number.isFinite(n) ? Math.max(1, Math.round(n)) : 24;
+    const value = Number.isFinite(n) ? Math.max(1, Math.round(n)) : 24;
+    this.slaHoursCache = { value, expiresAt: Date.now() + this.SLA_CACHE_TTL_MS };
+    return value;
   }
 }

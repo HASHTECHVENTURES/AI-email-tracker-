@@ -130,9 +130,13 @@ export default function DepartmentsPage() {
     if (token) await loadTeam(token);
   }
 
-  async function deleteDepartment(id: string, name: string) {
+  async function deleteDepartment(id: string, name: string, employeeCount: number) {
     if (!token) return;
-    if (!window.confirm(`Delete department “${name}”? Only empty departments can be removed.`)) return;
+    const msg =
+      employeeCount > 0
+        ? `Delete department "${name}"? Its ${employeeCount} employee(s) and any assigned manager will be unassigned.`
+        : `Delete department "${name}"?`;
+    if (!window.confirm(msg)) return;
     setDeletingDeptId(id);
     setError(null);
     try {
@@ -451,10 +455,10 @@ export default function DepartmentsPage() {
                     : 'No manager assigned'}
                 </p>
                 <p className="mt-4 text-xs font-medium text-slate-400">{d.employee_count ?? 0} employees</p>
-                {isCeo && (d.employee_count ?? 0) === 0 ? (
+                {isCeo ? (
                   <button
                     type="button"
-                    onClick={() => void deleteDepartment(d.id, d.name)}
+                    onClick={() => void deleteDepartment(d.id, d.name, d.employee_count ?? 0)}
                     disabled={deletingDeptId === d.id}
                     className="mt-3 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:opacity-50"
                   >

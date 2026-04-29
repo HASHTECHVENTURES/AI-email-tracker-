@@ -446,7 +446,7 @@ export default function DashboardPage() {
     const id = window.setInterval(() => {
       if (document.hidden) return;
       void refresh();
-    }, 30_000);
+    }, 10_000);
     return () => clearInterval(id);
   }, [me, token, refresh]);
 
@@ -954,9 +954,7 @@ export default function DashboardPage() {
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">People in scope</p>
                   <h2 className="mt-1 text-xl font-bold text-slate-950">Mailbox load (employees)</h2>
                   <p className="mt-1 text-sm text-slate-600">
-                    Threads for each person you checked under <span className="font-medium text-slate-800">Employees</span>{' '}
-                    on Dashboard scope — this is <strong className="font-semibold text-slate-800">not</strong> the team
-                    lead row below.
+                    Thread volume and status for each individual mailbox in your selected scope.
                   </p>
                 </div>
                 <div className="space-y-4">
@@ -1028,12 +1026,6 @@ export default function DashboardPage() {
                   </h2>
                   <p className="mt-1 text-sm text-slate-600">
                     Need-attention volume by department — bar length is relative to the busiest team in view.
-                    {filterDepartmentIds.length > 0 && ceoEmployeeIds.length > 0 ? (
-                      <span className="mt-1 block text-slate-500">
-                        Scope combines selected manager teams <strong className="font-semibold text-slate-700">and</strong>{' '}
-                        any extra mailboxes you picked (union — not only the overlap).
-                      </span>
-                    ) : null}
                   </p>
                 </div>
                 <div className="space-y-4">
@@ -1088,9 +1080,6 @@ export default function DashboardPage() {
                               <div className="bg-amber-400" style={{ width: `${pendPct}%` }} title={`Pending ${r.pending}`} />
                               <div className="bg-red-500" style={{ width: `${missedPct}%` }} title={`Missed ${r.missed}`} />
                             </div>
-                            <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                              Bottom blend: done · pending · missed (by thread count)
-                            </p>
                           </div>
                         </div>
                       );

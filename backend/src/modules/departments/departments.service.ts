@@ -274,4 +274,35 @@ export class DepartmentsService {
       throw error;
     }
   }
+
+  async deleteWithCleanup(companyId: string, id: string): Promise<void> {
+    const { error: memErr } = await this.supabase
+      .from('manager_department_memberships')
+      .delete()
+      .eq('company_id', companyId)
+      .eq('department_id', id);
+    if (memErr) {
+      this.logger.warn(`Failed to clear manager_department_memberships for dept ${id}: ${memErr.message}`);
+    }
+
+    const { error: empErr } = await this.supabase
+      .from('employees')
+      .update({ department_id: null })
+      .eq('company_id', companyId)
+      .eq('department_id', id);
+    if (empErr) {
+      this.logger.warn(`Failed to unassign employees from dept ${id}: ${empErr.message}`);
+    }
+
+    const { error: userErr } = await this.supabase
+      .from('users')
+      .update({ department_id: null })
+      .eq('company_id', companyId)
+      .eq('department_id', id);
+    if (userErr) {
+      this.logger.warn(`Failed to unassign users from dept ${id}: ${userErr.message}`);
+    }
+
+    await this.delete(companyId, id);
+  }
 }

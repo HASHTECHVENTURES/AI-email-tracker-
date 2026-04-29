@@ -64,11 +64,7 @@ export class DepartmentsController {
     if (ctx.role !== 'CEO') {
       throw new ForbiddenException('Only CEO can delete departments');
     }
-    const n = await this.departmentsService.countEmployees(ctx.companyId, id);
-    if (n > 0) {
-      throw new BadRequestException('Cannot delete a department that still has employees');
-    }
-    await this.departmentsService.delete(ctx.companyId, id);
+    await this.departmentsService.deleteWithCleanup(ctx.companyId, id);
     return { status: 'ok' };
   }
 

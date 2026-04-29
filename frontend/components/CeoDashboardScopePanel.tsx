@@ -43,11 +43,8 @@ function isManagerMailbox(emp: CeoScopeOrgEmployee, departments: CeoDeptDirector
   return Boolean(em && em === emp.email.trim().toLowerCase());
 }
 
-function checkboxClass(checked: boolean): string {
-  return [
-    'mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-brand-600 focus:ring-brand-500',
-    checked ? '' : '',
-  ].join(' ');
+function checkboxClass(_checked: boolean): string {
+  return 'mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-brand-600 focus:ring-brand-500';
 }
 
 export function CeoDashboardScopePanel({
