@@ -186,6 +186,7 @@ export class DepartmentsService {
         throw new Error('MANAGER_PROFILE_CREATE_FAILED');
       }
       const uid = (insertedUser as { id: string }).id;
+      await this.clearDepartmentManagerMemberships(companyId, departmentId);
       const { error: memInsErr } = await this.supabase.from('manager_department_memberships').insert({
         user_id: uid,
         department_id: departmentId,
@@ -209,6 +210,7 @@ export class DepartmentsService {
       department_id: string | null;
     };
 
+    await this.clearDepartmentManagerMemberships(companyId, departmentId);
     const { error: memUpsertErr } = await this.supabase.from('manager_department_memberships').upsert(
       {
         user_id: existingRow.id,
@@ -260,6 +262,17 @@ export class DepartmentsService {
     if (error) {
       this.logger.error('Failed to reset manager password', error.message);
       throw new Error('PASSWORD_RESET_FAILED');
+    }
+  }
+
+  private async clearDepartmentManagerMemberships(companyId: string, departmentId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('manager_department_memberships')
+      .delete()
+      .eq('company_id', companyId)
+      .eq('department_id', departmentId);
+    if (error) {
+      this.logger.warn(`clearDepartmentManagerMemberships: ${error.message}`);
     }
   }
 
