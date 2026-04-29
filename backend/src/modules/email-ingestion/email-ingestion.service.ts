@@ -16,6 +16,7 @@ import { ConversationsService } from '../conversations/conversations.service';
 import { SettingsService, type SystemSettings } from '../settings/settings.service';
 import { DashboardService } from '../dashboard/dashboard.service';
 import { CompanyPolicyService } from '../company-policy/company-policy.service';
+import { AiEnrichmentService } from '../ai-enrichment/ai-enrichment.service';
 import type { gmail_v1 } from 'googleapis';
 import {
   buildGmailHistoricalWindowQuery,
@@ -103,10 +104,9 @@ export class EmailIngestionService {
   private readonly relevanceModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | null;
 
   /**
-   * Set to `true` when a Gemini 429 error mentions "monthly" quota exhaustion.
-   * Once set, all subsequent relevance calls in the same cycle skip retries and
-   * treat emails as relevant so the inbox isn't empty while AI is unavailable.
-   * Reset at the start of each ingestion cycle.
+   * Set to `true` when a Gemini 429 indicates monthly quota / spend cap exhaustion.
+   * Once set, inbound mail is not ingested (classification returns not relevant) until
+   * the next cycle resets the flag after billing is restored.
    */
   private monthlyQuotaExhausted = false;
 
@@ -120,6 +120,7 @@ export class EmailIngestionService {
     @Inject(forwardRef(() => DashboardService))
     private readonly dashboardService: DashboardService,
     private readonly companyPolicyService: CompanyPolicyService,
+    private readonly aiEnrichmentService: AiEnrichmentService,
   ) {
     const key = getGeminiApiKeyFromEnv();
     if (!key) {
@@ -162,6 +163,7 @@ export class EmailIngestionService {
     }
 
     this.monthlyQuotaExhausted = false;
+    this.aiEnrichmentService.resetMonthlyQuotaGate();
 
     const { data: companies, error: companiesErr } = await this.supabase.from('companies').select('id');
     if (companiesErr) {
@@ -282,6 +284,7 @@ export class EmailIngestionService {
     }
 
     this.monthlyQuotaExhausted = false;
+    this.aiEnrichmentService.resetMonthlyQuotaGate();
 
     const emailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(companyId);
     if (!emailCrawlOn) {
@@ -784,7 +787,7 @@ export class EmailIngestionService {
     if (!this.relevanceModel) return null;
 
     if (this.monthlyQuotaExhausted) {
-      return { relevant: true, reason: 'Monthly AI quota exhausted — kept by default.' };
+      return null;
     }
 
     const retries = 2;
@@ -806,14 +809,14 @@ export class EmailIngestionService {
       } catch (err) {
         const msg = (err as Error).message ?? String(err);
         const is429 = /\b429\b|quota|Quota|rate|Rate|resource_exhausted/i.test(msg);
-        const isMonthly = /monthly|exceeded its/i.test(msg);
+        const isMonthly = /monthly|exceeded its|spending\s+cap|spend\s+cap/i.test(msg);
 
         if (is429 && isMonthly) {
           this.monthlyQuotaExhausted = true;
           this.logger.error(
-            `Gemini monthly quota exhausted — all remaining emails will be stored as relevant. ${msg.slice(0, 200)}`,
+            `Gemini monthly quota or spend cap exhausted — inbound ingestion paused for this cycle. ${msg.slice(0, 200)}`,
           );
-          return { relevant: true, reason: 'Monthly AI quota exhausted — kept by default.' };
+          return null;
         }
 
         if (is429 && attempt < retries) {
@@ -875,6 +878,13 @@ export class EmailIngestionService {
           };
         }
         return { relevant: parsed.relevant, reason: parsed.reason };
+      }
+      if (this.monthlyQuotaExhausted && !ingestWithoutAiConfirmed) {
+        return {
+          relevant: false,
+          reason:
+            'Inbox AI unavailable: Gemini monthly quota or spend cap exceeded. Inbound messages are not ingested until billing is restored.',
+        };
       }
       return { relevant: ingestWithoutAiConfirmed, reason: null };
     }

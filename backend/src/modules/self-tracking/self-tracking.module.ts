@@ -6,6 +6,7 @@ import { EmailIngestionModule } from '../email-ingestion/email-ingestion.module'
 import { AuthModule } from '../auth/auth.module';
 import { SettingsModule } from '../settings/settings.module';
 import { CompanyPolicyModule } from '../company-policy/company-policy.module';
+import { AiEnrichmentModule } from '../ai-enrichment/ai-enrichment.module';
 import { SelfTrackingService } from './self-tracking.service';
 import { SelfTrackingController } from './self-tracking.controller';
 import { HistoricalFetchService } from './historical-fetch.service';
@@ -18,6 +19,7 @@ import { HistoricalFetchService } from './historical-fetch.service';
     AuthModule,
     SettingsModule,
     CompanyPolicyModule,
+    AiEnrichmentModule,
   ],
   controllers: [SelfTrackingController],
   providers: [supabaseProvider, SelfTrackingService, HistoricalFetchService],

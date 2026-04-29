@@ -498,8 +498,8 @@ export class ConversationsService {
     let enriched = false;
     if (this.aiEnrichmentService.isAvailable) {
       try {
-        await this.aiEnrichmentService.enrichConversation(conversationId, employeeId, threadId);
-        enriched = true;
+        const out = await this.aiEnrichmentService.enrichConversation(conversationId, employeeId, threadId);
+        enriched = out !== null;
       } catch (err) {
         this.logger.warn(`AI enrichment failed for ${conversationId}: ${(err as Error).message}`);
       }

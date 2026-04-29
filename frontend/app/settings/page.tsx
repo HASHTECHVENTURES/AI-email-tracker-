@@ -81,8 +81,7 @@ export default function SettingsPage() {
   const [sysStatus, setSysStatus] = useState<SystemStatusLite | null>(null);
   const [slaDraft, setSlaDraft] = useState('');
   const [savingSla, setSavingSla] = useState(false);
-  const [savingMasterEmail, setSavingMasterEmail] = useState(false);
-  const [savingMasterAi, setSavingMasterAi] = useState(false);
+  const [savingMasterCombined, setSavingMasterCombined] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [diagLoading, setDiagLoading] = useState(false);
@@ -188,6 +187,13 @@ export default function SettingsPage() {
     );
   }, [settings]);
 
+  /** Single CEO switch: both Gmail fetch and company AI are on, or not. */
+  const masterCombinedOn = useMemo(() => masterEmailOn && masterAiOn, [masterEmailOn, masterAiOn]);
+  const masterMixed = useMemo(
+    () => settingsLoadState === 'ready' && settings != null && masterEmailOn !== masterAiOn,
+    [settingsLoadState, settings, masterEmailOn, masterAiOn],
+  );
+
   async function saveSla() {
     if (!me || me.role !== 'CEO' || !token) return;
     setError(null);
@@ -215,51 +221,30 @@ export default function SettingsPage() {
     }
   }
 
-  async function setMasterEmail(next: boolean) {
+  async function setMasterCombined() {
     if (!me || me.role !== 'CEO' || !token) return;
+    const next = !masterCombinedOn;
     setError(null);
     setNotice(null);
-    setSavingMasterEmail(true);
+    setSavingMasterCombined(true);
     try {
       const res = await apiFetch('/settings/masters', token, {
         method: 'PUT',
-        body: JSON.stringify({ email: next }),
+        body: JSON.stringify({ email: next, ai: next }),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
-        setError((b.message as string) || 'Could not update email master');
+        setError((b.message as string) || 'Could not update company master');
         return;
       }
       setNotice(
         next
-          ? 'Email sync is now on for the company.'
-          : 'Email sync is now paused for the company.',
+          ? 'Gmail fetch and AI are now on for the company.'
+          : 'Gmail fetch and AI are now off for the company.',
       );
       await load(token);
     } finally {
-      setSavingMasterEmail(false);
-    }
-  }
-
-  async function setMasterAi(next: boolean) {
-    if (!me || me.role !== 'CEO' || !token) return;
-    setError(null);
-    setNotice(null);
-    setSavingMasterAi(true);
-    try {
-      const res = await apiFetch('/settings/masters', token, {
-        method: 'PUT',
-        body: JSON.stringify({ ai: next }),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({}));
-        setError((b.message as string) || 'Could not update AI master');
-        return;
-      }
-      setNotice(next ? 'AI features are now on for the company.' : 'AI features are now paused for the company.');
-      await load(token);
-    } finally {
-      setSavingMasterAi(false);
+      setSavingMasterCombined(false);
     }
   }
 
@@ -299,7 +284,7 @@ export default function SettingsPage() {
         return;
       }
       if (body.status === 'skipped') {
-        setNotice(body.message || 'Sync skipped — turn on Email (Gmail fetch) in Settings.');
+        setNotice(body.message || 'Sync skipped — turn on Email & AI in Settings.');
       } else {
         const r = body.results ?? [];
         const msgs = r.reduce((s, x) => s + (x.newMessages ?? 0), 0);
@@ -363,17 +348,23 @@ export default function SettingsPage() {
         className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]"
         aria-busy={settingsLoadState === 'pending'}
       >
-        <h2 className="text-base font-semibold text-slate-900">Email (Gmail fetch)</h2>
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
-          <span className="text-sm font-medium text-slate-700">
+        <h2 className="text-base font-semibold text-slate-900">Email &amp; AI</h2>
+        <p className="mt-1 max-w-xl text-sm text-slate-500">
+          One control for the whole company: Gmail fetch (all mailboxes) and AI (relevance, summaries, reports) stay
+          aligned — both on or both off.
+        </p>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
+          <div className="text-sm font-medium text-slate-700">
             {settingsLoadState === 'pending' ? (
               <span className="text-slate-400">Loading…</span>
             ) : settingsLoadState === 'failed' ? (
               <span className="text-amber-800">—</span>
+            ) : masterMixed ? (
+              <span className="text-amber-800">Mixed — use the switch to set both on or both off.</span>
             ) : (
-              <>{masterEmailOn ? 'On' : 'Off'}</>
+              <span>{masterCombinedOn ? 'On' : 'Off'}</span>
             )}
-          </span>
+          </div>
           {isCeo ? (
             settingsLoadState === 'pending' ? (
               <div
@@ -387,57 +378,13 @@ export default function SettingsPage() {
               <button
                 type="button"
                 role="switch"
-                aria-checked={masterEmailOn}
-                disabled={savingMasterEmail}
-                onClick={() => void setMasterEmail(!masterEmailOn)}
-                className={`relative h-8 w-14 rounded-full transition-colors ${masterEmailOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterEmail ? 'opacity-50' : ''}`}
+                aria-checked={masterMixed ? 'mixed' : masterCombinedOn}
+                disabled={savingMasterCombined}
+                onClick={() => void setMasterCombined()}
+                className={`relative h-8 w-14 rounded-full transition-colors ${masterCombinedOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterCombined ? 'opacity-50' : ''}`}
               >
                 <span
-                  className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${masterEmailOn ? 'left-7' : 'left-1'}`}
-                />
-              </button>
-            )
-          ) : (
-            <span className="text-xs text-slate-400">CEO only</span>
-          )}
-        </div>
-      </section>
-
-      <section
-        className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]"
-        aria-busy={settingsLoadState === 'pending'}
-      >
-        <h2 className="text-base font-semibold text-slate-900">AI</h2>
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
-          <span className="text-sm font-medium text-slate-700">
-            {settingsLoadState === 'pending' ? (
-              <span className="text-slate-400">Loading…</span>
-            ) : settingsLoadState === 'failed' ? (
-              <span className="text-amber-800">—</span>
-            ) : (
-              <>{masterAiOn ? 'On' : 'Off'}</>
-            )}
-          </span>
-          {isCeo ? (
-            settingsLoadState === 'pending' ? (
-              <div
-                className="h-8 w-14 animate-pulse rounded-full bg-slate-200"
-                aria-hidden
-                title="Loading settings"
-              />
-            ) : settingsLoadState === 'failed' ? (
-              <span className="text-xs text-red-600">Load failed</span>
-            ) : (
-              <button
-                type="button"
-                role="switch"
-                aria-checked={masterAiOn}
-                disabled={savingMasterAi}
-                onClick={() => void setMasterAi(!masterAiOn)}
-                className={`relative h-8 w-14 rounded-full transition-colors ${masterAiOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterAi ? 'opacity-50' : ''}`}
-              >
-                <span
-                  className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${masterAiOn ? 'left-7' : 'left-1'}`}
+                  className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${masterCombinedOn ? 'left-7' : 'left-1'}`}
                 />
               </button>
             )
@@ -485,7 +432,7 @@ export default function SettingsPage() {
         <h2 className="text-base font-semibold text-slate-900">Ingestion</h2>
         {settingsLoadState === 'ready' && !masterEmailOn ? (
           <p className="mt-2 text-sm text-amber-800">
-            Company email master is off — scheduled cycles skip Gmail until the CEO turns it back on.
+            Gmail fetch is off (Email &amp; AI master) — scheduled cycles skip Gmail until the CEO turns it back on.
           </p>
         ) : null}
         <ul className="mt-3 space-y-2 text-sm text-slate-600">

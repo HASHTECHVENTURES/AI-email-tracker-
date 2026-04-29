@@ -49,6 +49,11 @@ export class AiEnrichmentService {
   private readonly model;
   private monthlyQuotaExhausted = false;
 
+  /** Cleared at the start of each ingestion / historical cycle so enrichment can retry after billing is fixed. */
+  resetMonthlyQuotaGate(): void {
+    this.monthlyQuotaExhausted = false;
+  }
+
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
   ) {
@@ -68,11 +73,11 @@ export class AiEnrichmentService {
   }
 
   /** Run Gemini on raw thread text (e.g. tests or tooling). */
-  async enrichThreadText(threadText: string): Promise<AiOutput> {
+  async enrichThreadText(threadText: string): Promise<AiOutput | null> {
     return this.callGemini(threadText);
   }
 
-  async enrichConversation(conversationId: string, employeeId: string, threadId: string): Promise<AiOutput> {
+  async enrichConversation(conversationId: string, employeeId: string, threadId: string): Promise<AiOutput | null> {
     const emails = await this.fetchRecentEmails(employeeId, threadId, 5);
 
     if (emails.length === 0) {
@@ -81,6 +86,12 @@ export class AiEnrichmentService {
 
     const threadText = this.formatThread(emails);
     const result = await this.callGemini(threadText);
+    if (result === null) {
+      this.logger.warn(
+        `AI enrichment skipped for ${conversationId} — Gemini monthly quota or spend cap exhausted (conversation row unchanged).`,
+      );
+      return null;
+    }
 
     await this.updateConversation(conversationId, result);
 
@@ -114,13 +125,13 @@ export class AiEnrichmentService {
       .join('\n\n---\n\n');
   }
 
-  private async callGemini(threadText: string, retries = 2): Promise<AiOutput> {
+  private async callGemini(threadText: string, retries = 2): Promise<AiOutput | null> {
     if (!process.env.GEMINI_API_KEY) {
       return this.fallback();
     }
 
     if (this.monthlyQuotaExhausted) {
-      return this.fallback();
+      return null;
     }
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -133,14 +144,14 @@ export class AiEnrichmentService {
       } catch (err) {
         const msg = (err as Error).message ?? String(err);
         const is429 = /429|quota|rate.limit/i.test(msg);
-        const isMonthly = /monthly|exceeded its/i.test(msg);
+        const isMonthly = /monthly|exceeded its|spending\s+cap|spend\s+cap/i.test(msg);
 
         if (is429 && isMonthly) {
           this.monthlyQuotaExhausted = true;
           this.logger.error(
-            `Gemini monthly quota exhausted — skipping AI enrichment for remaining emails. ${msg.slice(0, 200)}`,
+            `Gemini monthly quota or spend cap exhausted — AI enrichment paused (no DB updates until quota resets). ${msg.slice(0, 200)}`,
           );
-          return this.fallback();
+          return null;
         }
 
         if (is429 && attempt < retries) {

@@ -5,6 +5,7 @@ import { ConversationsModule } from '../conversations/conversations.module';
 import { SettingsModule } from '../settings/settings.module';
 import { DashboardModule } from '../dashboard/dashboard.module';
 import { CompanyPolicyModule } from '../company-policy/company-policy.module';
+import { AiEnrichmentModule } from '../ai-enrichment/ai-enrichment.module';
 import { supabaseProvider } from '../common/supabase.provider';
 import { GmailService } from './gmail.service';
 import { EmailIngestionService } from './email-ingestion.service';
@@ -19,6 +20,7 @@ import { IngestionCronService } from './ingestion-cron.service';
     SettingsModule,
     forwardRef(() => DashboardModule),
     CompanyPolicyModule,
+    AiEnrichmentModule,
   ],
   controllers: [EmailIngestionController],
   providers: [supabaseProvider, GmailService, EmailIngestionService, IngestionCronService],

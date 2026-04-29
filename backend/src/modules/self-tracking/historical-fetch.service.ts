@@ -19,6 +19,7 @@ import { RequestContext } from '../common/request-context';
 import type { ConversationListItem } from '../dashboard/dashboard.service';
 import { SelfTrackingService } from './self-tracking.service';
 import { EmailIngestionService } from '../email-ingestion/email-ingestion.service';
+import { AiEnrichmentService } from '../ai-enrichment/ai-enrichment.service';
 import type { gmail_v1 } from 'googleapis';
 
 const MAX_HISTORICAL_RANGE_DAYS = 731;
@@ -95,6 +96,7 @@ export class HistoricalFetchService {
     private readonly companyPolicyService: CompanyPolicyService,
     private readonly selfTrackingService: SelfTrackingService,
     private readonly emailIngestionService: EmailIngestionService,
+    private readonly aiEnrichmentService: AiEnrichmentService,
   ) {
     const key = getGeminiApiKeyFromEnv();
     if (!key) {
@@ -118,6 +120,7 @@ export class HistoricalFetchService {
     options?: { abortSignal?: AbortSignal; createdByUserId?: string },
   ): Promise<HistoricalFetchResult> {
     this.monthlyQuotaExhausted = false;
+    this.aiEnrichmentService.resetMonthlyQuotaGate();
     const signal = options?.abortSignal;
     const startMs = Date.parse(startIso);
     const endMs = Date.parse(endIso);
@@ -476,7 +479,7 @@ export class HistoricalFetchService {
   private async callGeminiRelevance(prompt: string): Promise<{ relevant: boolean; reason: string | null } | null> {
     if (!this.relevanceModel) return null;
     if (this.monthlyQuotaExhausted) {
-      return { relevant: true, reason: 'Monthly AI quota exhausted — kept by default.' };
+      return null;
     }
     try {
       const result = await this.relevanceModel.generateContent(prompt);
@@ -492,13 +495,13 @@ export class HistoricalFetchService {
     } catch (err) {
       const msg = (err as Error).message ?? String(err);
       const is429 = /\b429\b|quota|Quota|rate|Rate|resource_exhausted/i.test(msg);
-      const isMonthly = /monthly|exceeded its/i.test(msg);
+      const isMonthly = /monthly|exceeded its|spending\s+cap|spend\s+cap/i.test(msg);
       if (is429 && isMonthly) {
         this.monthlyQuotaExhausted = true;
         this.logger.error(
-          `Gemini monthly quota exhausted — remaining emails kept as relevant. ${msg.slice(0, 200)}`,
+          `Gemini monthly quota or spend cap exhausted — historical relevance paused. ${msg.slice(0, 200)}`,
         );
-        return { relevant: true, reason: 'Monthly AI quota exhausted — kept by default.' };
+        return null;
       }
       this.logger.warn(`Gemini relevance error: ${msg.slice(0, 200)}`);
       return null;
@@ -528,6 +531,13 @@ export class HistoricalFetchService {
       const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
       const parsed = await this.callGeminiRelevance(prompt);
       if (parsed) return parsed;
+      if (this.monthlyQuotaExhausted && !ingestWithoutAiConfirmed) {
+        return {
+          relevant: false,
+          reason:
+            'Inbox AI unavailable: Gemini monthly quota or spend cap exceeded. Historical messages are not imported until billing is restored.',
+        };
+      }
       return { relevant: ingestWithoutAiConfirmed, reason: null };
     }
     if (ingestWithoutAiConfirmed) {
