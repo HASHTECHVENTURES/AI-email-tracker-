@@ -105,6 +105,14 @@ export default function DepartmentsPage() {
   const [alertSaving, setAlertSaving] = useState(false);
   const [alertError, setAlertError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<Department | null>(null);
+  const [renameDepartmentName, setRenameDepartmentName] = useState('');
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [replaceManagerTarget, setReplaceManagerTarget] = useState<Department | null>(null);
+  const [replaceManagerName, setReplaceManagerName] = useState('');
+  const [replaceManagerEmail, setReplaceManagerEmail] = useState('');
+  const [replaceManagerPassword, setReplaceManagerPassword] = useState('');
+  const [replaceManagerSaving, setReplaceManagerSaving] = useState(false);
   const [deletingDeptId, setDeletingDeptId] = useState<string | null>(null);
   const [convertEmail, setConvertEmail] = useState('');
   const [convertDeptId, setConvertDeptId] = useState('');
@@ -236,6 +244,74 @@ export default function DepartmentsPage() {
       await load(token);
     } finally {
       setDeletingDeptId(null);
+    }
+  }
+
+  async function renameDepartmentFromCard(e: React.FormEvent) {
+    e.preventDefault();
+    if (!token || !renameTarget) return;
+    const nextName = renameDepartmentName.trim();
+    if (!nextName) {
+      setError('Department name is required');
+      return;
+    }
+    setRenameSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await apiFetch(`/departments/${encodeURIComponent(renameTarget.id)}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: nextName }),
+      });
+      if (!res.ok) {
+        setError(await readApiErrorMessage(res, 'Could not rename department'));
+        return;
+      }
+      setRenameTarget(null);
+      setRenameDepartmentName('');
+      setNotice('Department name updated.');
+      await load(token);
+    } finally {
+      setRenameSaving(false);
+    }
+  }
+
+  async function replaceManagerFromCard(e: React.FormEvent) {
+    e.preventDefault();
+    if (!token || !replaceManagerTarget) return;
+    const email = replaceManagerEmail.trim().toLowerCase();
+    if (!email) {
+      setError('Manager email is required');
+      return;
+    }
+    setReplaceManagerSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await apiFetch(
+        `/departments/${encodeURIComponent(replaceManagerTarget.id)}/assign-manager`,
+        token,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            email,
+            full_name: replaceManagerName.trim() || undefined,
+            password: replaceManagerPassword.trim() || undefined,
+          }),
+        },
+      );
+      if (!res.ok) {
+        setError(await readApiErrorMessage(res, 'Could not replace manager'));
+        return;
+      }
+      setReplaceManagerTarget(null);
+      setReplaceManagerName('');
+      setReplaceManagerEmail('');
+      setReplaceManagerPassword('');
+      setNotice('Manager replaced successfully.');
+      await load(token);
+    } finally {
+      setReplaceManagerSaving(false);
     }
   }
 
@@ -763,14 +839,42 @@ export default function DepartmentsPage() {
                 </p>
                 <p className="mt-4 text-xs font-medium text-slate-400">{d.employee_count ?? 0} employees</p>
                 {isCeo ? (
-                  <button
-                    type="button"
-                    onClick={() => void deleteDepartment(d.id, d.name, d.employee_count ?? 0)}
-                    disabled={deletingDeptId === d.id}
-                    className="mt-3 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:opacity-50"
-                  >
-                    {deletingDeptId === d.id ? 'Deleting…' : 'Delete department'}
-                  </button>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setError(null);
+                        setNotice(null);
+                        setRenameTarget(d);
+                        setRenameDepartmentName(d.name);
+                      }}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                    >
+                      Rename
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setError(null);
+                        setNotice(null);
+                        setReplaceManagerTarget(d);
+                        setReplaceManagerName(d.manager?.full_name?.trim() || '');
+                        setReplaceManagerEmail(d.manager?.email || '');
+                        setReplaceManagerPassword('');
+                      }}
+                      className="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50"
+                    >
+                      Replace manager
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void deleteDepartment(d.id, d.name, d.employee_count ?? 0)}
+                      disabled={deletingDeptId === d.id}
+                      className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:opacity-50"
+                    >
+                      {deletingDeptId === d.id ? 'Deleting…' : 'Delete department'}
+                    </button>
+                  </div>
                 ) : null}
               </article>
             ))}
@@ -969,7 +1073,7 @@ export default function DepartmentsPage() {
         </section>
       ) : null}
 
-      {isHead || isCeo ? (
+      {isHead || (isCeo && ceoMessagesMode) ? (
         <section
           id="team-members"
           className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02] scroll-mt-24"
@@ -1332,6 +1436,112 @@ export default function DepartmentsPage() {
                     setCreateOpen(false);
                     setError(null);
                   }}
+                  className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {isCeo && renameTarget && !ceoMessagesMode ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="rename-dept-title"
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget) setRenameTarget(null);
+          }}
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+            <h3 id="rename-dept-title" className="text-lg font-semibold text-slate-900">
+              Rename department
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">Update the department name only.</p>
+            <form onSubmit={(e) => void renameDepartmentFromCard(e)} className="mt-4 space-y-4">
+              <input
+                value={renameDepartmentName}
+                onChange={(e) => setRenameDepartmentName(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                placeholder="Department name"
+                required
+                autoFocus
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="submit"
+                  disabled={renameSaving}
+                  className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {renameSaving ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRenameTarget(null)}
+                  className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {isCeo && replaceManagerTarget && !ceoMessagesMode ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="replace-manager-title"
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget) setReplaceManagerTarget(null);
+          }}
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+            <h3 id="replace-manager-title" className="text-lg font-semibold text-slate-900">
+              Replace manager
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">
+              Team: <span className="font-medium text-slate-700">{replaceManagerTarget.name}</span>
+            </p>
+            <form onSubmit={(e) => void replaceManagerFromCard(e)} className="mt-4 space-y-3">
+              <input
+                value={replaceManagerName}
+                onChange={(e) => setReplaceManagerName(e.target.value)}
+                className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                placeholder="Manager name (optional)"
+              />
+              <input
+                type="email"
+                value={replaceManagerEmail}
+                onChange={(e) => setReplaceManagerEmail(e.target.value)}
+                className="min-h-[48px] w-full rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                placeholder="Manager email"
+                required
+                autoFocus
+              />
+              <PasswordInput
+                value={replaceManagerPassword}
+                onChange={(e) => setReplaceManagerPassword(e.target.value)}
+                className="min-h-[48px] rounded-lg border border-gray-300 px-4 py-3 focus:ring-2 focus:ring-blue-500"
+                placeholder="Password for new login (optional)"
+                autoComplete="new-password"
+              />
+              <div className="flex flex-wrap gap-2 pt-1">
+                <button
+                  type="submit"
+                  disabled={replaceManagerSaving}
+                  className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {replaceManagerSaving ? 'Saving…' : 'Replace manager'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReplaceManagerTarget(null)}
                   className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
                 >
                   Cancel

@@ -35,6 +35,21 @@ export class DepartmentsService {
     return data as DepartmentRow;
   }
 
+  async rename(companyId: string, id: string, name: string): Promise<DepartmentRow> {
+    const { data, error } = await this.supabase
+      .from('departments')
+      .update({ name: name.trim() })
+      .eq('company_id', companyId)
+      .eq('id', id)
+      .select('*')
+      .single();
+    if (error) {
+      this.logger.error('Failed to rename department', error.message);
+      throw error;
+    }
+    return data as DepartmentRow;
+  }
+
   async list(companyId: string): Promise<DepartmentRow[]> {
     const { data, error } = await this.supabase
       .from('departments')

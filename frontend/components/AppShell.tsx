@@ -74,6 +74,25 @@ function onMyEmailHashNavClick(
   }
 }
 
+/**
+ * Keep CEO Messages and Departments independent on the same pathname:
+ * - Messages => force `#team-members`
+ * - Departments => force clear hash
+ */
+function onDepartmentsHashNavClick(
+  e: MouseEvent<HTMLAnchorElement>,
+  pathname: string,
+  mode: 'messages' | 'departments',
+) {
+  if (pathname !== '/departments') return;
+  e.preventDefault();
+  const next = mode === 'messages' ? '/departments#team-members' : '/departments';
+  if (window.location.pathname + window.location.hash !== next) {
+    window.history.replaceState(null, '', next);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  }
+}
+
 function ShellStatusStrip({
   mailboxCrawlEnabled,
   isActive,
@@ -352,10 +371,18 @@ export function AppShell({
 
               {showOrg && isCeo ? (
                 <>
-                  <SafeLink href="/departments#team-members" className={navItemClass(deptAlertsFocus)}>
+                  <SafeLink
+                    href="/departments#team-members"
+                    className={navItemClass(deptAlertsFocus)}
+                    onClick={(e) => onDepartmentsHashNavClick(e, pathname, 'messages')}
+                  >
                     Messages & alerts
                   </SafeLink>
-                  <SafeLink href="/departments" className={navItemClass(ceoDepartmentsActive)}>
+                  <SafeLink
+                    href="/departments"
+                    className={navItemClass(ceoDepartmentsActive)}
+                    onClick={(e) => onDepartmentsHashNavClick(e, pathname, 'departments')}
+                  >
                     Departments
                   </SafeLink>
                   <SafeLink href="/employees" className={navItemClass(pathname === '/employees')}>
@@ -526,10 +553,18 @@ export function AppShell({
               ) : null}
               {showOrg && isCeo ? (
                 <>
-                  <SafeLink href="/departments#team-members" className={navMobileClass(deptAlertsFocus)}>
+                  <SafeLink
+                    href="/departments#team-members"
+                    className={navMobileClass(deptAlertsFocus)}
+                    onClick={(e) => onDepartmentsHashNavClick(e, pathname, 'messages')}
+                  >
                     Messages
                   </SafeLink>
-                  <SafeLink href="/departments" className={navMobileClass(ceoDepartmentsActive)}>
+                  <SafeLink
+                    href="/departments"
+                    className={navMobileClass(ceoDepartmentsActive)}
+                    onClick={(e) => onDepartmentsHashNavClick(e, pathname, 'departments')}
+                  >
                     Departments
                   </SafeLink>
                   <SafeLink href="/employees" className={navMobileClass(pathname === '/employees')}>

@@ -5,6 +5,7 @@ import {
   Delete,
   ForbiddenException,
   Get,
+  Patch,
   Param,
   Post,
   Req,
@@ -66,6 +67,32 @@ export class DepartmentsController {
     }
     await this.departmentsService.deleteWithCleanup(ctx.companyId, id);
     return { status: 'ok' };
+  }
+
+  @Patch(':id')
+  async rename(@Req() req: Request, @Param('id') id: string, @Body() body: { name?: string }) {
+    const ctx = getRequestContext(req);
+    if (ctx.role !== 'CEO') {
+      throw new ForbiddenException('Only CEO can rename departments');
+    }
+    const name = body.name?.trim();
+    if (!name) {
+      throw new BadRequestException('name is required');
+    }
+    const dept = await this.departmentsService.getById(ctx.companyId, id);
+    if (!dept) {
+      throw new BadRequestException('Department not found');
+    }
+    try {
+      const row = await this.departmentsService.rename(ctx.companyId, id, name);
+      return row;
+    } catch (err: unknown) {
+      const e = err as { code?: string };
+      if (e.code === '23505') {
+        throw new BadRequestException('A department with this name already exists');
+      }
+      throw err;
+    }
   }
 
   @Post(':id/assign-manager')
