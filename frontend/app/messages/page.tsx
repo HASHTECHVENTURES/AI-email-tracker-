@@ -67,7 +67,6 @@ export default function MessagesPage() {
   const [items, setItems] = useState<TeamAlertItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [deletingAlertId, setDeletingAlertId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [draftByRoot, setDraftByRoot] = useState<Record<string, string>>({});
@@ -198,7 +197,7 @@ export default function MessagesPage() {
     requestAnimationFrame(() => {
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     });
-  }, [activeThreadId, items, deletingAlertId, sendingFor]);
+  }, [activeThreadId, items, sendingFor]);
 
   async function sendReply(parentAlertId: string) {
     const message = draftByRoot[parentAlertId]?.trim() ?? '';
@@ -230,22 +229,6 @@ export default function MessagesPage() {
       return;
     }
     await load();
-  }
-
-  async function removeAlert(id: string) {
-    if (!token) return;
-    if (!window.confirm('Delete this manager message and any replies? This cannot be undone.')) return;
-    setDeletingAlertId(id);
-    try {
-      const res = await apiFetch(`/team-alerts/${encodeURIComponent(id)}`, token, { method: 'DELETE' });
-      if (!res.ok) {
-        setError(await readApiErrorMessage(res, 'Could not delete this message.'));
-        return;
-      }
-      await load();
-    } finally {
-      setDeletingAlertId(null);
-    }
   }
 
   if (!me || authLoading) {
@@ -430,20 +413,12 @@ export default function MessagesPage() {
                         <button
                           type="button"
                           onClick={() => void dismiss(latestRoot.id)}
-                          disabled={deletingAlertId === latestRoot.id || sendingFor === latestRoot.id}
+                          disabled={sendingFor === latestRoot.id}
                           className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-950 hover:bg-amber-100 disabled:opacity-50"
                         >
                           Dismiss
                         </button>
                       ) : null}
-                      <button
-                        type="button"
-                        onClick={() => void removeAlert(latestRoot.id)}
-                        disabled={deletingAlertId === latestRoot.id || sendingFor === latestRoot.id}
-                        className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        {deletingAlertId === latestRoot.id ? 'Deleting…' : 'Delete'}
-                      </button>
                     </div>
                     <div className="flex items-end gap-2">
                       <textarea
@@ -462,10 +437,10 @@ export default function MessagesPage() {
                           if (e.key !== 'Enter') return;
                           if (e.shiftKey) return;
                           e.preventDefault();
-                          if (sendingFor === latestRoot.id || deletingAlertId === latestRoot.id) return;
+                          if (sendingFor === latestRoot.id) return;
                           void sendReply(latestRoot.id);
                         }}
-                        disabled={sendingFor === latestRoot.id || deletingAlertId === latestRoot.id}
+                        disabled={sendingFor === latestRoot.id}
                         placeholder="Type your reply"
                         className="min-h-[44px] w-full resize-none rounded-2xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50"
                       />
@@ -474,7 +449,6 @@ export default function MessagesPage() {
                         onClick={() => void sendReply(latestRoot.id)}
                         disabled={
                           sendingFor === latestRoot.id ||
-                          deletingAlertId === latestRoot.id ||
                           !(draftByRoot[latestRoot.id]?.trim())
                         }
                         className="h-11 shrink-0 rounded-2xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 text-xs font-semibold text-white hover:opacity-95 disabled:opacity-50"

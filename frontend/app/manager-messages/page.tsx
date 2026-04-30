@@ -65,7 +65,6 @@ export default function ManagerMessagesPage() {
   const [receivedItems, setReceivedItems] = useState<ReceivedItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [draftByRoot, setDraftByRoot] = useState<Record<string, string>>({});
   const [receivedDraftById, setReceivedDraftById] = useState<Record<string, string>>({});
   const [sendingFor, setSendingFor] = useState<string | null>(null);
@@ -282,28 +281,6 @@ export default function ManagerMessagesPage() {
       await load();
     } finally {
       setSendingFor(null);
-    }
-  }
-
-  async function removeSent(id: string) {
-    if (!token) return;
-    if (
-      !window.confirm(
-        'Delete this alert and any teammate replies? They will no longer see it in their history.',
-      )
-    ) {
-      return;
-    }
-    setDeletingId(id);
-    try {
-      const res = await apiFetch(`/team-alerts/${encodeURIComponent(id)}`, token, { method: 'DELETE' });
-      if (!res.ok) {
-        setError(await readApiErrorMessage(res, 'Could not delete this conversation.'));
-        return;
-      }
-      await load();
-    } finally {
-      setDeletingId(null);
     }
   }
 
@@ -524,18 +501,6 @@ export default function ManagerMessagesPage() {
                         </div>
                       );
                     })}
-                    {latestRoot ? (
-                      <div className="flex justify-end pt-1">
-                        <button
-                          type="button"
-                          onClick={() => void removeSent(latestRoot.id)}
-                          disabled={deletingId === latestRoot.id}
-                          className="text-[11px] font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
-                        >
-                          {deletingId === latestRoot.id ? 'Deleting…' : 'Delete latest alert'}
-                        </button>
-                      </div>
-                    ) : null}
                   </div>
 
                   {latestRoot ? (
@@ -553,10 +518,10 @@ export default function ManagerMessagesPage() {
                             if (e.key !== 'Enter') return;
                             if (e.shiftKey) return;
                             e.preventDefault();
-                            if (sendingFor === latestRoot.id || deletingId === latestRoot.id) return;
+                            if (sendingFor === latestRoot.id) return;
                             void sendManagerReply(latestRoot.id);
                           }}
-                          disabled={sendingFor === latestRoot.id || deletingId === latestRoot.id}
+                          disabled={sendingFor === latestRoot.id}
                           placeholder="Type a message"
                           className="min-h-[44px] w-full resize-none rounded-2xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50"
                         />
@@ -565,7 +530,6 @@ export default function ManagerMessagesPage() {
                           onClick={() => void sendManagerReply(latestRoot.id)}
                           disabled={
                             sendingFor === latestRoot.id ||
-                            deletingId === latestRoot.id ||
                             !(draftByRoot[latestRoot.id]?.trim())
                           }
                           className="h-11 shrink-0 rounded-2xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 text-xs font-semibold text-white hover:opacity-95 disabled:opacity-50"
