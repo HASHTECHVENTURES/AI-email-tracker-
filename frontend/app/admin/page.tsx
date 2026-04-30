@@ -20,6 +20,13 @@ type Stats = {
   companies_with_email_crawl_off: number;
 };
 
+type PortalLoginRoles = {
+  ceo: number;
+  head: number;
+  employee: number;
+  platform_admin: number;
+};
+
 type CompanyRow = {
   id: string;
   name: string;
@@ -28,6 +35,7 @@ type CompanyRow = {
   admin_email_crawl_enabled: boolean;
   user_count: number;
   employee_count: number;
+  portal_login_roles?: PortalLoginRoles;
 };
 
 type DetailUser = {
@@ -167,6 +175,17 @@ function roleBadge(r: string) {
   return <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${m[r] ?? 'bg-slate-100 text-slate-600'}`}>{r}</span>;
 }
 
+/** One-line breakdown of portal login rows (CEO / manager / employee accounts). */
+function portalLoginRolesLine(r: PortalLoginRoles | undefined): string {
+  if (!r) return '';
+  const parts: string[] = [];
+  if (r.ceo) parts.push(`${r.ceo} CEO`);
+  if (r.head) parts.push(`${r.head} manager${r.head === 1 ? '' : 's'}`);
+  if (r.employee) parts.push(`${r.employee} employee login${r.employee === 1 ? '' : 's'}`);
+  if (r.platform_admin) parts.push(`${r.platform_admin} platform`);
+  return parts.join(' · ');
+}
+
 /* ───────── view: Dashboard (clean KPIs only) ───────── */
 
 function DashboardView({ stats, companies }: { stats: Stats | null; companies: CompanyRow[] }) {
@@ -190,18 +209,25 @@ function DashboardView({ stats, companies }: { stats: Stats | null; companies: C
 
       {topCompanies.length > 0 && (
         <section>
-          <h2 className="mb-4 text-lg font-bold text-slate-900">Top companies by mailboxes</h2>
+          <h2 className="mb-2 text-lg font-bold text-slate-900">Top companies by mailboxes</h2>
+          <p className="mb-4 max-w-3xl text-xs leading-relaxed text-slate-500">
+            Portal login totals count every sign-in stored for the tenant (CEO, managers, employee portals). That can be higher than what you see under Departments if old logins were not removed.
+          </p>
           <div className="space-y-2">
             {topCompanies.map((c) => {
               const maxMb = topCompanies[0]?.employee_count || 1;
               const pct = Math.round((c.employee_count / maxMb) * 100);
+              const roleLine = portalLoginRolesLine(c.portal_login_roles);
               return (
                 <div key={c.id} className="rounded-xl border border-slate-200/60 bg-white px-4 py-3 shadow-card">
-                  <div className="flex items-center justify-between text-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-2 text-sm">
                     <span className="font-medium text-slate-900">{c.name}</span>
-                    <div className="flex items-center gap-4 text-xs tabular-nums text-slate-500">
-                      <span>{c.user_count} users</span>
-                      <span>{c.employee_count} mailboxes</span>
+                    <div className="text-right text-xs tabular-nums text-slate-500">
+                      <div>
+                        <span className="font-medium text-slate-700">{c.user_count}</span> portal login{c.user_count === 1 ? '' : 's'}
+                      </div>
+                      {roleLine ? <div className="mt-0.5 max-w-[280px] text-[11px] leading-snug text-slate-500">{roleLine}</div> : null}
+                      <div className="mt-0.5">{c.employee_count} mailboxes</div>
                     </div>
                   </div>
                   <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
@@ -403,7 +429,7 @@ function CompaniesView({
     <div className="space-y-4">
       <div>
         <h2 className="text-lg font-bold text-slate-900">Companies</h2>
-        <p className="mt-1 text-sm text-slate-500">Click any company to view full details — users, mailboxes, conversations, and AI usage.</p>
+        <p className="mt-1 text-sm text-slate-500">Click any company to view full details — portal logins, mailboxes, conversations, and AI usage.</p>
       </div>
 
       <div className="overflow-x-auto rounded-2xl border border-slate-200/60 bg-white shadow-card">
@@ -412,7 +438,10 @@ function CompaniesView({
             <tr className="border-b border-slate-100 text-xs font-semibold uppercase tracking-wide text-slate-400">
               <th className="w-8 px-4 py-3" />
               <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Users</th>
+              <th className="px-4 py-3">
+                Portal logins
+                <span className="mt-0.5 block text-[10px] font-normal normal-case tracking-normal text-slate-400">by role</span>
+              </th>
               <th className="px-4 py-3">Mailboxes</th>
               <th className="px-4 py-3">AI</th>
               <th className="px-4 py-3">Crawl</th>
@@ -422,6 +451,7 @@ function CompaniesView({
           <tbody className="divide-y divide-slate-50">
             {companies.map((c) => {
               const isExpanded = expandedCompanyId === c.id;
+              const roleLine = portalLoginRolesLine(c.portal_login_roles);
               return (
                 <Fragment key={c.id}>
                   <tr
@@ -434,7 +464,12 @@ function CompaniesView({
                       </svg>
                     </td>
                     <td className="px-4 py-3 font-semibold text-brand-700">{c.name}</td>
-                    <td className="px-4 py-3 tabular-nums text-slate-600">{c.user_count}</td>
+                    <td className="px-4 py-3 text-slate-600">
+                      <div className="tabular-nums font-medium">{c.user_count}</div>
+                      {roleLine ? (
+                        <div className="mt-0.5 max-w-[240px] text-[11px] leading-snug text-slate-500">{roleLine}</div>
+                      ) : null}
+                    </td>
                     <td className="px-4 py-3 tabular-nums text-slate-600">{c.employee_count}</td>
                     <td className="px-4 py-3">
                       {c.admin_ai_enabled
@@ -617,7 +652,10 @@ function KillSwitchesView({
           <thead>
             <tr className="border-b border-slate-100 text-xs font-semibold uppercase tracking-wide text-slate-400">
               <th className="px-4 py-3">Company</th>
-              <th className="px-4 py-3">Users</th>
+              <th className="px-4 py-3">
+                Portal logins
+                <span className="mt-0.5 block text-[10px] font-normal normal-case tracking-normal text-slate-400">by role</span>
+              </th>
               <th className="px-4 py-3">Mailboxes</th>
               <th className="px-4 py-3">AI allowed</th>
               <th className="px-4 py-3">Email ingest</th>
@@ -625,10 +663,17 @@ function KillSwitchesView({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
-            {companies.map((c) => (
+            {companies.map((c) => {
+              const roleLine = portalLoginRolesLine(c.portal_login_roles);
+              return (
               <tr key={c.id} className="hover:bg-slate-50/50">
                 <td className="px-4 py-3 font-medium text-slate-900">{c.name}</td>
-                <td className="px-4 py-3 tabular-nums text-slate-600">{c.user_count}</td>
+                <td className="px-4 py-3 text-slate-600">
+                  <div className="tabular-nums font-medium">{c.user_count}</div>
+                  {roleLine ? (
+                    <div className="mt-0.5 max-w-[220px] text-[11px] leading-snug text-slate-500">{roleLine}</div>
+                  ) : null}
+                </td>
                 <td className="px-4 py-3 tabular-nums text-slate-600">{c.employee_count}</td>
                 <td className="px-4 py-3">
                   <FlagSwitch
@@ -657,7 +702,8 @@ function KillSwitchesView({
                   </button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
         {companies.length === 0 && (

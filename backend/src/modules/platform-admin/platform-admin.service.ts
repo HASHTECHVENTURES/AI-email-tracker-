@@ -9,14 +9,24 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { isPlatformAdminEmail } from './platform-admin.guard';
 
+/** Counts of `public.users` rows per role for one company (portal logins, not org chart). */
+export interface PortalLoginRoleCounts {
+  ceo: number;
+  head: number;
+  employee: number;
+  platform_admin: number;
+}
+
 export interface PlatformCompanyRow {
   id: string;
   name: string;
   created_at: string;
   admin_ai_enabled: boolean;
   admin_email_crawl_enabled: boolean;
+  /** Total `users` rows for this company (sum of portal_login_roles). */
   user_count: number;
   employee_count: number;
+  portal_login_roles: PortalLoginRoleCounts;
 }
 
 export interface CompanyDetailUser {
@@ -134,26 +144,64 @@ export class PlatformAdminService {
       admin_email_crawl_enabled?: boolean;
     }>;
 
-    const out: PlatformCompanyRow[] = [];
-    for (const c of rows) {
-      const [{ count: uc }, { count: ec }] = await Promise.all([
-        this.supabase
-          .from('users')
-          .select('*', { count: 'exact', head: true })
-          .eq('company_id', c.id),
+    const companyIds = rows.map((c) => c.id);
+    const emptyRoles = (): PortalLoginRoleCounts => ({
+      ceo: 0,
+      head: 0,
+      employee: 0,
+      platform_admin: 0,
+    });
+    const rolesByCompany = new Map<string, PortalLoginRoleCounts>();
+    for (const id of companyIds) {
+      rolesByCompany.set(id, emptyRoles());
+    }
+
+    if (companyIds.length > 0) {
+      const { data: roleRows, error: roleErr } = await this.supabase
+        .from('users')
+        .select('company_id, role')
+        .in('company_id', companyIds);
+      if (roleErr) {
+        this.logger.error(`listCompanies role aggregation: ${roleErr.message}`);
+        throw roleErr;
+      }
+      for (const u of roleRows ?? []) {
+        const cid = (u as { company_id?: string }).company_id;
+        if (!cid) continue;
+        const bag = rolesByCompany.get(cid);
+        if (!bag) continue;
+        const role = String((u as { role?: string }).role ?? 'EMPLOYEE');
+        if (role === 'CEO') bag.ceo += 1;
+        else if (role === 'HEAD') bag.head += 1;
+        else if (role === 'PLATFORM_ADMIN') bag.platform_admin += 1;
+        else bag.employee += 1;
+      }
+    }
+
+    const empCountResults = await Promise.all(
+      rows.map((c) =>
         this.supabase
           .from('employees')
           .select('*', { count: 'exact', head: true })
-          .eq('company_id', c.id),
-      ]);
+          .eq('company_id', c.id)
+          .then((r) => ({ id: c.id, count: r.count ?? 0 })),
+      ),
+    );
+    const empCountById = new Map(empCountResults.map((x) => [x.id, x.count]));
+
+    const out: PlatformCompanyRow[] = [];
+    for (const c of rows) {
+      const roles = rolesByCompany.get(c.id) ?? emptyRoles();
+      const uc = roles.ceo + roles.head + roles.employee + roles.platform_admin;
       out.push({
         id: c.id,
         name: c.name,
         created_at: c.created_at,
         admin_ai_enabled: c.admin_ai_enabled !== false,
         admin_email_crawl_enabled: c.admin_email_crawl_enabled !== false,
-        user_count: uc ?? 0,
-        employee_count: ec ?? 0,
+        user_count: uc,
+        employee_count: empCountById.get(c.id) ?? 0,
+        portal_login_roles: roles,
       });
     }
     return out;
@@ -239,6 +287,9 @@ export class PlatformAdminService {
       admin_email_crawl_enabled: row.admin_email_crawl_enabled !== false,
       user_count: email ? 1 : 0,
       employee_count: 0,
+      portal_login_roles: email
+        ? { ceo: 1, head: 0, employee: 0, platform_admin: 0 }
+        : { ceo: 0, head: 0, employee: 0, platform_admin: 0 },
     };
   }
 
