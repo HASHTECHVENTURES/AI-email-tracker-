@@ -278,11 +278,18 @@ export class AuthController {
       });
 
       const mailboxType = await this.employeesService.getMailboxType(payload.employee_id);
+      const isActorLinkedMailbox =
+        !!actor.linkedEmployeeId && actor.linkedEmployeeId === payload.employee_id;
       let nextPath = '/employees';
-      if (mailboxType === 'SELF') {
+      if (mailboxType === 'SELF' || isActorLinkedMailbox) {
+        /**
+         * Keep "my inbox" OAuth flows on /my-email:
+         * - SELF mailbox (CEO/manager personal tracking row)
+         * - manager's own linked employee mailbox (HEAD + EMPLOYEE dual role)
+         */
         nextPath = '/my-email';
       } else if (actor.role === 'HEAD') {
-        /** Manager team-mail OAuth completes here (dedicated sidebar page; not mixed with personal My mail). */
+        /** Manager team-mail OAuth completes here (dedicated sidebar page). */
         nextPath = '/team-mail-sync';
       }
       /** Popup-friendly landing: notifies opener then closes; avoids losing the main tab Supabase session. */
