@@ -2974,17 +2974,28 @@ function MyEmailPageInner() {
     return managerMailboxes.filter((m) => selected.has(m.id));
   }, [managerMailboxes, managerScopeMailboxIds]);
 
-  /** Employee mail tab: non-manager mailboxes + dual-role manager mailboxes (manager with portal login). */
+  const mailboxCountByEmail = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const mb of mailboxes) {
+      const em = mb.email.trim().toLowerCase();
+      counts.set(em, (counts.get(em) ?? 0) + 1);
+    }
+    return counts;
+  }, [mailboxes]);
+
+  /** Employee mail tab: non-manager rows + dual-role manager rows. */
   const teamMailboxesOnly = useMemo(
     () =>
       mailboxes.filter((mb) => {
-        if (ceoEmailNorm !== '' && mb.email.trim().toLowerCase() === ceoEmailNorm) {
+        const emailNorm = mb.email.trim().toLowerCase();
+        if (ceoEmailNorm !== '' && emailNorm === ceoEmailNorm) {
           return false;
         }
         if (mb.is_manager_mailbox !== true) return true;
-        return mb.has_portal_login === true;
+        const appearsMultipleTimes = (mailboxCountByEmail.get(emailNorm) ?? 0) > 1;
+        return mb.has_portal_login === true || appearsMultipleTimes;
       }),
-    [mailboxes, ceoEmailNorm],
+    [mailboxes, ceoEmailNorm, mailboxCountByEmail],
   );
 
   useEffect(() => {
@@ -4997,7 +5008,7 @@ function MyEmailPageInner() {
                   className="scroll-mt-24 rounded-2xl border border-slate-100 bg-white px-4 py-5 shadow-sm sm:px-6"
                 >
                   <p className="text-xs text-slate-600">
-                    Individual contributors plus dual-role manager mailboxes (manager-only rows stay under Manager mail).
+                    Individual contributors plus dual-role manager mailboxes. Manager-only rows stay under Manager mail.
                   </p>
                   {teamMailboxesOnly.length > 1 ? (
                     <div className="mt-3 max-w-sm">
