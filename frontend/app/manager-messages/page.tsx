@@ -70,6 +70,7 @@ export default function ManagerMessagesPage() {
   const [sendingFor, setSendingFor] = useState<string | null>(null);
   const [replyingReceivedId, setReplyingReceivedId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [activeReceivedId, setActiveReceivedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -169,14 +170,21 @@ export default function ManagerMessagesPage() {
   const firstLatestRootId = sidebarRows[0]?.latestRootId ?? null;
 
   useEffect(() => {
-    if (!items.length) {
-      setActiveThreadId(null);
+    if (items.length && (!activeThreadId || !items.some((i) => i.id === activeThreadId))) {
+      setActiveThreadId(firstLatestRootId);
+      setActiveReceivedId(null);
       return;
     }
-    if (!activeThreadId || !items.some((i) => i.id === activeThreadId)) {
-      setActiveThreadId(firstLatestRootId);
+    if (!items.length) {
+      setActiveThreadId(null);
+      if (
+        receivedRoots.length &&
+        (!activeReceivedId || !receivedRoots.some((root) => root.id === activeReceivedId))
+      ) {
+        setActiveReceivedId(receivedRoots[0].id);
+      }
     }
-  }, [items, activeThreadId, firstLatestRootId]);
+  }, [items, activeThreadId, firstLatestRootId, receivedRoots, activeReceivedId]);
 
   const awaitingCount = sidebarRows.filter((r) => r.anyUnread).length;
   const filteredSidebarRows = useMemo(() => {
@@ -203,11 +211,15 @@ export default function ManagerMessagesPage() {
     requestAnimationFrame(() => {
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     });
-  }, [activeThreadId, items, sendingFor]);
+  }, [activeThreadId, activeReceivedId, items, receivedItems, sendingFor, replyingReceivedId]);
 
   const activeSent = useMemo(
     () => items.find((i) => i.id === activeThreadId) ?? null,
     [items, activeThreadId],
+  );
+  const activeReceivedRoot = useMemo(
+    () => receivedRoots.find((i) => i.id === activeReceivedId) ?? null,
+    [receivedRoots, activeReceivedId],
   );
 
   const rootsForActiveEmployee = useMemo(() => {
@@ -254,6 +266,19 @@ export default function ManagerMessagesPage() {
     rows.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     return rows;
   }, [rootsForActiveEmployee]);
+  const receivedThreadMessages = useMemo(() => {
+    if (!activeReceivedRoot) return [];
+    const rows = receivedItems
+      .filter((item) => item.id === activeReceivedRoot.id || item.in_reply_to === activeReceivedRoot.id)
+      .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+      .map((item) => ({
+        id: item.id,
+        body: item.body,
+        createdAt: item.created_at,
+        fromManager: !(item.is_own_message === true),
+      }));
+    return rows;
+  }, [activeReceivedRoot, receivedItems]);
 
   const latestDraft = latestRoot ? draftByRoot[latestRoot.id] ?? '' : '';
   useEffect(() => {
@@ -374,7 +399,10 @@ export default function ManagerMessagesPage() {
                       <li key={row.employeeId}>
                         <button
                           type="button"
-                          onClick={() => setActiveThreadId(row.latestRootId)}
+                          onClick={() => {
+                            setActiveThreadId(row.latestRootId);
+                            setActiveReceivedId(null);
+                          }}
                           className={`w-full rounded-xl px-3 py-2 text-left ${
                             activeRow ? 'bg-emerald-50 ring-1 ring-emerald-100' : 'hover:bg-slate-50'
                           }`}
@@ -412,7 +440,27 @@ export default function ManagerMessagesPage() {
                     </p>
                     <div className="space-y-2">
                       {receivedRoots.slice(0, 5).map((msg) => (
-                        <div key={msg.id} className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2">
+                        <div
+                          key={msg.id}
+                          className={`rounded-xl border px-3 py-2 ${
+                            activeReceivedId === msg.id
+                              ? 'border-amber-300 bg-amber-100/70'
+                              : 'border-amber-200 bg-amber-50/70'
+                          }`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => {
+                            setActiveReceivedId(msg.id);
+                            setActiveThreadId(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setActiveReceivedId(msg.id);
+                              setActiveThreadId(null);
+                            }
+                          }}
+                        >
                           <p className="truncate text-xs font-semibold text-amber-950">
                             From {msg.from_manager_name?.trim() || 'your manager'}
                           </p>
@@ -539,6 +587,90 @@ export default function ManagerMessagesPage() {
                       </div>
                     </div>
                   ) : null}
+                </>
+              ) : activeReceivedRoot ? (
+                <>
+                  <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">
+                        {activeReceivedRoot.from_manager_name?.trim() || 'Manager'}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {activeReceivedRoot.from_manager_email || 'Direct message'}
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700">
+                      Messages to you
+                    </span>
+                  </header>
+                  <div ref={chatScrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+                    {receivedThreadMessages.map((msg, idx) => {
+                      const prev = idx > 0 ? receivedThreadMessages[idx - 1] : null;
+                      const showDateSeparator =
+                        !prev || !isSameCalendarDay(new Date(prev.createdAt), new Date(msg.createdAt));
+                      return (
+                        <div key={msg.id} className="space-y-2">
+                          {showDateSeparator ? (
+                            <div className="sticky top-1 z-10 flex justify-center">
+                              <span className="rounded-full border border-slate-200 bg-white/95 px-2 py-0.5 text-[10px] font-medium text-slate-500 shadow-sm backdrop-blur">
+                                {dateSeparatorLabel(msg.createdAt)}
+                              </span>
+                            </div>
+                          ) : null}
+                          <div className={`flex ${msg.fromManager ? 'justify-start' : 'justify-end'}`}>
+                            <div
+                              className={`max-w-[82%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
+                                msg.fromManager
+                                  ? 'rounded-bl-sm bg-white text-slate-800'
+                                  : 'rounded-br-sm bg-emerald-600 text-white'
+                              }`}
+                            >
+                              <p className="whitespace-pre-wrap">{msg.body}</p>
+                              <div
+                                className={`mt-1 flex justify-end gap-2 text-[10px] ${
+                                  msg.fromManager ? 'text-slate-400' : 'text-emerald-100'
+                                }`}
+                              >
+                                <span>{new Date(msg.createdAt).toLocaleString()}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="border-t border-slate-200 bg-white px-3 py-3">
+                    <div className="flex items-end gap-2">
+                      <textarea
+                        rows={1}
+                        value={receivedDraftById[activeReceivedRoot.id] ?? ''}
+                        onChange={(e) =>
+                          setReceivedDraftById((prev) => ({ ...prev, [activeReceivedRoot.id]: e.target.value }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key !== 'Enter') return;
+                          if (e.shiftKey) return;
+                          e.preventDefault();
+                          if (replyingReceivedId === activeReceivedRoot.id) return;
+                          void sendReplyToReceived(activeReceivedRoot.id);
+                        }}
+                        disabled={replyingReceivedId === activeReceivedRoot.id}
+                        placeholder="Type a message"
+                        className="min-h-[44px] w-full resize-none rounded-2xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void sendReplyToReceived(activeReceivedRoot.id)}
+                        disabled={
+                          replyingReceivedId === activeReceivedRoot.id ||
+                          !(receivedDraftById[activeReceivedRoot.id]?.trim())
+                        }
+                        className="h-11 shrink-0 rounded-2xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 text-xs font-semibold text-white hover:opacity-95 disabled:opacity-50"
+                      >
+                        {replyingReceivedId === activeReceivedRoot.id ? 'Sending…' : 'Send'}
+                      </button>
+                    </div>
+                  </div>
                 </>
               ) : (
                 <div className="flex h-full items-center justify-center p-6 text-center">
