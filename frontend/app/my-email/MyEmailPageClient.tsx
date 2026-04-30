@@ -2009,7 +2009,15 @@ function MyEmailPageInner() {
       const selfs = mailboxes.filter(
         (mb) => mb.mailbox_type === 'SELF' && mb.is_manager_mailbox !== true,
       );
-      if (selfs.length > 0) return selfs;
+      if (ceoEmailNorm) {
+        const byCeoEmail = selfs.filter(
+          (mb) => mb.email.trim().toLowerCase() === ceoEmailNorm,
+        );
+        if (byCeoEmail.length > 0) return byCeoEmail;
+      }
+      // Safe fallback: if there is only one SELF row, treat it as CEO inbox.
+      if (selfs.length === 1) return selfs;
+      return [];
     }
     const linkId = me?.linked_employee_id?.trim();
     /** Department manager: include linked employee mailbox (if any) and SELF rows. */
