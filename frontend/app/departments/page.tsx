@@ -415,7 +415,7 @@ export default function DepartmentsPage() {
       role={me.role}
       companyName={me.company_name ?? null}
       userDisplayName={authMe?.full_name?.trim() || authMe?.email}
-      title={isCeo ? 'Departments' : 'Alerts'}
+      title={isCeo ? 'Departments' : 'Messages'}
       subtitle={isCeo ? 'Org structure and manager access.' : 'Message your team and manage portal access.'}
       onSignOut={() => void ctxSignOut()}
     >
@@ -688,7 +688,7 @@ export default function DepartmentsPage() {
                     <th className="px-4 py-3">Gmail</th>
                     <th className="px-4 py-3">Last sync</th>
                     <th className="px-4 py-3">Portal login</th>
-                    <th className="px-4 py-3">Alert</th>
+                    <th className="px-4 py-3">Message</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 bg-white">
@@ -725,7 +725,7 @@ export default function DepartmentsPage() {
                           onClick={() => openAlertModal(e)}
                           className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-800 transition hover:bg-gray-50"
                         >
-                          Send alert
+                          Send message
                         </button>
                       </td>
                     </tr>
