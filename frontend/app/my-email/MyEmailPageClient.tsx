@@ -2974,16 +2974,7 @@ function MyEmailPageInner() {
     return managerMailboxes.filter((m) => selected.has(m.id));
   }, [managerMailboxes, managerScopeMailboxIds]);
 
-  const mailboxCountByEmail = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const mb of mailboxes) {
-      const em = mb.email.trim().toLowerCase();
-      counts.set(em, (counts.get(em) ?? 0) + 1);
-    }
-    return counts;
-  }, [mailboxes]);
-
-  /** Employee mail tab: non-manager rows + dual-role manager rows. */
+  /** Employee mail tab: org/employee rows only. SELF manager inboxes stay under Manager mail. */
   const teamMailboxesOnly = useMemo(
     () =>
       mailboxes.filter((mb) => {
@@ -2991,11 +2982,9 @@ function MyEmailPageInner() {
         if (ceoEmailNorm !== '' && emailNorm === ceoEmailNorm) {
           return false;
         }
-        if (mb.is_manager_mailbox !== true) return true;
-        const appearsMultipleTimes = (mailboxCountByEmail.get(emailNorm) ?? 0) > 1;
-        return mb.has_portal_login === true || appearsMultipleTimes;
+        return mb.mailbox_type !== 'SELF';
       }),
-    [mailboxes, ceoEmailNorm, mailboxCountByEmail],
+    [mailboxes, ceoEmailNorm],
   );
 
   useEffect(() => {
@@ -5008,7 +4997,7 @@ function MyEmailPageInner() {
                   className="scroll-mt-24 rounded-2xl border border-slate-100 bg-white px-4 py-5 shadow-sm sm:px-6"
                 >
                   <p className="text-xs text-slate-600">
-                    Individual contributors plus dual-role manager mailboxes. Manager-only rows stay under Manager mail.
+                    Employee and org mailboxes. Personal manager inboxes stay under Manager mail.
                   </p>
                   {teamMailboxesOnly.length > 1 ? (
                     <div className="mt-3 max-w-sm">
