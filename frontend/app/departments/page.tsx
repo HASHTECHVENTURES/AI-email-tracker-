@@ -565,11 +565,26 @@ export default function DepartmentsPage() {
     }
     return map;
   }, [ceoSentItems]);
+  const ceoRootsByEmail = useMemo(() => {
+    const map = new Map<string, SentItem[]>();
+    for (const root of ceoSentItems) {
+      const key = root.employee_email.trim().toLowerCase();
+      if (!key) continue;
+      const arr = map.get(key) ?? [];
+      arr.push(root);
+      map.set(key, arr);
+    }
+    for (const arr of map.values()) {
+      arr.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+    }
+    return map;
+  }, [ceoSentItems]);
 
   const ceoChatRows = useMemo(() => {
     return filteredRecipients
       .map((member) => {
-        const roots = ceoRootsByEmployee.get(member.id) ?? [];
+        const roots =
+          ceoRootsByEmployee.get(member.id) ?? ceoRootsByEmail.get(member.email.trim().toLowerCase()) ?? [];
         const latestRoot = roots.length ? roots[roots.length - 1] : null;
         const latestReply = latestRoot?.replies?.length
           ? latestRoot.replies[latestRoot.replies.length - 1]
@@ -584,15 +599,20 @@ export default function DepartmentsPage() {
         return { member, roots, preview, unreadCount, sortKey };
       })
       .sort((a, b) => b.sortKey - a.sortKey || a.member.name.localeCompare(b.member.name));
-  }, [filteredRecipients, ceoRootsByEmployee]);
+  }, [filteredRecipients, ceoRootsByEmployee, ceoRootsByEmail]);
 
   const ceoActiveMember = useMemo(
     () => ceoChatRows.find((r) => r.member.id === ceoActiveEmployeeId)?.member ?? ceoChatRows[0]?.member ?? null,
     [ceoChatRows, ceoActiveEmployeeId],
   );
   const ceoActiveRoots = useMemo(
-    () => (ceoActiveMember ? ceoRootsByEmployee.get(ceoActiveMember.id) ?? [] : []),
-    [ceoActiveMember, ceoRootsByEmployee],
+    () =>
+      ceoActiveMember
+        ? ceoRootsByEmployee.get(ceoActiveMember.id) ??
+          ceoRootsByEmail.get(ceoActiveMember.email.trim().toLowerCase()) ??
+          []
+        : [],
+    [ceoActiveMember, ceoRootsByEmployee, ceoRootsByEmail],
   );
   const ceoLatestRoot = ceoActiveRoots.length ? ceoActiveRoots[ceoActiveRoots.length - 1] : null;
   const ceoMessages = useMemo(() => {
@@ -650,7 +670,11 @@ export default function DepartmentsPage() {
     setError(null);
     try {
       const activePerson = ceoPeople.find((p) => p.id === employeeId) ?? null;
-      const latestRootForEmployee = (ceoRootsByEmployee.get(employeeId) ?? []).slice(-1)[0] ?? null;
+      const latestRootForEmployee = (
+        ceoRootsByEmployee.get(employeeId) ??
+        (activePerson ? ceoRootsByEmail.get(activePerson.email.trim().toLowerCase()) : []) ??
+        []
+      ).slice(-1)[0] ?? null;
       const isPseudoManagerTarget = employeeId.startsWith('manager:');
       const res = latestRootForEmployee
         ? await apiFetch('/team-alerts/reply-manager', token, {
@@ -671,6 +695,9 @@ export default function DepartmentsPage() {
       }
       setCeoDraftByEmployeeId((prev) => ({ ...prev, [employeeId]: '' }));
       await loadCeoSentChats(token);
+      if (activePerson) {
+        setCeoActiveEmployeeId(activePerson.id);
+      }
     } finally {
       setCeoSendingForEmployeeId(null);
     }

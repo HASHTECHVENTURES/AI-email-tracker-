@@ -207,10 +207,10 @@ export class TeamAlertsService {
 
   /** Manager follow-up in an existing thread (same root as employee replies). */
   async replyFromManager(ctx: RequestContext, fromUserId: string, threadRootId: string, message: string) {
-    if (ctx.role !== 'HEAD') {
-      throw new ForbiddenException('Only department managers can reply here');
+    if (ctx.role !== 'HEAD' && ctx.role !== 'CEO') {
+      throw new ForbiddenException('Only managers or company admin can reply here');
     }
-    if (!ctx.departmentId) {
+    if (ctx.role === 'HEAD' && !ctx.departmentId) {
       throw new ForbiddenException('Your manager profile must be assigned to a department');
     }
     const body = message.trim();
@@ -248,7 +248,7 @@ export class TeamAlertsService {
     if (empErr || !emp) {
       throw new NotFoundException('Team member not found');
     }
-    if (emp.department_id !== ctx.departmentId) {
+    if (ctx.role === 'HEAD' && emp.department_id !== ctx.departmentId) {
       throw new ForbiddenException('This thread is outside your department');
     }
 
@@ -273,8 +273,8 @@ export class TeamAlertsService {
   }
 
   async listSentByManager(ctx: RequestContext, fromUserId: string): Promise<{ items: TeamAlertSentItem[] }> {
-    if (ctx.role !== 'HEAD') {
-      throw new ForbiddenException('Only department managers can view sent team messages');
+    if (ctx.role !== 'HEAD' && ctx.role !== 'CEO') {
+      throw new ForbiddenException('Only managers or company admin can view sent messages');
     }
 
     const { data: rows, error } = await this.supabase
