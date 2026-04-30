@@ -16,7 +16,11 @@ export class SettingsController {
     const ctx = getRequestContext(req);
     const base = await this.settingsService.getAll();
     const flags = await this.companyPolicyService.getFlags(ctx.companyId);
-    return { ...base, company_admin_ai_enabled: flags.admin_ai_enabled };
+    return {
+      ...base,
+      company_admin_ai_enabled: flags.admin_ai_enabled,
+      company_admin_email_crawl_enabled: flags.admin_email_crawl_enabled,
+    };
   }
 
   @Get('runtime')

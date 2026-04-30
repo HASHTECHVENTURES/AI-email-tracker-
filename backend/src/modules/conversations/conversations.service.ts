@@ -80,6 +80,8 @@ export class ConversationsService {
 
   async recomputeForThreads(threadKeys: ThreadKey[]): Promise<RecomputeResult> {
     const globalSla = await this.settingsService.getDefaultSlaHours();
+    const settings = await this.settingsService.getAll();
+    const companyAiAllowed = new Map<string, boolean>();
     const result: RecomputeResult = {
       threadsProcessed: 0,
       created: 0,
@@ -94,6 +96,8 @@ export class ConversationsService {
         key.employeeId,
         key.threadId,
         globalSla,
+        settings.ai_enabled,
+        companyAiAllowed,
       );
       result.threadsProcessed++;
       if (outcome.action === 'created') result.created++;
@@ -359,6 +363,8 @@ export class ConversationsService {
     employeeId: string,
     threadId: string,
     globalSlaHours: number,
+    settingsAiEnabled: boolean,
+    companyAiAllowed: Map<string, boolean>,
   ): Promise<{ action: 'created' | 'updated'; enriched: boolean }> {
     if (!companyId) return { action: 'updated', enriched: false };
     const employee = await this.employeesService.getById(companyId, employeeId);
@@ -496,7 +502,12 @@ export class ConversationsService {
     }
 
     let enriched = false;
-    if (this.aiEnrichmentService.isAvailable) {
+    let platformAiEnabled = companyAiAllowed.get(companyId);
+    if (platformAiEnabled === undefined) {
+      platformAiEnabled = await this.companyPolicyService.isAiEnabledForCompany(companyId);
+      companyAiAllowed.set(companyId, platformAiEnabled);
+    }
+    if (settingsAiEnabled && platformAiEnabled && this.aiEnrichmentService.isAvailable) {
       try {
         const out = await this.aiEnrichmentService.enrichConversation(conversationId, employeeId, threadId);
         enriched = out !== null;

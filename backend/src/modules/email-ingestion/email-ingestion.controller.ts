@@ -3,12 +3,14 @@ import { Request } from 'express';
 import { EmailIngestionService } from './email-ingestion.service';
 import { getRequestContext } from '../common/request-context';
 import { SettingsService } from '../settings/settings.service';
+import { CompanyPolicyService } from '../company-policy/company-policy.service';
 
 @Controller('email-ingestion')
 export class EmailIngestionController {
   constructor(
     private readonly emailIngestionService: EmailIngestionService,
     private readonly settingsService: SettingsService,
+    private readonly companyPolicyService: CompanyPolicyService,
   ) {}
 
   @Get('run')
@@ -18,6 +20,16 @@ export class EmailIngestionController {
     if (!internal) {
       const ctx = getRequestContext(req);
       const s = await this.settingsService.getAll();
+      const flags = await this.companyPolicyService.getFlags(ctx.companyId);
+      if (!flags.admin_email_crawl_enabled) {
+        return {
+          status: 'skipped',
+          reason: 'platform_email_crawl_disabled',
+          message: 'Email crawl is disabled by Platform Admin for this company.',
+          timestamp: new Date().toISOString(),
+          results: [],
+        };
+      }
       if (!s.email_crawl_enabled) {
         return {
           status: 'skipped',

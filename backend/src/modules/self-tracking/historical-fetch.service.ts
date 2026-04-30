@@ -135,6 +135,11 @@ export class HistoricalFetchService {
       throw new BadRequestException(`Date range cannot exceed ${MAX_HISTORICAL_RANGE_DAYS} days`);
     }
 
+    const companyEmailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(ctx.companyId);
+    if (!companyEmailCrawlOn) {
+      throw new BadRequestException('Email crawl is disabled by Platform Admin for this company.');
+    }
+
     const hasOAuth = await this.oauthTokenService.hasToken(employeeId);
     if (!hasOAuth) {
       throw new BadRequestException('Gmail is not connected for this mailbox. Connect Gmail first.');

@@ -177,6 +177,9 @@ export class SystemDiagnosticsService {
       if (e.tracking_paused) {
         blockers.push('Email fetch is paused for this mailbox (Team card / CEO table toggle).');
       }
+      if (!companyFlags.admin_email_crawl_enabled) {
+        blockers.push('Platform Admin kill switch: Email crawl is OFF for this company.');
+      }
       if (!settings.email_crawl_enabled) {
         blockers.push('Company-wide Email (Gmail fetch) is OFF in Settings.');
       }

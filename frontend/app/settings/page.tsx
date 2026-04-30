@@ -16,6 +16,7 @@ type Settings = {
   email_ingest_without_ai_confirmed: boolean;
   gemini_api_key_configured: boolean;
   company_admin_ai_enabled?: boolean;
+  company_admin_email_crawl_enabled?: boolean;
   email_crawl_enabled: boolean;
   ai_for_managers_enabled: boolean;
   ai_for_employees_enabled: boolean;
@@ -113,6 +114,8 @@ export default function SettingsPage() {
         email_ai_relevance_enabled: s.email_ai_relevance_enabled !== false,
         email_ingest_without_ai_confirmed: s.email_ingest_without_ai_confirmed === true,
         gemini_api_key_configured: s.gemini_api_key_configured !== false,
+        company_admin_ai_enabled: s.company_admin_ai_enabled !== false,
+        company_admin_email_crawl_enabled: s.company_admin_email_crawl_enabled !== false,
         email_crawl_enabled: s.email_crawl_enabled !== false,
         ai_for_managers_enabled: s.ai_for_managers_enabled !== false,
         ai_for_employees_enabled: s.ai_for_employees_enabled !== false,
@@ -168,24 +171,30 @@ export default function SettingsPage() {
     })();
   }, [token]);
 
+  const platformEmailAllowed = settings?.company_admin_email_crawl_enabled !== false;
+  const platformAiAllowed = settings?.company_admin_ai_enabled !== false;
+  const platformOverrideOff = !platformEmailAllowed || !platformAiAllowed;
+
   const masterEmailOn = useMemo(() => {
     if (!settings) return false;
     return (
+      platformEmailAllowed &&
       settings.email_crawl_enabled !== false &&
       settings.email_crawl_team_mailboxes_enabled !== false &&
       settings.email_crawl_employee_mailboxes_enabled !== false
     );
-  }, [settings]);
+  }, [settings, platformEmailAllowed]);
 
   const masterAiOn = useMemo(() => {
     if (!settings) return false;
     return (
+      platformAiAllowed &&
       Boolean(settings.ai_enabled) &&
       settings.email_ai_relevance_enabled !== false &&
       settings.ai_for_managers_enabled !== false &&
       settings.ai_for_employees_enabled !== false
     );
-  }, [settings]);
+  }, [settings, platformAiAllowed]);
 
   /** Single CEO switch: both Gmail fetch and company AI are on, or not. */
   const masterCombinedOn = useMemo(() => masterEmailOn && masterAiOn, [masterEmailOn, masterAiOn]);
@@ -224,6 +233,10 @@ export default function SettingsPage() {
   async function setMasterCombined() {
     if (!me || me.role !== 'CEO' || !token) return;
     const next = !masterCombinedOn;
+    if (next && platformOverrideOff) {
+      setError('Platform Admin has disabled Email and/or AI for this company. CEO settings cannot override it.');
+      return;
+    }
     setError(null);
     setNotice(null);
     setSavingMasterCombined(true);
@@ -353,6 +366,14 @@ export default function SettingsPage() {
           One control for the whole company: Gmail fetch (all mailboxes) and AI (relevance, summaries, reports) stay
           aligned — both on or both off.
         </p>
+        {settingsLoadState === 'ready' && platformOverrideOff ? (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            Platform Admin override is active:
+            {!platformEmailAllowed ? ' Email crawl is disabled.' : ''}
+            {!platformAiAllowed ? ' AI is disabled.' : ''}
+            {' '}CEO settings cannot turn these back on until the admin kill switch is enabled.
+          </div>
+        ) : null}
         <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
           <div className="text-sm font-medium text-slate-700">
             {settingsLoadState === 'pending' ? (
@@ -379,9 +400,9 @@ export default function SettingsPage() {
                 type="button"
                 role="switch"
                 aria-checked={masterMixed ? 'mixed' : masterCombinedOn}
-                disabled={savingMasterCombined}
+                disabled={savingMasterCombined || platformOverrideOff}
                 onClick={() => void setMasterCombined()}
-                className={`relative h-8 w-14 rounded-full transition-colors ${masterCombinedOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterCombined ? 'opacity-50' : ''}`}
+                className={`relative h-8 w-14 rounded-full transition-colors ${masterCombinedOn ? 'bg-indigo-600' : 'bg-slate-200'} ${savingMasterCombined || platformOverrideOff ? 'opacity-50' : ''}`}
               >
                 <span
                   className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${masterCombinedOn ? 'left-7' : 'left-1'}`}
@@ -451,7 +472,7 @@ export default function SettingsPage() {
             <button
               type="button"
               onClick={() => void runGmailSyncNow()}
-              disabled={syncLoading || settingsLoadState !== 'ready'}
+              disabled={syncLoading || settingsLoadState !== 'ready' || !masterEmailOn}
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
             >
               {syncLoading ? 'Running sync…' : 'Run Gmail sync now'}
