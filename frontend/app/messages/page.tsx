@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { apiFetch, readActAsEmployeeViewEnabled, readApiErrorMessage } from '@/lib/api';
+import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
@@ -141,9 +141,7 @@ export default function MessagesPage() {
     }
     const allowEmployeeMessages =
       authMe.role === 'EMPLOYEE' ||
-      (isDepartmentManagerRole(authMe.role) &&
-        !!authMe.linked_employee_id?.trim() &&
-        readActAsEmployeeViewEnabled());
+      (isDepartmentManagerRole(authMe.role) && !!authMe.linked_employee_id?.trim());
     if (!allowEmployeeMessages) {
       router.replace('/dashboard');
       return;

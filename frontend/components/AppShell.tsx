@@ -178,6 +178,8 @@ export function AppShell({
   const actAsMailbox = useActAsEmployeeMailboxView(canActAsMailbox);
   /** Employee portal nav, or manager viewing their linked mailbox. */
   const mailboxNav = isEmployee || actAsMailbox;
+  /** Dual-role managers should see employee-side manager alerts without switching portals. */
+  const mailboxMessagesNav = mailboxNav || canActAsMailbox;
   /** Manager-only sidebar (hidden in mailbox view). */
   const managerNavVisible = isHead && !isPlatformAdmin && !actAsMailbox;
   /** CEO (full My Email), department manager (HEAD), or Employee portal — Historical Search + scoped mailboxes. */
@@ -321,7 +323,7 @@ export function AppShell({
                 </SafeLink>
               ) : null}
 
-              {mailboxNav ? (
+              {mailboxMessagesNav ? (
                 <SafeLink href="/messages" className={navItemClass(pathname === '/messages')}>
                   Messages & alerts
                 </SafeLink>
@@ -498,7 +500,7 @@ export function AppShell({
                   Team sync
                 </SafeLink>
               ) : null}
-              {mailboxNav ? (
+              {mailboxMessagesNav ? (
                 <SafeLink href="/messages" className={navMobileClass(pathname === '/messages')}>
                   Messages
                 </SafeLink>

@@ -458,6 +458,17 @@ export class TeamAlertsService {
         throw new ForbiddenException('You can only delete alerts on your own inbox');
       }
     } else if (ctx.role === 'HEAD') {
+      if (ctx.actAsEmployeePortal && ctx.employeeId) {
+        const { expandedIds } = await this.employeesService.getEmployeeAliasMapping(ctx.companyId, [ctx.employeeId]);
+        if (expandedIds.includes(row.employee_id)) {
+          const { error: delErr } = await this.supabase.from('team_alerts').delete().eq('id', alertId);
+          if (delErr) {
+            this.logger.error(`deleteAlert: ${delErr.message}`);
+            throw new BadRequestException('Could not delete alert');
+          }
+          return;
+        }
+      }
       if (inReplyTo) {
         throw new BadRequestException('Delete your original message to remove the whole thread');
       }

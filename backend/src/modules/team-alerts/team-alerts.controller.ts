@@ -22,10 +22,23 @@ export class TeamAlertsController {
     private readonly auditLogService: AuditLogService,
   ) {}
 
+  private employeeInboxContext(req: Request) {
+    const ctx = getRequestContext(req);
+    const user = req.user;
+    if (ctx.role === 'HEAD' && user?.linkedEmployeeId?.trim()) {
+      return {
+        ...ctx,
+        employeeId: user.linkedEmployeeId,
+        actAsEmployeePortal: true,
+      };
+    }
+    return ctx;
+  }
+
   /** Literal paths (`send`, `read/:id`) so routing matches reliably (same idea as `portal-password/:id`). */
   @Get('mine')
   async list(@Req() req: Request) {
-    const ctx = getRequestContext(req);
+    const ctx = this.employeeInboxContext(req);
     const user = req.user;
     if (!user) throw new ForbiddenException();
     return this.teamAlertsService.listForEmployee(ctx);
@@ -44,7 +57,7 @@ export class TeamAlertsController {
     @Req() req: Request,
     @Body() body: { employeeId?: string; message?: string },
   ) {
-    const ctx = getRequestContext(req);
+    const ctx = this.employeeInboxContext(req);
     const user = req.user;
     if (!user) throw new ForbiddenException();
     const employeeId = body.employeeId?.trim();
@@ -113,7 +126,7 @@ export class TeamAlertsController {
 
   @Patch('read/:id')
   async markRead(@Req() req: Request, @Param('id') id: string) {
-    const ctx = getRequestContext(req);
+    const ctx = this.employeeInboxContext(req);
     const user = req.user;
     if (!user) throw new ForbiddenException();
     return this.teamAlertsService.markRead(ctx, id);
@@ -121,7 +134,7 @@ export class TeamAlertsController {
 
   @Delete(':id')
   async remove(@Req() req: Request, @Param('id') id: string) {
-    const ctx = getRequestContext(req);
+    const ctx = this.employeeInboxContext(req);
     const user = req.user;
     if (!user) throw new ForbiddenException();
     await this.teamAlertsService.deleteAlert(ctx, user.id, id.trim());

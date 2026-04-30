@@ -264,7 +264,7 @@ export default function DashboardPage() {
     if (!token) return;
 
     const alertResPromise =
-      me?.role === 'EMPLOYEE' || actAsMailboxView
+      me?.role === 'EMPLOYEE' || canActAsMailbox
         ? apiFetch('/team-alerts/mine', token)
         : Promise.resolve({ ok: false } as Response);
     const [dRes, sRes, taRes] = await Promise.all([
@@ -289,7 +289,7 @@ export default function DashboardPage() {
         nextStatus.email_crawl_enabled === false ? null : (nextStatus.seconds_until_next_ingestion ?? null),
       );
     }
-    if (me?.role === 'EMPLOYEE' || actAsMailboxView) {
+    if (me?.role === 'EMPLOYEE' || canActAsMailbox) {
       if (taRes.ok) {
         setTeamAlerts((await taRes.json()) as { items: TeamAlertItem[]; unread_count: number });
       } else {
@@ -298,7 +298,7 @@ export default function DashboardPage() {
     } else {
       setTeamAlerts(null);
     }
-  }, [buildDashboardPath, ctxSignOut, me?.role, token, actAsMailboxView]);
+  }, [buildDashboardPath, canActAsMailbox, ctxSignOut, me?.role, token]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -1412,7 +1412,7 @@ export default function DashboardPage() {
 
             {historicalSearchCard}
 
-        {isEmployee && teamAlerts?.items?.some((a) => !a.read_at && !a.in_reply_to) ? (
+        {(isEmployee || canActAsMailbox) && teamAlerts?.items?.some((a) => !a.read_at && !a.in_reply_to) ? (
           <div className="space-y-3" role="region" aria-label="Messages from your manager">
             {(teamAlerts.items ?? [])
               .filter((a) => !a.read_at && !a.in_reply_to)
