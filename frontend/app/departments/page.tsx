@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch } from '@/lib/api';
@@ -39,6 +39,8 @@ type TeamMember = {
   has_portal_login?: boolean;
 };
 
+type RecipientFilter = 'all' | 'manager' | 'employee';
+
 export default function DepartmentsPage() {
   const router = useRouter();
   const pathname = usePathname();
@@ -73,6 +75,8 @@ export default function DepartmentsPage() {
   const [secondaryRosterDeptId, setSecondaryRosterDeptId] = useState('');
   const [secondaryRosterSaving, setSecondaryRosterSaving] = useState(false);
   const [advancedAction, setAdvancedAction] = useState<'secondary' | 'convert' | 'password' | null>(null);
+  const [recipientFilter, setRecipientFilter] = useState<RecipientFilter>('all');
+  const [recipientSearch, setRecipientSearch] = useState('');
 
   const load = useCallback(async (token: string) => {
     const res = await apiFetch('/departments', token);
@@ -409,6 +413,29 @@ export default function DepartmentsPage() {
   }
   const isCeo = me.role === 'CEO';
   const isHead = isDepartmentManagerRole(me.role);
+  const managerEmailSet = useMemo(
+    () =>
+      new Set(
+        rows
+          .map((d) => d.manager?.email?.trim().toLowerCase())
+          .filter((v): v is string => Boolean(v)),
+      ),
+    [rows],
+  );
+  const filteredRecipients = useMemo(() => {
+    const q = recipientSearch.trim().toLowerCase();
+    return teamMembers.filter((member) => {
+      const isManager = managerEmailSet.has(member.email.trim().toLowerCase());
+      if (recipientFilter === 'manager' && !isManager) return false;
+      if (recipientFilter === 'employee' && isManager) return false;
+      if (!q) return true;
+      return (
+        member.name.toLowerCase().includes(q) ||
+        member.email.toLowerCase().includes(q) ||
+        member.department_name.toLowerCase().includes(q)
+      );
+    });
+  }, [teamMembers, managerEmailSet, recipientFilter, recipientSearch]);
 
   return (
     <AppShell
@@ -668,8 +695,12 @@ export default function DepartmentsPage() {
         >
           <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h2 className="text-lg font-bold text-slate-900">Team</h2>
-              <p className="mt-1 text-sm text-slate-500">Portal access and team messages.</p>
+              <h2 className="text-lg font-bold text-slate-900">{isCeo ? 'Messages & alerts' : 'Team'}</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                {isCeo
+                  ? 'Send messages directly to managers or employees.'
+                  : 'Portal access and team messages.'}
+              </p>
             </div>
           </div>
           {teamLoadError ? <p className="text-sm text-red-600">{teamLoadError}</p> : null}
@@ -678,7 +709,65 @@ export default function DepartmentsPage() {
               No team members yet. Add mailboxes from <span className="font-medium text-slate-800">Employees</span>.
             </p>
           ) : null}
-          {teamMembers.length > 0 ? (
+          {teamMembers.length > 0 && isCeo ? (
+            <>
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                {(['all', 'manager', 'employee'] as RecipientFilter[]).map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => setRecipientFilter(kind)}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                      recipientFilter === kind
+                        ? 'bg-indigo-600 text-white'
+                        : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {kind === 'all' ? 'All people' : kind === 'manager' ? 'Managers' : 'Employees'}
+                  </button>
+                ))}
+                <input
+                  value={recipientSearch}
+                  onChange={(e) => setRecipientSearch(e.target.value)}
+                  placeholder="Search name, email, team..."
+                  className="ml-auto w-full min-w-[220px] rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 sm:w-72"
+                />
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                {filteredRecipients.map((member) => {
+                  const isManager = managerEmailSet.has(member.email.trim().toLowerCase());
+                  return (
+                    <article key={member.id} className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate font-semibold text-slate-900">{member.name}</p>
+                          <p className="truncate text-xs text-slate-500">{member.email}</p>
+                          <p className="mt-1 text-[11px] text-slate-500">{member.department_name}</p>
+                        </div>
+                        <span
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                            isManager ? 'bg-violet-100 text-violet-800' : 'bg-slate-100 text-slate-700'
+                          }`}
+                        >
+                          {isManager ? 'Manager' : 'Employee'}
+                        </span>
+                      </div>
+                      <div className="mt-3 flex items-center justify-end">
+                        <button
+                          type="button"
+                          onClick={() => openAlertModal(member)}
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-800 transition hover:bg-gray-50"
+                        >
+                          Send message
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </>
+          ) : null}
+          {teamMembers.length > 0 && isHead ? (
             <div className="overflow-x-auto rounded-lg border border-gray-200">
               <table className="min-w-full text-sm">
                 <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
