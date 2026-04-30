@@ -40,6 +40,24 @@ function lastActivityMs(thread: SentItem): number {
   return t;
 }
 
+function isSameCalendarDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function dateSeparatorLabel(iso: string): string {
+  const date = new Date(iso);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (isSameCalendarDay(date, now)) return 'Today';
+  if (isSameCalendarDay(date, yesterday)) return 'Yesterday';
+  return date.toLocaleDateString();
+}
+
 export default function ManagerMessagesPage() {
   const router = useRouter();
   const { me, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
@@ -51,7 +69,9 @@ export default function ManagerMessagesPage() {
   const [draftByRoot, setDraftByRoot] = useState<Record<string, string>>({});
   const [sendingFor, setSendingFor] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -158,6 +178,16 @@ export default function ManagerMessagesPage() {
   }, [items, activeThreadId, firstLatestRootId]);
 
   const awaitingCount = sidebarRows.filter((r) => r.anyUnread).length;
+  const filteredSidebarRows = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return sidebarRows;
+    return sidebarRows.filter(
+      (row) =>
+        row.employee_name.toLowerCase().includes(q) ||
+        row.employee_email.toLowerCase().includes(q) ||
+        row.preview.toLowerCase().includes(q),
+    );
+  }, [sidebarRows, searchQuery]);
   const receivedRoots = useMemo(
     () =>
       receivedItems
@@ -193,6 +223,44 @@ export default function ManagerMessagesPage() {
     () => rootsForActiveEmployee.some((row) => !row.read_at),
     [rootsForActiveEmployee],
   );
+
+  const flattenedMessages = useMemo(() => {
+    const rows: Array<{
+      id: string;
+      body: string;
+      createdAt: string;
+      fromManager: boolean;
+      deliveryLabel?: string;
+    }> = [];
+    for (const root of rootsForActiveEmployee) {
+      rows.push({
+        id: root.id,
+        body: root.body,
+        createdAt: root.created_at,
+        fromManager: true,
+        deliveryLabel: root.read_at ? 'Seen' : 'Delivered',
+      });
+      for (const reply of root.replies ?? []) {
+        rows.push({
+          id: reply.id,
+          body: reply.body,
+          createdAt: reply.created_at,
+          fromManager: reply.from_manager,
+          deliveryLabel: reply.from_manager ? 'Sent' : undefined,
+        });
+      }
+    }
+    rows.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    return rows;
+  }, [rootsForActiveEmployee]);
+
+  const latestDraft = latestRoot ? draftByRoot[latestRoot.id] ?? '' : '';
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, [latestDraft, latestRoot?.id]);
 
   async function sendManagerReply(threadRootId: string) {
     const message = draftByRoot[threadRootId]?.trim() ?? '';
@@ -256,7 +324,10 @@ export default function ManagerMessagesPage() {
     >
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
 
-      <div className="mb-6">
+      <div className="mb-4 flex items-center justify-between">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          Chat workspace
+        </p>
         <Link
           href="/departments#team-members"
           className="inline-flex rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95"
@@ -265,233 +336,204 @@ export default function ManagerMessagesPage() {
         </Link>
       </div>
 
-      {receivedRoots.length > 0 ? (
-        <section className="mb-6 rounded-2xl border border-amber-200 bg-amber-50/70 p-4 shadow-card">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <p className="text-sm font-bold text-amber-950">Messages to you</p>
-              <p className="mt-1 text-xs text-amber-900/80">
-                Alerts sent to your employee mailbox. You can handle these without leaving manager login.
-              </p>
-            </div>
-            <Link
-              href="/messages"
-              className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-950 shadow-sm hover:bg-amber-100"
-            >
-              Open messages
-            </Link>
-          </div>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            {receivedRoots.slice(0, 4).map((msg) => (
-              <Link
-                key={msg.id}
-                href="/messages"
-                className="block rounded-xl border border-amber-200 bg-white px-4 py-3 text-sm shadow-sm hover:bg-amber-50"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate font-semibold text-slate-900">
-                      From {msg.from_manager_name?.trim() || 'your manager'}
-                    </p>
-                    <p className="mt-1 line-clamp-2 text-slate-700">{msg.body}</p>
-                    <p className="mt-2 text-xs text-slate-500">{new Date(msg.created_at).toLocaleString()}</p>
-                  </div>
-                  {!msg.read_at ? (
-                    <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
-                      New
+      {loading ? (
+        <PortalPageLoader variant="embedded" dense />
+      ) : (
+        <section className="overflow-hidden rounded-3xl border border-slate-200/70 bg-white shadow-card">
+          <div className="grid min-h-[72vh] lg:grid-cols-[340px_minmax(0,1fr)]">
+            <aside className="border-r border-slate-200 bg-white">
+              <div className="border-b border-slate-100 px-4 py-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-slate-900">Chats</p>
+                  {awaitingCount > 0 ? (
+                    <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-900">
+                      {awaitingCount}
                     </span>
                   ) : null}
                 </div>
-              </Link>
-            ))}
-          </div>
-        </section>
-      ) : null}
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search chats"
+                  className="mt-3 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-brand-500 placeholder:text-slate-400 focus:ring-1"
+                />
+              </div>
 
-      {loading ? (
-        <PortalPageLoader variant="embedded" dense />
-      ) : items.length === 0 ? (
-        <section className="rounded-2xl border border-dashed border-slate-200 bg-surface-card p-10 text-center shadow-card">
-          <p className="text-sm text-slate-600">
-            Nothing sent by you yet. Open <span className="font-semibold text-slate-800">Alerts</span> and pick a teammate.
-          </p>
-        </section>
-      ) : (
-        <section className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="rounded-2xl border border-slate-200/70 bg-white shadow-card">
-            <div className="border-b border-slate-100 px-4 py-3">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-slate-900">Threads</p>
-                {awaitingCount > 0 ? (
-                  <span
-                    className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-900"
-                    title="Threads not yet seen by teammate"
-                  >
-                    {awaitingCount}
-                  </span>
+              <div className="max-h-[72vh] overflow-y-auto">
+                {filteredSidebarRows.length === 0 && receivedRoots.length === 0 ? (
+                  <div className="px-4 py-6 text-sm text-slate-500">No chats yet. Start with “New alert”.</div>
+                ) : null}
+
+                <ul className="space-y-1 p-2">
+                  {filteredSidebarRows.map((row) => {
+                    const rowRoots = byEmployee.get(row.employeeId) ?? [];
+                    const activeRow =
+                      activeSent?.employee_id === row.employeeId || row.latestRootId === activeThreadId;
+                    const unreadCount = rowRoots.filter((r) => !r.read_at).length;
+                    return (
+                      <li key={row.employeeId}>
+                        <button
+                          type="button"
+                          onClick={() => setActiveThreadId(row.latestRootId)}
+                          className={`w-full rounded-xl px-3 py-2 text-left ${
+                            activeRow ? 'bg-emerald-50 ring-1 ring-emerald-100' : 'hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-slate-900">{row.employee_name}</p>
+                              <p className="truncate text-xs text-slate-500">{row.employee_email}</p>
+                            </div>
+                            <div className="flex shrink-0 flex-col items-end gap-1">
+                              <p className="text-[10px] text-slate-400">
+                                {new Date(row.sortKey).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </p>
+                              {unreadCount > 0 ? (
+                                <span className="inline-flex min-w-[1.1rem] items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-semibold text-white">
+                                  {unreadCount}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                          <p className="mt-1 truncate text-xs text-slate-600">
+                            {rowRoots.length > 1 && activeRow ? `${rowRoots.length} alerts · ` : null}
+                            {row.preview || '(no message)'}
+                          </p>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+
+                {receivedRoots.length > 0 ? (
+                  <div className="border-t border-slate-100 px-3 pb-3 pt-2">
+                    <p className="px-1 py-2 text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+                      Messages to you
+                    </p>
+                    <div className="space-y-2">
+                      {receivedRoots.slice(0, 5).map((msg) => (
+                        <div key={msg.id} className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2">
+                          <p className="truncate text-xs font-semibold text-amber-950">
+                            From {msg.from_manager_name?.trim() || 'your manager'}
+                          </p>
+                          <p className="mt-1 line-clamp-2 text-xs text-amber-900">{msg.body}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 ) : null}
               </div>
-              <p className="text-xs text-slate-500">Pick a teammate conversation</p>
-            </div>
-            <ul className="max-h-[64vh] overflow-y-auto p-2">
-              {sidebarRows.map((row) => {
-                const rowRoots = byEmployee.get(row.employeeId) ?? [];
-                const activeRow =
-                  activeSent?.employee_id === row.employeeId || row.latestRootId === activeThreadId;
-                return (
-                  <li key={row.employeeId}>
-                    <button
-                      type="button"
-                      onClick={() => setActiveThreadId(row.latestRootId)}
-                      className={`w-full rounded-xl px-3 py-2 text-left ${
-                        activeRow
-                          ? 'bg-indigo-50 ring-1 ring-indigo-100'
-                          : 'hover:bg-slate-50'
+            </aside>
+
+            <div className="flex min-h-0 flex-col bg-[#efeae2]/70">
+              {activeSent ? (
+                <>
+                  <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{activeSent.employee_name}</p>
+                      <p className="text-xs text-slate-500">{activeSent.employee_email}</p>
+                    </div>
+                    <span
+                      className={`rounded-full px-2 py-1 text-[11px] font-medium ${
+                        anyUnreadInEmployee ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="truncate text-sm font-semibold text-slate-900">{row.employee_name}</p>
-                        {row.anyUnread ? (
-                          <span className="shrink-0 rounded-full bg-amber-100 px-1.5 text-[10px] font-semibold text-amber-900">
-                            Awaiting
-                          </span>
-                        ) : null}
-                      </div>
-                      <p className="truncate text-xs text-slate-500">{row.employee_email}</p>
-                      <p className="mt-1 truncate text-xs text-slate-600">{row.preview || '(no message)'}</p>
-                      <p className="mt-1 text-[11px] text-slate-400">
-                        {rowRoots.length > 1 && activeRow ? `${rowRoots.length} alerts · ` : null}
-                        {new Date(row.sortKey).toLocaleString()}
-                      </p>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </aside>
+                      {anyUnreadInEmployee ? 'Awaiting' : 'Seen'}
+                    </span>
+                  </header>
 
-          <div className="rounded-2xl border border-slate-200/70 bg-white shadow-card">
-            {activeSent ? (
-              <>
-                <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-900">{activeSent.employee_name}</p>
-                    <p className="text-xs text-slate-500">{activeSent.employee_email}</p>
-                  </div>
-                  <span
-                    className={`rounded-full px-2 py-1 text-[11px] font-medium ${
-                      anyUnreadInEmployee ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'
-                    }`}
-                  >
-                    {anyUnreadInEmployee ? 'Awaiting' : 'Seen'}
-                  </span>
-                </header>
-
-                <div
-                  ref={chatScrollRef}
-                  className="max-h-[52vh] space-y-3 overflow-y-auto bg-slate-50/60 px-4 py-4"
-                >
-                  {rootsForActiveEmployee.map((root, idx) => (
-                    <div key={root.id} className="space-y-3">
-                      {idx > 0 ? (
-                        <p className="text-center text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                          Earlier · {new Date(root.created_at).toLocaleString()}
-                        </p>
-                      ) : null}
-                      <div className="flex justify-end">
-                        <div className="max-w-[85%] rounded-2xl bg-indigo-600 px-3 py-2 text-sm text-white shadow-sm">
-                          <p className="whitespace-pre-wrap">{root.body}</p>
-                          <div className="mt-1 flex flex-wrap items-center justify-end gap-2 text-[10px] text-indigo-100">
-                            <span className="tabular-nums opacity-90">
-                              {new Date(root.created_at).toLocaleString()}
-                            </span>
-                            <span className="font-medium opacity-95">
-                              {root.read_at ? 'Seen' : 'Delivered'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                      {(root.replies ?? []).map((r) => (
-                        <div key={r.id} className={`flex ${r.from_manager ? 'justify-end' : 'justify-start'}`}>
-                          <div
-                            className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
-                              r.from_manager ? 'bg-indigo-600 text-white' : 'bg-white text-slate-800'
-                            }`}
-                          >
-                            <p className="whitespace-pre-wrap">{r.body}</p>
+                  <div ref={chatScrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+                    {flattenedMessages.map((msg, idx) => {
+                      const prev = idx > 0 ? flattenedMessages[idx - 1] : null;
+                      const showDateSeparator =
+                        !prev || !isSameCalendarDay(new Date(prev.createdAt), new Date(msg.createdAt));
+                      return (
+                        <div key={msg.id} className="space-y-2">
+                          {showDateSeparator ? (
+                            <div className="sticky top-1 z-10 flex justify-center">
+                              <span className="rounded-full border border-slate-200 bg-white/95 px-2 py-0.5 text-[10px] font-medium text-slate-500 shadow-sm backdrop-blur">
+                                {dateSeparatorLabel(msg.createdAt)}
+                              </span>
+                            </div>
+                          ) : null}
+                          <div className={`flex ${msg.fromManager ? 'justify-end' : 'justify-start'}`}>
                             <div
-                              className={`mt-1 flex flex-wrap items-center justify-end gap-2 text-[10px] ${
-                                r.from_manager ? 'text-indigo-100' : 'text-slate-400'
+                              className={`max-w-[82%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
+                                msg.fromManager
+                                  ? 'rounded-br-sm bg-emerald-600 text-white'
+                                  : 'rounded-bl-sm bg-white text-slate-800'
                               }`}
                             >
-                              <span className="tabular-nums opacity-90">
-                                {new Date(r.created_at).toLocaleString()}
-                              </span>
-                              {r.from_manager ? (
-                                <span className="font-medium opacity-95">Sent</span>
-                              ) : (
-                                <span className="text-slate-500">Reply</span>
-                              )}
+                              <p className="whitespace-pre-wrap">{msg.body}</p>
+                              <div className={`mt-1 flex justify-end gap-2 text-[10px] ${msg.fromManager ? 'text-emerald-100' : 'text-slate-400'}`}>
+                                <span>{new Date(msg.createdAt).toLocaleString()}</span>
+                                {msg.deliveryLabel ? <span>{msg.deliveryLabel}</span> : null}
+                              </div>
                             </div>
                           </div>
                         </div>
-                      ))}
-                      <div className="flex justify-end">
+                      );
+                    })}
+                    {latestRoot ? (
+                      <div className="flex justify-end pt-1">
                         <button
                           type="button"
-                          onClick={() => void removeSent(root.id)}
-                          disabled={deletingId === root.id}
+                          onClick={() => void removeSent(latestRoot.id)}
+                          disabled={deletingId === latestRoot.id}
                           className="text-[11px] font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
                         >
-                          {deletingId === root.id ? 'Deleting…' : 'Delete this alert'}
+                          {deletingId === latestRoot.id ? 'Deleting…' : 'Delete latest alert'}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {latestRoot ? (
+                    <div className="border-t border-slate-200 bg-white px-3 py-3">
+                      <div className="flex items-end gap-2">
+                        <textarea
+                          ref={composerRef}
+                          id={`mgr-reply-${latestRoot.id}`}
+                          rows={1}
+                          value={draftByRoot[latestRoot.id] ?? ''}
+                          onChange={(e) =>
+                            setDraftByRoot((prev) => ({ ...prev, [latestRoot.id]: e.target.value }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key !== 'Enter') return;
+                            if (e.shiftKey) return;
+                            e.preventDefault();
+                            if (sendingFor === latestRoot.id || deletingId === latestRoot.id) return;
+                            void sendManagerReply(latestRoot.id);
+                          }}
+                          disabled={sendingFor === latestRoot.id || deletingId === latestRoot.id}
+                          placeholder="Type a message"
+                          className="min-h-[44px] w-full resize-none rounded-2xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void sendManagerReply(latestRoot.id)}
+                          disabled={
+                            sendingFor === latestRoot.id ||
+                            deletingId === latestRoot.id ||
+                            !(draftByRoot[latestRoot.id]?.trim())
+                          }
+                          className="h-11 shrink-0 rounded-2xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 text-xs font-semibold text-white hover:opacity-95 disabled:opacity-50"
+                        >
+                          {sendingFor === latestRoot.id ? 'Sending…' : 'Send'}
                         </button>
                       </div>
                     </div>
-                  ))}
+                  ) : null}
+                </>
+              ) : (
+                <div className="flex h-full items-center justify-center p-6 text-center">
+                  <p className="max-w-sm text-sm text-slate-600">
+                    Select a chat from the left to start messaging in this workspace.
+                  </p>
                 </div>
-
-                {latestRoot ? (
-                  <div className="border-t border-slate-100 px-4 py-3">
-                    <label htmlFor={`mgr-reply-${latestRoot.id}`} className="text-xs font-semibold text-slate-600">
-                      Your reply
-                    </label>
-                    <textarea
-                      id={`mgr-reply-${latestRoot.id}`}
-                      rows={3}
-                      value={draftByRoot[latestRoot.id] ?? ''}
-                      onChange={(e) =>
-                        setDraftByRoot((prev) => ({ ...prev, [latestRoot.id]: e.target.value }))
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key !== 'Enter') return;
-                        if (e.shiftKey) return;
-                        e.preventDefault();
-                        if (sendingFor === latestRoot.id || deletingId === latestRoot.id) return;
-                        void sendManagerReply(latestRoot.id);
-                      }}
-                      disabled={sendingFor === latestRoot.id || deletingId === latestRoot.id}
-                      placeholder="Type your message… (Enter to send, Shift+Enter for new line)"
-                      className="mt-1 w-full resize-y rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50"
-                    />
-                    <p className="mt-1 text-[11px] text-slate-400">Enter sends · Shift+Enter new line</p>
-                    <div className="mt-2 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => void sendManagerReply(latestRoot.id)}
-                        disabled={
-                          sendingFor === latestRoot.id ||
-                          deletingId === latestRoot.id ||
-                          !(draftByRoot[latestRoot.id]?.trim())
-                        }
-                        className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2 text-xs font-semibold text-white hover:opacity-95 disabled:opacity-50"
-                      >
-                        {sendingFor === latestRoot.id ? 'Sending…' : 'Send'}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </>
-            ) : null}
+              )}
+            </div>
           </div>
         </section>
       )}
