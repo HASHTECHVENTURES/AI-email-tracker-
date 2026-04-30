@@ -126,26 +126,38 @@ export default function DepartmentsPage() {
   const load = useCallback(async (token: string) => {
     const res = await apiFetch('/departments', token);
     if (!res.ok) {
+      if (res.status === 401) {
+        await ctxSignOut();
+        return;
+      }
       setError('Could not load departments');
       return;
     }
     setRows((await res.json()) as Department[]);
-  }, []);
+  }, [ctxSignOut]);
 
   const loadTeam = useCallback(async (token: string) => {
     setTeamLoadError(null);
     const res = await apiFetch('/employees', token);
     if (!res.ok) {
+      if (res.status === 401) {
+        await ctxSignOut();
+        return;
+      }
       setTeamLoadError('Could not load team list');
       setTeamMembers([]);
       return;
     }
     setTeamMembers((await res.json()) as TeamMember[]);
-  }, []);
+  }, [ctxSignOut]);
 
   const loadCeoSentChats = useCallback(async (token: string) => {
     const res = await apiFetch('/team-alerts/sent', token);
     if (!res.ok) {
+      if (res.status === 401) {
+        await ctxSignOut();
+        return;
+      }
       setError(await readApiErrorMessage(res, 'Could not load conversations.'));
       setCeoSentItems([]);
       return;
@@ -157,7 +169,7 @@ export default function DepartmentsPage() {
         replies: (x.replies ?? []).map((r) => ({ ...r, from_manager: r.from_manager === true })),
       })),
     );
-  }, []);
+  }, [ctxSignOut]);
 
   useEffect(() => {
     if (authLoading) return;
