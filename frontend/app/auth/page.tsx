@@ -324,77 +324,83 @@ function AuthPageInner() {
     let cancelled = false;
 
     async function run() {
-      if (authCtxLoading) return;
+      try {
+        if (authCtxLoading) return;
 
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (cancelled) return;
+        const supabase = createClient();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (cancelled) return;
 
-      if (!session) {
-        setPhase('auth');
-        return;
-      }
-
-      if (authCtxError) {
-        setInfo(authCtxError);
-        setPhase('auth');
-        return;
-      }
-
-      const token = session.access_token;
-      const statusRes = await apiFetch('/auth/status', token);
-      if (!statusRes.ok) {
-        if (statusRes.status === 401) {
-          await supabase.auth.signOut();
+        if (!session) {
+          setPhase('auth');
+          return;
         }
-        setPhase('auth');
-        return;
-      }
-      const status = await statusRes.json();
-      if (cancelled) return;
 
-      if (await redirectIfPlatformAdmin(token)) {
-        return;
-      }
+        if (authCtxError) {
+          setInfo(authCtxError);
+          setPhase('auth');
+          return;
+        }
 
-      if (!status.needs_onboarding && status.user) {
-        await refreshMe(token);
-        router.replace(
-          consumeGmailConnectedRedirect(postLoginPath(status.user.role, safeNext), gmailConnectedParam),
-        );
-        return;
-      }
+        const token = session.access_token;
+        const statusRes = await apiFetch('/auth/status', token);
+        if (!statusRes.ok) {
+          if (statusRes.status === 401) {
+            await supabase.auth.signOut();
+          }
+          setPhase('auth');
+          return;
+        }
+        const status = await statusRes.json();
+        if (cancelled) return;
 
-      if (completeFromEmail) {
-        const pending = readPendingSignup();
-        if (pending?.full_name && pending?.company_name) {
-          const onboardRes = await apiFetch('/auth/onboarding', token, {
-            method: 'POST',
-            body: JSON.stringify({
-              full_name: pending.full_name,
-              company_name: pending.company_name,
-            }),
-          });
-          if (cancelled) return;
-          if (onboardRes.ok) {
-            const outcome = await finalizeOnboarding(session, onboardRes, { quiet: true });
+        if (await redirectIfPlatformAdmin(token)) {
+          return;
+        }
+
+        if (!status.needs_onboarding && status.user) {
+          await refreshMe(token);
+          router.replace(
+            consumeGmailConnectedRedirect(postLoginPath(status.user.role, safeNext), gmailConnectedParam),
+          );
+          return;
+        }
+
+        if (completeFromEmail) {
+          const pending = readPendingSignup();
+          if (pending?.full_name && pending?.company_name) {
+            const onboardRes = await apiFetch('/auth/onboarding', token, {
+              method: 'POST',
+              body: JSON.stringify({
+                full_name: pending.full_name,
+                company_name: pending.company_name,
+              }),
+            });
             if (cancelled) return;
-            if (outcome === 'navigated') return;
+            if (onboardRes.ok) {
+              const outcome = await finalizeOnboarding(session, onboardRes, { quiet: true });
+              if (cancelled) return;
+              if (outcome === 'navigated') return;
+            }
           }
         }
-      }
 
-      const pending = readPendingSignup();
-      if (pending) {
-        setFullName((prev) => prev || pending.full_name);
-        setCompanyName((prev) => prev || pending.company_name);
-        if (pending.email) {
-          setPendingEmailHint((prev) => prev ?? pending.email ?? null);
+        const pending = readPendingSignup();
+        if (pending) {
+          setFullName((prev) => prev || pending.full_name);
+          setCompanyName((prev) => prev || pending.company_name);
+          if (pending.email) {
+            setPendingEmailHint((prev) => prev ?? pending.email ?? null);
+          }
         }
+        setPhase('onboarding');
+      } catch {
+        if (cancelled) return;
+        setInfo('Session check failed. Please sign in again.');
+        setPhase('auth');
       }
-      setPhase('onboarding');
     }
 
     void run();
@@ -413,6 +419,14 @@ function AuthPageInner() {
     gmailConnectedParam,
     refreshMe,
   ]);
+
+  useEffect(() => {
+    if (phase !== 'boot' || authCtxLoading) return;
+    const id = window.setTimeout(() => {
+      setPhase('auth');
+    }, 1500);
+    return () => window.clearTimeout(id);
+  }, [phase, authCtxLoading]);
 
   /** Map SignupRole UI value → backend API role string. */
   function signupRoleToApiRole(r: SignupRole | ''): string | null {
