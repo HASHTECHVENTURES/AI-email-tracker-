@@ -168,6 +168,13 @@ export default function ManagerMessagesPage() {
   }, [byEmployee]);
 
   const firstLatestRootId = sidebarRows[0]?.latestRootId ?? null;
+  const receivedRoots = useMemo(
+    () =>
+      receivedItems
+        .filter((i) => !i.in_reply_to)
+        .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)),
+    [receivedItems],
+  );
 
   useEffect(() => {
     if (items.length && (!activeThreadId || !items.some((i) => i.id === activeThreadId))) {
@@ -197,13 +204,6 @@ export default function ManagerMessagesPage() {
         row.preview.toLowerCase().includes(q),
     );
   }, [sidebarRows, searchQuery]);
-  const receivedRoots = useMemo(
-    () =>
-      receivedItems
-        .filter((i) => !i.in_reply_to)
-        .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)),
-    [receivedItems],
-  );
 
   useEffect(() => {
     const el = chatScrollRef.current;
