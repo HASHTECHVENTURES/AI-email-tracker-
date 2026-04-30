@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { apiFetch, readApiErrorMessage } from '@/lib/api';
+import { apiFetch, readApiErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
@@ -69,6 +69,7 @@ function ConversationReadPageInner() {
       const res = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/messages`, token);
       if (cancelled) return;
       if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
         setLoadError(await readApiErrorMessage(res, 'Could not load this thread.'));
         return;
       }
@@ -82,7 +83,7 @@ function ConversationReadPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [conversationId, token]);
+  }, [conversationId, token, ctxSignOut]);
 
   async function markDone() {
     if (!token || !conversationId) return;
@@ -92,6 +93,7 @@ function ConversationReadPageInner() {
         method: 'POST',
       });
       if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
         setLoadError(await readApiErrorMessage(res, 'Could not update.'));
         return;
       }
@@ -118,6 +120,7 @@ function ConversationReadPageInner() {
         method: 'DELETE',
       });
       if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
         setLoadError(await readApiErrorMessage(res, 'Could not delete this thread.'));
         return;
       }

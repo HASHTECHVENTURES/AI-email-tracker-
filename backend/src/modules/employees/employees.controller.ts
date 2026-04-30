@@ -3,13 +3,13 @@ import {
   Body,
   Controller,
   Delete,
-  ForbiddenException,
   Get,
   Patch,
   Param,
   Post,
   Query,
   Req,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { getRequestContext } from '../common/request-context';
@@ -38,7 +38,7 @@ export class EmployeesController {
     const ctx = getRequestContext(req);
     const user = req.user;
     if (!user) {
-      throw new ForbiddenException();
+      throw new UnauthorizedException('User profile not loaded');
     }
     if (!body.name?.trim() || !body.email?.trim() || !body.departmentId || !body.password?.trim()) {
       throw new BadRequestException(
@@ -71,7 +71,7 @@ export class EmployeesController {
     const ctx = getRequestContext(req);
     const user = req.user;
     if (!user) {
-      throw new ForbiddenException();
+      throw new UnauthorizedException('User profile not loaded');
     }
     const password = body.password?.trim() ?? '';
     if (!password) {
@@ -100,7 +100,7 @@ export class EmployeesController {
     const ctx = getRequestContext(req);
     const user = req.user;
     if (!user) {
-      throw new ForbiddenException();
+      throw new UnauthorizedException('User profile not loaded');
     }
     return this.employeesService.ensureMyMailbox(ctx, user);
   }

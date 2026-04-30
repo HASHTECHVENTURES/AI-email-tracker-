@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
@@ -125,6 +125,7 @@ export default function SettingsPage() {
       setSlaDraft(String(s.default_sla_hours ?? 24));
       setSettingsLoadState('ready');
     } else {
+      if (await tryRecoverFromUnauthorized(sRes, ctxSignOut)) return;
       setSettingsLoadState((prev) => (prev === 'pending' ? 'failed' : prev));
       setError(
         hadSuccessfulSettingsFetch.current
@@ -142,7 +143,7 @@ export default function SettingsPage() {
         last_sync_at: b.last_sync_at ?? null,
       });
     }
-  }, []);
+  }, [ctxSignOut]);
 
   useEffect(() => {
     if (authLoading) return;

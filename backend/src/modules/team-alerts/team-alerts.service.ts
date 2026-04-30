@@ -231,7 +231,7 @@ export class TeamAlertsService {
       throw new NotFoundException('Thread not found');
     }
     if (root.company_id !== ctx.companyId) {
-      throw new ForbiddenException();
+      throw new ForbiddenException('Team alert is outside your company');
     }
     if ((root as { in_reply_to?: string | null }).in_reply_to) {
       throw new BadRequestException('threadRootId must be your original message');
@@ -446,7 +446,7 @@ export class TeamAlertsService {
 
   async markRead(ctx: RequestContext, alertId: string) {
     if ((ctx.role !== 'EMPLOYEE' && !ctx.actAsEmployeePortal) || !ctx.employeeId) {
-      throw new ForbiddenException();
+      throw new ForbiddenException('Only employees or mailbox view can mark alerts read');
     }
 
     const { data: row, error: fetchErr } = await this.supabase
@@ -462,7 +462,7 @@ export class TeamAlertsService {
     const { expandedIds } = await this.employeesService.getEmployeeAliasMapping(ctx.companyId, [ctx.employeeId]);
 
     if (!expandedIds.includes(row.employee_id)) {
-      throw new ForbiddenException();
+      throw new ForbiddenException('This alert does not belong to your inbox');
     }
 
     const now = new Date().toISOString();
@@ -490,7 +490,7 @@ export class TeamAlertsService {
       throw new NotFoundException('Alert not found');
     }
     if (row.company_id !== ctx.companyId) {
-      throw new ForbiddenException();
+      throw new ForbiddenException('Team alert is outside your company');
     }
 
     const inReplyTo = (row as { in_reply_to?: string | null }).in_reply_to ?? null;
@@ -524,7 +524,7 @@ export class TeamAlertsService {
     } else if (ctx.role === 'CEO') {
       /* company scoped above */
     } else {
-      throw new ForbiddenException();
+      throw new ForbiddenException('You do not have permission to delete this alert');
     }
 
     const { error: delErr } = await this.supabase.from('team_alerts').delete().eq('id', alertId);

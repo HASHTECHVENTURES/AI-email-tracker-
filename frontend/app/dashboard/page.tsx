@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { apiFetch, readApiErrorMessage } from '@/lib/api';
+import { apiFetch, readApiErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth, type AuthMe as Me } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
 import type { CeoDeptDirectoryRow } from '@/components/CeoDashboardScopePanel';
@@ -293,6 +293,7 @@ export default function DashboardPage() {
       if (taRes.ok) {
         setTeamAlerts((await taRes.json()) as { items: TeamAlertItem[]; unread_count: number });
       } else {
+        if (await tryRecoverFromUnauthorized(taRes, ctxSignOut)) return;
         setTeamAlerts({ items: [], unread_count: 0 });
       }
     } else {

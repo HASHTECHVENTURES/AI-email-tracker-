@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { apiFetch, readApiErrorMessage } from '@/lib/api';
+import { apiFetch, readApiErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
@@ -148,6 +148,7 @@ export default function MessagesPage() {
     if (!token) return;
     const res = await apiFetch('/team-alerts/mine', token);
     if (!res.ok) {
+      if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
       setError(await readApiErrorMessage(res, 'Could not load your messages.'));
       setItems([]);
       return;
@@ -155,7 +156,7 @@ export default function MessagesPage() {
     const body = (await res.json()) as { items?: TeamAlertItem[] };
     setItems(body.items ?? []);
     setError(null);
-  }, [token]);
+  }, [token, ctxSignOut]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -209,6 +210,7 @@ export default function MessagesPage() {
         body: JSON.stringify({ parentAlertId, message }),
       });
       if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
         setError(await readApiErrorMessage(res, 'Could not send reply.'));
         return;
       }
@@ -225,6 +227,7 @@ export default function MessagesPage() {
       method: 'PATCH',
     });
     if (!res.ok) {
+      if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
       setError(await readApiErrorMessage(res, 'Could not dismiss this message.'));
       return;
     }

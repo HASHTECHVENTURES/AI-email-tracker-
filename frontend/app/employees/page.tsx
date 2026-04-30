@@ -3,9 +3,9 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { apiFetch, oauthErrorMessage } from '@/lib/api';
+import { apiFetch, oauthErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
+import { subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
@@ -115,14 +115,19 @@ function EmployeesPageInner() {
       apiFetch('/system/status', token),
     ]);
     if (!empRes.ok) {
+      if (await tryRecoverFromUnauthorized(empRes, ctxSignOut)) return;
       setError('Could not load employees.');
       return;
     }
     setEmployees((await empRes.json()) as EmployeeRow[]);
-    if (deptRes.ok) {
+    if (!deptRes.ok) {
+      if (await tryRecoverFromUnauthorized(deptRes, ctxSignOut)) return;
+    } else {
       setDepartments((await deptRes.json()) as Department[]);
     }
-    if (sysRes.ok) {
+    if (!sysRes.ok) {
+      if (await tryRecoverFromUnauthorized(sysRes, ctxSignOut)) return;
+    } else {
       const s = await sysRes.json();
       setLastSyncLabel(s.last_sync_at ? new Date(s.last_sync_at).toLocaleString() : null);
       setIsActive(Boolean(s.is_active));
@@ -199,7 +204,11 @@ function EmployeesPageInner() {
     (async () => {
       if (!token) return;
       const res = await apiFetch('/dashboard', token);
-      if (!res.ok || cancelled) return;
+      if (cancelled) return;
+      if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
+        return;
+      }
       const body = (await res.json()) as { conversations?: DashboardConv[] };
       const conv = body.conversations ?? [];
       const map: Record<string, { pending: number; missed: number }> = {};
@@ -214,22 +223,7 @@ function EmployeesPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [me, token]);
-
-  async function connectGmail(employeeId: string) {
-    const supabase = createClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) return;
-    const res = await apiFetch(`/auth/gmail/authorize-url?employee_id=${encodeURIComponent(employeeId)}`, session.access_token);
-    const body = (await res.json().catch(() => ({}))) as { url?: string; message?: string };
-    if (!res.ok || !body.url) {
-      setError(body.message || 'Could not start Gmail connection');
-      return;
-    }
-    openGmailOAuthWindow(body.url);
-  }
+  }, [me, token, ctxSignOut]);
 
   async function deleteEmployee(employeeId: string, employeeName: string) {
     setError(null);
@@ -244,6 +238,7 @@ function EmployeesPageInner() {
       method: 'DELETE',
     });
     if (!res.ok) {
+      if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
       const b = await res.json().catch(() => ({}));
       setError((b.message as string) || 'Could not delete employee');
       return;
@@ -276,6 +271,7 @@ function EmployeesPageInner() {
         body: JSON.stringify({ sla_hours: value }),
       });
       if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
         const b = await res.json().catch(() => ({}));
         setError((b.message as string) || 'Could not update SLA');
         return;
@@ -306,6 +302,7 @@ function EmployeesPageInner() {
         body: JSON.stringify(body),
       });
       if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
         const b = await res.json().catch(() => ({}));
         setError((b.message as string) || 'Could not update mailbox pauses');
         return;
@@ -415,6 +412,7 @@ function EmployeesPageInner() {
         });
         const b = await res.json().catch(() => ({}));
         if (!res.ok) {
+          if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
           setAddError((b.message as string) || 'Could not add them to this roster');
           return;
         }
@@ -454,6 +452,7 @@ function EmployeesPageInner() {
       });
       const b = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
         setAddError((b.message as string) || 'Could not create employee');
         return;
       }
@@ -754,20 +753,6 @@ function EmployeesPageInner() {
                       </td>
                       <td className="px-3 py-3">
                         <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void connectGmail(emp.id)}
-                            className="rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs text-white transition-all duration-200 hover:bg-blue-700"
-                          >
-                            {emp.gmail_connected ? 'Reconnect' : 'Connect'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => router.push(`/employees/${encodeURIComponent(emp.id)}/mails`)}
-                            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700 transition-all duration-200 hover:bg-gray-50"
-                          >
-                            View mails
-                          </button>
                           <button
                             type="button"
                             onClick={() => void deleteEmployee(emp.id, emp.name)}

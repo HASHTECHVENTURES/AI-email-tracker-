@@ -5,6 +5,7 @@ import {
   Get,
   NotFoundException,
   Param,
+  Post,
   Query,
   Req,
 } from '@nestjs/common';
@@ -137,7 +138,8 @@ export class DashboardController {
     return report ?? emptyAiReport;
   }
 
-  @Get('ai-report/generate')
+  /** POST avoids accidental double-fetch / CDN caching of a mutating operation. */
+  @Post('ai-report/generate')
   async generateAiReportNow(@Req() req: Request) {
     const ctx = getRequestContext(req);
     if (ctx.role === 'HEAD') {

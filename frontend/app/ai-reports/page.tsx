@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
@@ -99,6 +99,7 @@ export default function AiReportsPage() {
       apiFetch('/system/status', t),
       apiFetch('/dashboard/ai-reports?limit=100', t),
     ]);
+    if (!sysRes.ok && (await tryRecoverFromUnauthorized(sysRes, ctxSignOut))) return;
     if (sysRes.ok) {
       const s = (await sysRes.json()) as SystemStatus;
       setLastSyncLabel(s.last_sync_at ? new Date(s.last_sync_at).toLocaleString() : null);
@@ -149,9 +150,10 @@ export default function AiReportsPage() {
       );
       setError(null);
     } else {
+      if (await tryRecoverFromUnauthorized(repRes, ctxSignOut)) return;
       setError('Could not load reports.');
     }
-  }, []);
+  }, [ctxSignOut]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -199,8 +201,9 @@ export default function AiReportsPage() {
     setGenerating(true);
     setGenError(null);
     try {
-      const res = await apiFetch('/dashboard/ai-report/generate', token);
+      const res = await apiFetch('/dashboard/ai-report/generate', token, { method: 'POST' });
       if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
         setGenError(await parseApiErrorMessage(res));
         return;
       }

@@ -9,6 +9,7 @@ import {
   Patch,
   Post,
   Req,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { getRequestContext } from '../common/request-context';
@@ -40,7 +41,7 @@ export class TeamAlertsController {
   async list(@Req() req: Request) {
     const ctx = this.employeeInboxContext(req);
     const user = req.user;
-    if (!user) throw new ForbiddenException();
+    if (!user) throw new UnauthorizedException('User profile not loaded');
     return this.teamAlertsService.listForEmployee(ctx);
   }
 
@@ -48,7 +49,7 @@ export class TeamAlertsController {
   async listSent(@Req() req: Request) {
     const ctx = getRequestContext(req);
     const user = req.user;
-    if (!user) throw new ForbiddenException();
+    if (!user) throw new UnauthorizedException('User profile not loaded');
     return this.teamAlertsService.listSentByManager(ctx, user.id);
   }
 
@@ -59,7 +60,7 @@ export class TeamAlertsController {
   ) {
     const ctx = this.employeeInboxContext(req);
     const user = req.user;
-    if (!user) throw new ForbiddenException();
+    if (!user) throw new UnauthorizedException('User profile not loaded');
     const employeeId = body.employeeId?.trim();
     const recipientEmail = body.recipientEmail?.trim();
     const message = body.message ?? '';
@@ -88,9 +89,9 @@ export class TeamAlertsController {
     @Req() req: Request,
     @Body() body: { parentAlertId?: string; message?: string },
   ) {
-    const ctx = getRequestContext(req);
+    const ctx = this.employeeInboxContext(req);
     const user = req.user;
-    if (!user) throw new ForbiddenException();
+    if (!user) throw new UnauthorizedException('User profile not loaded');
     const parentAlertId = body.parentAlertId?.trim();
     const message = body.message ?? '';
     if (!parentAlertId) {
@@ -114,7 +115,7 @@ export class TeamAlertsController {
   ) {
     const ctx = getRequestContext(req);
     const user = req.user;
-    if (!user) throw new ForbiddenException();
+    if (!user) throw new UnauthorizedException('User profile not loaded');
     const threadRootId = body.threadRootId?.trim();
     const message = body.message ?? '';
     if (!threadRootId) {
@@ -135,7 +136,7 @@ export class TeamAlertsController {
   async markRead(@Req() req: Request, @Param('id') id: string) {
     const ctx = this.employeeInboxContext(req);
     const user = req.user;
-    if (!user) throw new ForbiddenException();
+    if (!user) throw new UnauthorizedException('User profile not loaded');
     return this.teamAlertsService.markRead(ctx, id);
   }
 
@@ -143,7 +144,7 @@ export class TeamAlertsController {
   async remove(@Req() req: Request, @Param('id') id: string) {
     const ctx = this.employeeInboxContext(req);
     const user = req.user;
-    if (!user) throw new ForbiddenException();
+    if (!user) throw new UnauthorizedException('User profile not loaded');
     await this.teamAlertsService.deleteAlert(ctx, user.id, id.trim());
     await this.auditLogService.log({
       userId: user.id,

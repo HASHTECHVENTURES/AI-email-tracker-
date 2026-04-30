@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { apiFetch, readApiErrorMessage } from '@/lib/api';
+import { apiFetch, readApiErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
@@ -84,6 +84,7 @@ export default function ManagerMessagesPage() {
         : Promise.resolve({ ok: false } as Response),
     ]);
     if (!res.ok) {
+      if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
       setError(await readApiErrorMessage(res, 'Could not load conversations.'));
       setItems([]);
       setReceivedItems([]);
@@ -102,11 +103,14 @@ export default function ManagerMessagesPage() {
     if (receivedRes.ok) {
       const receivedBody = (await receivedRes.json()) as { items?: ReceivedItem[] };
       setReceivedItems(receivedBody.items ?? []);
+    } else if (receivedRes instanceof Response && !receivedRes.ok) {
+      if (await tryRecoverFromUnauthorized(receivedRes, ctxSignOut)) return;
+      setReceivedItems([]);
     } else {
       setReceivedItems([]);
     }
     setError(null);
-  }, [me?.linked_employee_id, token]);
+  }, [me?.linked_employee_id, token, ctxSignOut]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -299,6 +303,7 @@ export default function ManagerMessagesPage() {
         body: JSON.stringify({ threadRootId, message }),
       });
       if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
         setError(await readApiErrorMessage(res, 'Could not send your reply.'));
         return;
       }
@@ -320,6 +325,7 @@ export default function ManagerMessagesPage() {
         body: JSON.stringify({ parentAlertId, message }),
       });
       if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
         setError(await readApiErrorMessage(res, 'Could not send your reply.'));
         return;
       }

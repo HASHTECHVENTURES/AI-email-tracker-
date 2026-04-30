@@ -69,18 +69,34 @@ function managerDepartmentHeader(): Record<string, string> {
   }
 }
 
+/**
+ * Routes where HEAD + linked mailbox should send `x-act-as-employee: 1` when the session flag is on.
+ * Keep roster/admin routes (e.g. `/employees` POST) off this list so manager actions stay manager-scoped.
+ */
+export function actAsEmployeePathAllowed(pathname: string): boolean {
+  const p = pathname.startsWith('/') ? pathname : `/${pathname}`;
+  return (
+    p === '/dashboard' ||
+    p.startsWith('/dashboard/') ||
+    p === '/messages' ||
+    p.startsWith('/conversation/') ||
+    p === '/manager-messages' ||
+    p.startsWith('/manager-messages/') ||
+    p === '/my-email' ||
+    p.startsWith('/my-email/') ||
+    p === '/my-mail' ||
+    p.startsWith('/my-mail/') ||
+    p === '/team-mail-sync' ||
+    p.startsWith('/team-mail-sync/')
+  );
+}
+
 /** HEAD + employee view: only on routes that should use mailbox/employee scope (not e.g. /employees POST). */
 function actAsEmployeeHeader(): Record<string, string> {
   if (typeof window === 'undefined') return {};
   try {
     if (sessionStorage.getItem(ACT_AS_EMPLOYEE_STORAGE_KEY) !== '1') return {};
-    const p = window.location.pathname;
-    const allowed =
-      p === '/dashboard' ||
-      p === '/messages' ||
-      p.startsWith('/conversation/') ||
-      p.startsWith('/dashboard/');
-    if (!allowed) return {};
+    if (!actAsEmployeePathAllowed(window.location.pathname)) return {};
     return { 'x-act-as-employee': '1' };
   } catch {
     return {};
@@ -246,6 +262,15 @@ export async function readApiErrorMessage(
 ): Promise<string> {
   try {
     const body = (await res.json()) as ApiJsonError;
+    if (res.status === 429 && body.code === 'RATE_LIMITED') {
+      const base =
+        typeof body.message === 'string' && body.message.trim()
+          ? body.message.trim()
+          : typeof body.error === 'string' && body.error.trim()
+            ? body.error.trim()
+            : 'Too many requests';
+      return `${base}. Wait a moment and try again.`;
+    }
     const msg =
       typeof body.message === 'string' && body.message.trim()
         ? body.message.trim()
@@ -278,6 +303,19 @@ export async function readApiErrorMessage(
   }
   if (res.status >= 500) return 'Server issue. Please try again in a moment.';
   return fallback;
+}
+
+/**
+ * After a non-OK API response: if 401, runs `signOut` (should clear session and navigate to `/auth`) and returns true.
+ * Caller should return early without showing a generic error banner.
+ */
+export async function tryRecoverFromUnauthorized(
+  res: Response,
+  signOut: () => void | Promise<void>,
+): Promise<boolean> {
+  if (res.status !== 401) return false;
+  await Promise.resolve(signOut());
+  return true;
 }
 
 export function oauthErrorMessage(code: string | null | undefined): string | null {

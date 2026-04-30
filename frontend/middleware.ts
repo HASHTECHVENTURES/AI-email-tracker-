@@ -96,6 +96,7 @@ export async function middleware(request: NextRequest) {
       '/manager-messages',
       '/my-email',
       '/my-mail',
+      '/team-mail-sync',
     ];
     const isAdminLogin = pathname === '/admin/login';
     const isProtected = !isAdminLogin && protectedPaths.some((p) => pathname.startsWith(p));
@@ -145,5 +146,7 @@ export const config = {
     '/my-email/:path*',
     '/my-mail',
     '/my-mail/:path*',
+    '/team-mail-sync',
+    '/team-mail-sync/:path*',
   ],
 };

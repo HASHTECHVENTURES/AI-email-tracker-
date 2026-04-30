@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { apiFetch, oauthErrorMessage } from '@/lib/api';
+import { apiFetch, oauthErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
@@ -131,6 +131,7 @@ function TeamMailSyncInner() {
       apiFetch('/dashboard', t),
     ]);
     if (!empRes.ok) {
+      if (await tryRecoverFromUnauthorized(empRes, ctxSignOut)) return;
       const j = await empRes.json().catch(() => ({}));
       setError((j as { message?: string }).message ?? 'Could not load team mailboxes');
       setRows([]);
@@ -145,7 +146,7 @@ function TeamMailSyncInner() {
       setConversations([]);
     }
     setError(null);
-  }, []);
+  }, [ctxSignOut]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -227,6 +228,9 @@ function TeamMailSyncInner() {
         session.access_token,
       );
       const body = (await res.json().catch(() => ({}))) as { url?: string; message?: string };
+      if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
+      }
       if (!res.ok || !body.url) {
         setError(body.message || 'Could not start Google connection');
         return;

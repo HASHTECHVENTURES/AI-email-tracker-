@@ -77,10 +77,15 @@ export class ConversationsController {
   @Get()
   async list(@Req() req: Request, @Query('employee_id') employeeId?: string) {
     const ctx = getRequestContext(req);
+    const actAs = ctx.actAsEmployeePortal === true;
+    if (ctx.role === 'HEAD' && !actAs && !ctx.departmentId) {
+      throw new ForbiddenException('This manager is not assigned to an active department.');
+    }
     const conversations = await this.conversationsService.getAll({
       companyId: ctx.companyId,
-      departmentId: ctx.role === 'HEAD' ? ctx.departmentId : undefined,
-      employeeId: ctx.role === 'EMPLOYEE' ? ctx.employeeId : employeeId,
+      departmentId: actAs || ctx.role !== 'HEAD' ? undefined : ctx.departmentId,
+      employeeId:
+        ctx.role === 'EMPLOYEE' || actAs ? ctx.employeeId : employeeId,
     });
     return { total: conversations.length, conversations };
   }

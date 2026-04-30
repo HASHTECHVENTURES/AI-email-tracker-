@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { apiFetch, readApiErrorMessage } from '@/lib/api';
+import { apiFetch, readApiErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
@@ -63,11 +63,15 @@ export default function EmployeeMailsPage() {
         apiFetch(`/employees/${encodeURIComponent(employeeId)}/messages?limit=40`, token),
       ]);
       if (cancelled) return;
+      if (!empRes.ok) {
+        if (await tryRecoverFromUnauthorized(empRes, ctxSignOut)) return;
+      }
       if (empRes.ok) {
         const rows = (await empRes.json()) as EmployeeLite[];
         setEmployee(Array.isArray(rows) ? rows.find((e) => e.id === employeeId) ?? null : null);
       }
       if (!msgRes.ok) {
+        if (await tryRecoverFromUnauthorized(msgRes, ctxSignOut)) return;
         setError(await readApiErrorMessage(msgRes, 'Could not load mail for this mailbox.'));
         setMessages([]);
         return;
@@ -78,7 +82,7 @@ export default function EmployeeMailsPage() {
     return () => {
       cancelled = true;
     };
-  }, [token, employeeId]);
+  }, [token, employeeId, ctxSignOut]);
 
   if (authLoading || !me) {
     return (
