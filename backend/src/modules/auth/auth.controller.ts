@@ -146,6 +146,7 @@ export class AuthController {
       normalizedEmployeeId,
       req.user.id,
       req.user.email?.trim().toLowerCase() ?? '',
+      req.user.linkedEmployeeId ?? undefined,
     );
     const state = await this.oauthStateService.createState({
       employeeId: normalizedEmployeeId,
@@ -232,6 +233,7 @@ export class AuthController {
         payload.employee_id,
         actor.id,
         actor.email?.trim().toLowerCase() ?? '',
+        actor.linkedEmployeeId ?? undefined,
       );
 
       const validEmployee = await this.employeesService.employeeExists(payload.employee_id);

@@ -803,6 +803,7 @@ export class EmployeesService {
     employeeId: string,
     actorUserId: string,
     actorEmailNorm?: string,
+    actorLinkedEmployeeId?: string,
   ): Promise<void> {
     if (ctx.role === 'EMPLOYEE') {
       if (!ctx.employeeId || ctx.employeeId !== employeeId) {
@@ -829,11 +830,13 @@ export class EmployeesService {
     }
     if (ctx.role === 'HEAD') {
       const norm = actorEmailNorm?.trim().toLowerCase() ?? '';
+      const linkedEmployeeId = actorLinkedEmployeeId?.trim() ?? '';
       const isOwnSelfMailbox =
         row.mailbox_type === 'SELF' &&
         ((row.created_by != null && row.created_by === actorUserId) ||
           (!row.created_by && norm.length > 0 && row.email.trim().toLowerCase() === norm));
-      if (isOwnSelfMailbox) {
+      const isOwnLinkedEmployeeMailbox = linkedEmployeeId.length > 0 && linkedEmployeeId === employeeId;
+      if (isOwnSelfMailbox || isOwnLinkedEmployeeMailbox) {
         return;
       }
       if (!ctx.departmentId || row.department_id !== ctx.departmentId) {
