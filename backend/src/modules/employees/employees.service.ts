@@ -2440,6 +2440,19 @@ export class EmployeesService {
       }
     }
 
+    // Legacy fallback: some employee portal users may exist without linked_employee_id.
+    // If an EMPLOYEE user exists with the same email, treat that mailbox email as portal-enabled.
+    const { data: employeeUsersByEmail } = await this.supabase
+      .from('users')
+      .select('email')
+      .eq('company_id', companyId)
+      .eq('role', 'EMPLOYEE')
+      .in('email', emails);
+    for (const u of employeeUsersByEmail ?? []) {
+      const em = String((u as { email?: string }).email ?? '').trim().toLowerCase();
+      if (em) portalEmails.add(em);
+    }
+
     return { connectedEmails, portalEmails };
   }
 
