@@ -1091,7 +1091,6 @@ export class EmployeesService {
       )
       .eq('company_id', companyId)
       .eq('is_active', true)
-      .eq('roster_duplicate', false)
       .or('mailbox_type.is.null,mailbox_type.eq.TEAM')
       .order('name', { ascending: true });
 
@@ -1108,7 +1107,6 @@ export class EmployeesService {
         )
         .eq('company_id', companyId)
         .eq('is_active', true)
-        .eq('roster_duplicate', false)
         .order('name', { ascending: true });
       if (r2.error) {
         this.logger.error('Failed to list team mailboxes (legacy)', r2.error.message);
