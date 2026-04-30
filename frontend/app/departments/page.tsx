@@ -77,6 +77,7 @@ export default function DepartmentsPage() {
   const [advancedAction, setAdvancedAction] = useState<'secondary' | 'convert' | 'password' | null>(null);
   const [recipientFilter, setRecipientFilter] = useState<RecipientFilter>('all');
   const [recipientSearch, setRecipientSearch] = useState('');
+  const [locHash, setLocHash] = useState('');
 
   const load = useCallback(async (token: string) => {
     const res = await apiFetch('/departments', token);
@@ -123,11 +124,17 @@ export default function DepartmentsPage() {
   useEffect(() => {
     if (pathname !== '/departments') return;
     if (typeof window === 'undefined') return;
+    const sync = () => setLocHash(window.location.hash);
+    sync();
+    window.addEventListener('hashchange', sync);
     if (window.location.hash !== '#team-members') return;
     const el = document.getElementById('team-members');
     if (!el) return;
     const t = window.setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
-    return () => window.clearTimeout(t);
+    return () => {
+      window.clearTimeout(t);
+      window.removeEventListener('hashchange', sync);
+    };
   }, [pathname]);
 
   async function reloadTeam() {
@@ -413,6 +420,7 @@ export default function DepartmentsPage() {
   }
   const isCeo = me.role === 'CEO';
   const isHead = isDepartmentManagerRole(me.role);
+  const ceoMessagesMode = isCeo && locHash === '#team-members';
   const managerEmailSet = useMemo(
     () =>
       new Set(
@@ -462,6 +470,7 @@ export default function DepartmentsPage() {
         </div>
       ) : null}
 
+      {!ceoMessagesMode ? (
       <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
         <h2 className="text-base font-semibold text-slate-900">Directory</h2>
         {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
@@ -497,8 +506,9 @@ export default function DepartmentsPage() {
           </div>
         )}
       </section>
+      ) : null}
 
-      {isCeo ? (
+      {isCeo && !ceoMessagesMode ? (
         <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
           <h2 className="text-base font-semibold text-slate-900">Manager assignment</h2>
           <p className="mt-1 text-sm text-slate-500">Assign manager to team.</p>
@@ -543,7 +553,7 @@ export default function DepartmentsPage() {
         </section>
       ) : null}
 
-      {isCeo ? (
+      {isCeo && !ceoMessagesMode ? (
         <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
           <h2 className="text-base font-semibold text-slate-900">Advanced manager actions</h2>
           <p className="mt-1 text-sm text-slate-500">Use only when needed.</p>
