@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
@@ -40,6 +40,35 @@ type TeamMember = {
 };
 
 type RecipientFilter = 'all' | 'manager' | 'employee';
+
+type SentItem = {
+  id: string;
+  body: string;
+  created_at: string;
+  read_at: string | null;
+  employee_id: string;
+  employee_name: string;
+  employee_email: string;
+  replies: Array<{ id: string; body: string; created_at: string; from_manager: boolean }>;
+};
+
+function isSameCalendarDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function dateSeparatorLabel(iso: string): string {
+  const date = new Date(iso);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (isSameCalendarDay(date, now)) return 'Today';
+  if (isSameCalendarDay(date, yesterday)) return 'Yesterday';
+  return date.toLocaleDateString();
+}
 
 export default function DepartmentsPage() {
   const router = useRouter();
@@ -78,6 +107,12 @@ export default function DepartmentsPage() {
   const [recipientFilter, setRecipientFilter] = useState<RecipientFilter>('all');
   const [recipientSearch, setRecipientSearch] = useState('');
   const [locHash, setLocHash] = useState('');
+  const [ceoSentItems, setCeoSentItems] = useState<SentItem[]>([]);
+  const [ceoActiveEmployeeId, setCeoActiveEmployeeId] = useState<string | null>(null);
+  const [ceoDraftByEmployeeId, setCeoDraftByEmployeeId] = useState<Record<string, string>>({});
+  const [ceoSendingForEmployeeId, setCeoSendingForEmployeeId] = useState<string | null>(null);
+  const ceoChatScrollRef = useRef<HTMLDivElement>(null);
+  const ceoComposerRef = useRef<HTMLTextAreaElement>(null);
 
   const load = useCallback(async (token: string) => {
     const res = await apiFetch('/departments', token);
@@ -99,6 +134,22 @@ export default function DepartmentsPage() {
     setTeamMembers((await res.json()) as TeamMember[]);
   }, []);
 
+  const loadCeoSentChats = useCallback(async (token: string) => {
+    const res = await apiFetch('/team-alerts/sent', token);
+    if (!res.ok) {
+      setError(await readApiErrorMessage(res, 'Could not load conversations.'));
+      setCeoSentItems([]);
+      return;
+    }
+    const body = (await res.json()) as { items?: SentItem[] };
+    setCeoSentItems(
+      (body.items ?? []).map((x) => ({
+        ...x,
+        replies: (x.replies ?? []).map((r) => ({ ...r, from_manager: r.from_manager === true })),
+      })),
+    );
+  }, []);
+
   useEffect(() => {
     if (authLoading) return;
     if (!authMe || !token) {
@@ -118,8 +169,11 @@ export default function DepartmentsPage() {
       if (isDepartmentManagerRole(authMe.role) || authMe.role === 'CEO') {
         await loadTeam(token);
       }
+      if (authMe.role === 'CEO') {
+        await loadCeoSentChats(token);
+      }
     })();
-  }, [authLoading, authMe, token, router, load, loadTeam]);
+  }, [authLoading, authMe, token, router, load, loadTeam, loadCeoSentChats]);
 
   useEffect(() => {
     if (pathname !== '/departments') return;
@@ -445,16 +499,139 @@ export default function DepartmentsPage() {
     });
   }, [teamMembers, managerEmailSet, recipientFilter, recipientSearch]);
 
+  const ceoRootsByEmployee = useMemo(() => {
+    const map = new Map<string, SentItem[]>();
+    for (const root of ceoSentItems) {
+      const arr = map.get(root.employee_id) ?? [];
+      arr.push(root);
+      map.set(root.employee_id, arr);
+    }
+    for (const arr of map.values()) {
+      arr.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+    }
+    return map;
+  }, [ceoSentItems]);
+
+  const ceoChatRows = useMemo(() => {
+    return filteredRecipients
+      .map((member) => {
+        const roots = ceoRootsByEmployee.get(member.id) ?? [];
+        const latestRoot = roots.length ? roots[roots.length - 1] : null;
+        const latestReply = latestRoot?.replies?.length
+          ? latestRoot.replies[latestRoot.replies.length - 1]
+          : null;
+        const preview = (latestReply?.body ?? latestRoot?.body ?? '').trim();
+        const unreadCount = roots.filter((r) => !r.read_at).length;
+        const sortKey = latestReply
+          ? Date.parse(latestReply.created_at)
+          : latestRoot
+            ? Date.parse(latestRoot.created_at)
+            : 0;
+        return { member, roots, preview, unreadCount, sortKey };
+      })
+      .sort((a, b) => b.sortKey - a.sortKey || a.member.name.localeCompare(b.member.name));
+  }, [filteredRecipients, ceoRootsByEmployee]);
+
+  const ceoActiveMember = useMemo(
+    () => ceoChatRows.find((r) => r.member.id === ceoActiveEmployeeId)?.member ?? ceoChatRows[0]?.member ?? null,
+    [ceoChatRows, ceoActiveEmployeeId],
+  );
+  const ceoActiveRoots = useMemo(
+    () => (ceoActiveMember ? ceoRootsByEmployee.get(ceoActiveMember.id) ?? [] : []),
+    [ceoActiveMember, ceoRootsByEmployee],
+  );
+  const ceoLatestRoot = ceoActiveRoots.length ? ceoActiveRoots[ceoActiveRoots.length - 1] : null;
+  const ceoMessages = useMemo(() => {
+    const rows: Array<{ id: string; body: string; createdAt: string; fromManager: boolean; readAt?: string | null }> =
+      [];
+    for (const root of ceoActiveRoots) {
+      rows.push({
+        id: root.id,
+        body: root.body,
+        createdAt: root.created_at,
+        fromManager: true,
+        readAt: root.read_at,
+      });
+      for (const reply of root.replies ?? []) {
+        rows.push({
+          id: reply.id,
+          body: reply.body,
+          createdAt: reply.created_at,
+          fromManager: reply.from_manager,
+        });
+      }
+    }
+    rows.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    return rows;
+  }, [ceoActiveRoots]);
+
+  useEffect(() => {
+    if (!ceoChatRows.length) {
+      setCeoActiveEmployeeId(null);
+      return;
+    }
+    if (!ceoActiveEmployeeId || !ceoChatRows.some((row) => row.member.id === ceoActiveEmployeeId)) {
+      setCeoActiveEmployeeId(ceoChatRows[0].member.id);
+    }
+  }, [ceoChatRows, ceoActiveEmployeeId]);
+
+  const ceoActiveDraft = ceoActiveMember ? ceoDraftByEmployeeId[ceoActiveMember.id] ?? '' : '';
+  useEffect(() => {
+    const el = ceoComposerRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, [ceoActiveDraft, ceoActiveMember?.id]);
+
+  useEffect(() => {
+    const el = ceoChatScrollRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }));
+  }, [ceoActiveMember?.id, ceoMessages.length, ceoSendingForEmployeeId]);
+
+  async function sendCeoMessage(employeeId: string) {
+    const text = ceoDraftByEmployeeId[employeeId]?.trim() ?? '';
+    if (!token || !text) return;
+    setCeoSendingForEmployeeId(employeeId);
+    setError(null);
+    try {
+      const latestRootForEmployee = (ceoRootsByEmployee.get(employeeId) ?? []).slice(-1)[0] ?? null;
+      const res = latestRootForEmployee
+        ? await apiFetch('/team-alerts/reply-manager', token, {
+            method: 'POST',
+            body: JSON.stringify({ threadRootId: latestRootForEmployee.id, message: text }),
+          })
+        : await apiFetch('/team-alerts/send', token, {
+            method: 'POST',
+            body: JSON.stringify({ employeeId, message: text }),
+          });
+      if (!res.ok) {
+        setError(await readApiErrorMessage(res, 'Could not send your message.'));
+        return;
+      }
+      setCeoDraftByEmployeeId((prev) => ({ ...prev, [employeeId]: '' }));
+      await loadCeoSentChats(token);
+    } finally {
+      setCeoSendingForEmployeeId(null);
+    }
+  }
+
   return (
     <AppShell
       role={me.role}
       companyName={me.company_name ?? null}
       userDisplayName={authMe?.full_name?.trim() || authMe?.email}
-      title={isCeo ? 'Departments' : 'Messages'}
-      subtitle={isCeo ? 'Org structure and manager access.' : 'Message your team and manage portal access.'}
+      title={ceoMessagesMode ? 'Messages & alerts' : isCeo ? 'Departments' : 'Messages'}
+      subtitle={
+        ceoMessagesMode
+          ? 'Send messages directly to managers or employees.'
+          : isCeo
+            ? 'Org structure and manager access.'
+            : 'Message your team and manage portal access.'
+      }
       onSignOut={() => void ctxSignOut()}
     >
-      {isCeo ? (
+      {isCeo && !ceoMessagesMode ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-slate-500">Company org</p>
           <button
@@ -719,7 +896,194 @@ export default function DepartmentsPage() {
               No team members yet. Add mailboxes from <span className="font-medium text-slate-800">Employees</span>.
             </p>
           ) : null}
-          {teamMembers.length > 0 && isCeo ? (
+          {teamMembers.length > 0 && isCeo && ceoMessagesMode ? (
+            <section className="overflow-hidden rounded-3xl border border-slate-200/70 bg-white shadow-card">
+              <div className="grid min-h-[68vh] lg:grid-cols-[340px_minmax(0,1fr)]">
+                <aside className="border-r border-slate-200 bg-white">
+                  <div className="border-b border-slate-100 px-4 py-3">
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
+                      {(['all', 'manager', 'employee'] as RecipientFilter[]).map((kind) => (
+                        <button
+                          key={kind}
+                          type="button"
+                          onClick={() => setRecipientFilter(kind)}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                            recipientFilter === kind
+                              ? 'bg-indigo-600 text-white'
+                              : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          {kind === 'all' ? 'All people' : kind === 'manager' ? 'Managers' : 'Employees'}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      value={recipientSearch}
+                      onChange={(e) => setRecipientSearch(e.target.value)}
+                      placeholder="Search chats"
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-brand-500 placeholder:text-slate-400 focus:ring-1"
+                    />
+                  </div>
+                  <div className="max-h-[68vh] overflow-y-auto p-2">
+                    {ceoChatRows.length === 0 ? (
+                      <div className="px-3 py-5 text-sm text-slate-500">No team members match your filter.</div>
+                    ) : null}
+                    <ul className="space-y-1">
+                      {ceoChatRows.map((row) => {
+                        const active = ceoActiveMember?.id === row.member.id;
+                        const isManager = managerEmailSet.has(row.member.email.trim().toLowerCase());
+                        return (
+                          <li key={row.member.id}>
+                            <button
+                              type="button"
+                              onClick={() => setCeoActiveEmployeeId(row.member.id)}
+                              className={`w-full rounded-xl px-3 py-2 text-left ${
+                                active ? 'bg-emerald-50 ring-1 ring-emerald-100' : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold text-slate-900">{row.member.name}</p>
+                                  <p className="truncate text-xs text-slate-500">{row.member.email}</p>
+                                </div>
+                                <div className="flex shrink-0 flex-col items-end gap-1">
+                                  {row.sortKey > 0 ? (
+                                    <p className="text-[10px] text-slate-400">
+                                      {new Date(row.sortKey).toLocaleTimeString([], {
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                      })}
+                                    </p>
+                                  ) : null}
+                                  {row.unreadCount > 0 ? (
+                                    <span className="inline-flex min-w-[1.1rem] items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-semibold text-white">
+                                      {row.unreadCount}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </div>
+                              <p className="mt-1 truncate text-xs text-slate-600">
+                                {row.preview || 'No messages yet. Send the first one.'}
+                              </p>
+                              <p className="mt-1 text-[10px] text-slate-400">
+                                {row.member.department_name} · {isManager ? 'Manager' : 'Employee'}
+                              </p>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                </aside>
+                <div className="flex min-h-0 flex-col bg-[#efeae2]/70">
+                  {ceoActiveMember ? (
+                    <>
+                      <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{ceoActiveMember.name}</p>
+                          <p className="text-xs text-slate-500">
+                            {ceoActiveMember.email} · {ceoActiveMember.department_name}
+                          </p>
+                        </div>
+                      </header>
+                      <div ref={ceoChatScrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+                        {ceoMessages.length === 0 ? (
+                          <div className="flex h-full items-center justify-center text-center text-sm text-slate-500">
+                            No messages yet. Send the first message.
+                          </div>
+                        ) : null}
+                        {ceoMessages.map((msg, idx) => {
+                          const prev = idx > 0 ? ceoMessages[idx - 1] : null;
+                          const showDateSeparator =
+                            !prev || !isSameCalendarDay(new Date(prev.createdAt), new Date(msg.createdAt));
+                          return (
+                            <div key={msg.id} className="space-y-2">
+                              {showDateSeparator ? (
+                                <div className="sticky top-1 z-10 flex justify-center">
+                                  <span className="rounded-full border border-slate-200 bg-white/95 px-2 py-0.5 text-[10px] font-medium text-slate-500 shadow-sm backdrop-blur">
+                                    {dateSeparatorLabel(msg.createdAt)}
+                                  </span>
+                                </div>
+                              ) : null}
+                              <div className={`flex ${msg.fromManager ? 'justify-end' : 'justify-start'}`}>
+                                <div
+                                  className={`max-w-[82%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
+                                    msg.fromManager
+                                      ? 'rounded-br-sm bg-emerald-600 text-white'
+                                      : 'rounded-bl-sm bg-white text-slate-800'
+                                  }`}
+                                >
+                                  <p className="whitespace-pre-wrap">{msg.body}</p>
+                                  <div
+                                    className={`mt-1 flex justify-end gap-2 text-[10px] ${
+                                      msg.fromManager ? 'text-emerald-100' : 'text-slate-400'
+                                    }`}
+                                  >
+                                    <span>{new Date(msg.createdAt).toLocaleString()}</span>
+                                    {msg.fromManager ? (
+                                      <span>{msg.readAt ? 'Seen' : 'Delivered'}</span>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="border-t border-slate-200 bg-white px-3 py-3">
+                        <div className="flex items-end gap-2">
+                          <textarea
+                            ref={ceoComposerRef}
+                            rows={1}
+                            value={ceoDraftByEmployeeId[ceoActiveMember.id] ?? ''}
+                            onChange={(e) =>
+                              setCeoDraftByEmployeeId((prev) => ({
+                                ...prev,
+                                [ceoActiveMember.id]: e.target.value,
+                              }))
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter') return;
+                              if (e.shiftKey) return;
+                              e.preventDefault();
+                              if (ceoSendingForEmployeeId === ceoActiveMember.id) return;
+                              void sendCeoMessage(ceoActiveMember.id);
+                            }}
+                            disabled={ceoSendingForEmployeeId === ceoActiveMember.id}
+                            placeholder="Type a message"
+                            className="min-h-[44px] w-full resize-none rounded-2xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void sendCeoMessage(ceoActiveMember.id)}
+                            disabled={
+                              ceoSendingForEmployeeId === ceoActiveMember.id ||
+                              !(ceoDraftByEmployeeId[ceoActiveMember.id]?.trim())
+                            }
+                            className="h-11 shrink-0 rounded-2xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 text-xs font-semibold text-white hover:opacity-95 disabled:opacity-50"
+                          >
+                            {ceoSendingForEmployeeId === ceoActiveMember.id ? 'Sending…' : 'Send'}
+                          </button>
+                        </div>
+                        {ceoLatestRoot ? (
+                          <p className="mt-1 px-1 text-[10px] text-slate-400">
+                            Replying in existing thread with {ceoActiveMember.name}.
+                          </p>
+                        ) : null}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex h-full items-center justify-center p-6 text-center">
+                      <p className="max-w-sm text-sm text-slate-600">
+                        Select a person from the left to start messaging.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          ) : null}
+          {teamMembers.length > 0 && isCeo && !ceoMessagesMode ? (
             <>
               <div className="mb-4 flex flex-wrap items-center gap-2">
                 {(['all', 'manager', 'employee'] as RecipientFilter[]).map((kind) => (
@@ -836,7 +1200,7 @@ export default function DepartmentsPage() {
         </section>
       ) : null}
 
-      {isCeo && createOpen ? (
+      {isCeo && createOpen && !ceoMessagesMode ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
           role="dialog"
