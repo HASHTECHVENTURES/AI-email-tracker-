@@ -404,13 +404,15 @@ export default function DashboardPage() {
   }, [me?.role, filterDepartmentIds, ceoEmployeeIds]);
 
   useEffect(() => {
-    if (me?.role !== 'CEO' || !dash?.employee_filter_options) return;
+    if (me?.role !== 'CEO' || !dash?.employee_filter_options?.length) return;
     const allowed = new Set(dash.employee_filter_options.map((e) => e.id));
+    const linked = me?.linked_employee_id?.trim();
+    if (linked) allowed.add(linked);
     setCeoEmployeeIds((prev) => {
       const next = prev.filter((id) => allowed.has(id));
       return next.length === prev.length ? prev : next;
     });
-  }, [dash?.employee_filter_options, me?.role]);
+  }, [dash?.employee_filter_options, me?.role, me?.linked_employee_id]);
 
   useEffect(() => {
     if (me?.role !== 'CEO' || ceoDeptOptions.length === 0) return;
