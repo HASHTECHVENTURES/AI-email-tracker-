@@ -67,7 +67,9 @@ export default function ManagerMessagesPage() {
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [draftByRoot, setDraftByRoot] = useState<Record<string, string>>({});
+  const [receivedDraftById, setReceivedDraftById] = useState<Record<string, string>>({});
   const [sendingFor, setSendingFor] = useState<string | null>(null);
+  const [replyingReceivedId, setReplyingReceivedId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const chatScrollRef = useRef<HTMLDivElement>(null);
@@ -305,6 +307,27 @@ export default function ManagerMessagesPage() {
     }
   }
 
+  async function sendReplyToReceived(parentAlertId: string) {
+    const message = receivedDraftById[parentAlertId]?.trim() ?? '';
+    if (!token || !message) return;
+    setReplyingReceivedId(parentAlertId);
+    setError(null);
+    try {
+      const res = await apiFetch('/team-alerts/reply', token, {
+        method: 'POST',
+        body: JSON.stringify({ parentAlertId, message }),
+      });
+      if (!res.ok) {
+        setError(await readApiErrorMessage(res, 'Could not send your reply.'));
+        return;
+      }
+      setReceivedDraftById((prev) => ({ ...prev, [parentAlertId]: '' }));
+      await load();
+    } finally {
+      setReplyingReceivedId(null);
+    }
+  }
+
   if (!me || authLoading) {
     return (
       <AppShell role="HEAD" title="Messages & alerts" subtitle="" onSignOut={() => void ctxSignOut()}>
@@ -417,6 +440,33 @@ export default function ManagerMessagesPage() {
                             From {msg.from_manager_name?.trim() || 'your manager'}
                           </p>
                           <p className="mt-1 line-clamp-2 text-xs text-amber-900">{msg.body}</p>
+                          <div className="mt-2 flex items-end gap-1.5">
+                            <textarea
+                              rows={1}
+                              value={receivedDraftById[msg.id] ?? ''}
+                              onChange={(e) =>
+                                setReceivedDraftById((prev) => ({ ...prev, [msg.id]: e.target.value }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key !== 'Enter') return;
+                                if (e.shiftKey) return;
+                                e.preventDefault();
+                                if (replyingReceivedId === msg.id) return;
+                                void sendReplyToReceived(msg.id);
+                              }}
+                              disabled={replyingReceivedId === msg.id}
+                              placeholder="Reply..."
+                              className="min-h-[34px] w-full resize-none rounded-lg border border-amber-200 bg-white px-2 py-1.5 text-xs text-slate-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-100"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void sendReplyToReceived(msg.id)}
+                              disabled={replyingReceivedId === msg.id || !(receivedDraftById[msg.id]?.trim())}
+                              className="h-[34px] shrink-0 rounded-lg bg-amber-100 px-2 text-[11px] font-semibold text-amber-900 hover:bg-amber-200 disabled:opacity-50"
+                            >
+                              {replyingReceivedId === msg.id ? '...' : 'Send'}
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
