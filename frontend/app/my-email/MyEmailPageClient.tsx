@@ -5311,6 +5311,12 @@ function MyEmailPageInner() {
               </p>
             ) : (
               <>
+                {me.role === 'CEO' && myEmailTab === 'manager' ? (
+                  <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                    Manager mailbox rows are read-only here. Use <span className="font-semibold text-slate-800">Message</span>{' '}
+                    to contact a manager.
+                  </p>
+                ) : null}
                 <div className="mt-4 overflow-x-auto rounded-xl border border-slate-100">
                   <table className="w-full text-sm">
                     <thead>
@@ -5331,8 +5337,14 @@ function MyEmailPageInner() {
                         <th className="px-3 py-3">Thread</th>
                         <th className="px-3 py-3">SLA</th>
                         <th className="min-w-[8rem] px-3 py-3">Activity</th>
-                        <th className="px-3 py-3">Gmail</th>
-                        <th className="min-w-[5rem] px-3 py-3 text-right">Resolve</th>
+                        {me.role === 'CEO' && myEmailTab === 'manager' ? (
+                          <th className="min-w-[7rem] px-3 py-3 text-right">Message</th>
+                        ) : (
+                          <>
+                            <th className="px-3 py-3">Gmail</th>
+                            <th className="min-w-[5rem] px-3 py-3 text-right">Resolve</th>
+                          </>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
@@ -5341,8 +5353,15 @@ function MyEmailPageInner() {
                         return (
                           <tr
                             key={c.conversation_id}
-                            className="cursor-pointer hover:bg-slate-50/90"
-                            onClick={() => router.push(conversationReadPath(c.conversation_id, pathname))}
+                            className={
+                              me.role === 'CEO' && myEmailTab === 'manager'
+                                ? 'hover:bg-slate-50/90'
+                                : 'cursor-pointer hover:bg-slate-50/90'
+                            }
+                            onClick={() => {
+                              if (me.role === 'CEO' && myEmailTab === 'manager') return;
+                              router.push(conversationReadPath(c.conversation_id, pathname));
+                            }}
                           >
                             <td className="px-3 py-3 align-middle" onClick={(e) => e.stopPropagation()}>
                               <input
@@ -5386,31 +5405,44 @@ function MyEmailPageInner() {
                                 iso={c.last_employee_reply_at ?? c.last_client_msg_at}
                               />
                             </td>
-                            <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
-                              <a
-                                href={c.open_gmail_link}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-xs font-semibold text-brand-600 hover:underline"
-                              >
-                                Open
-                              </a>
-                            </td>
-                            <td className="px-3 py-3 text-right align-top" onClick={(e) => e.stopPropagation()}>
-                              {c.follow_up_status !== 'DONE' ? (
-                                <button
-                                  type="button"
-                                  disabled={resolvingId === c.conversation_id}
-                                  onClick={() => void resolveConversation(c.conversation_id)}
-                                  className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-                                  title="Mark this thread resolved if you already replied or no follow-up is needed"
+                            {me.role === 'CEO' && myEmailTab === 'manager' ? (
+                              <td className="px-3 py-3 text-right align-top" onClick={(e) => e.stopPropagation()}>
+                                <a
+                                  href="/departments#team-members"
+                                  className="inline-flex rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
                                 >
-                                  {resolvingId === c.conversation_id ? '…' : 'Resolve'}
-                                </button>
-                              ) : (
-                                <span className="text-[11px] text-slate-400">—</span>
-                              )}
-                            </td>
+                                  Message
+                                </a>
+                              </td>
+                            ) : (
+                              <>
+                                <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                                  <a
+                                    href={c.open_gmail_link}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs font-semibold text-brand-600 hover:underline"
+                                  >
+                                    Open
+                                  </a>
+                                </td>
+                                <td className="px-3 py-3 text-right align-top" onClick={(e) => e.stopPropagation()}>
+                                  {c.follow_up_status !== 'DONE' ? (
+                                    <button
+                                      type="button"
+                                      disabled={resolvingId === c.conversation_id}
+                                      onClick={() => void resolveConversation(c.conversation_id)}
+                                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+                                      title="Mark this thread resolved if you already replied or no follow-up is needed"
+                                    >
+                                      {resolvingId === c.conversation_id ? '…' : 'Resolve'}
+                                    </button>
+                                  ) : (
+                                    <span className="text-[11px] text-slate-400">—</span>
+                                  )}
+                                </td>
+                              </>
+                            )}
                           </tr>
                         );
                       })}

@@ -110,7 +110,7 @@ export default function DepartmentsPage() {
     }
     (async () => {
       await load(token);
-      if (isDepartmentManagerRole(authMe.role)) {
+      if (isDepartmentManagerRole(authMe.role) || authMe.role === 'CEO') {
         await loadTeam(token);
       }
     })();
@@ -661,7 +661,7 @@ export default function DepartmentsPage() {
         </section>
       ) : null}
 
-      {isHead ? (
+      {isHead || isCeo ? (
         <section
           id="team-members"
           className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02] scroll-mt-24"

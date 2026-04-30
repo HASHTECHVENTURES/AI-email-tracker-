@@ -351,6 +351,9 @@ export function AppShell({
 
               {showOrg && isCeo ? (
                 <>
+                  <SafeLink href="/departments#team-members" className={navItemClass(deptAlertsFocus)}>
+                    Messages & alerts
+                  </SafeLink>
                   <SafeLink href="/departments" className={navItemClass(pathname === '/departments')}>
                     Departments
                   </SafeLink>
@@ -522,6 +525,9 @@ export function AppShell({
               ) : null}
               {showOrg && isCeo ? (
                 <>
+                  <SafeLink href="/departments#team-members" className={navMobileClass(deptAlertsFocus)}>
+                    Messages
+                  </SafeLink>
                   <SafeLink href="/departments" className={navMobileClass(pathname === '/departments')}>
                     Departments
                   </SafeLink>
