@@ -5018,33 +5018,45 @@ function MyEmailPageInner() {
                   id="team-mailboxes-ceo"
                   className="scroll-mt-24 rounded-2xl border border-slate-100 bg-white px-4 py-5 shadow-sm sm:px-6"
                 >
-                  <p className="text-xs text-slate-600">
-                    Employee and org mailboxes. Personal manager inboxes stay under Manager mail.
-                  </p>
                   {teamMailboxesOnly.length > 1 ? (
-                    <div className="mt-3 max-w-sm">
-                      <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                        Employees in view
-                        <select
-                          multiple
-                          value={employeeScopeMailboxIds}
-                          onChange={(e) =>
-                            setEmployeeScopeMailboxIds(
-                              Array.from(e.currentTarget.selectedOptions).map((o) => o.value),
-                            )
-                          }
-                          className="mt-1.5 min-h-[7rem] w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 shadow-sm focus:border-brand-500 focus:outline-none"
-                        >
-                          {teamMailboxesOnly.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.name} · {m.email}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        Select one or more employee mailboxes. Leave unselected to show all.
-                      </p>
+                    <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          Employees in view
+                        </p>
+                        {employeeScopeMailboxIds.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setEmployeeScopeMailboxIds([])}
+                            className="rounded-md border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+                          >
+                            Show all
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {teamMailboxesOnly.map((m) => {
+                          const selected = employeeScopeMailboxIds.includes(m.id);
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() =>
+                                setEmployeeScopeMailboxIds((prev) =>
+                                  prev.includes(m.id) ? prev.filter((id) => id !== m.id) : [...prev, m.id],
+                                )
+                              }
+                              className={`rounded-full px-3 py-1.5 text-xs font-medium ${
+                                selected
+                                  ? 'bg-brand-600 text-white shadow-sm'
+                                  : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                              }`}
+                            >
+                              {m.name}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                   ) : null}
                   <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -5058,6 +5070,7 @@ function MyEmailPageInner() {
                           onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
                           removing={deletingId === mb.id}
                           togglePauseLoading={togglePauseLoadingId === mb.id}
+                          hideReconnectWhenConnected={true}
                         />
                       </div>
                     ))}
