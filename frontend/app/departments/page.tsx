@@ -468,20 +468,10 @@ export default function DepartmentsPage() {
   }
 
   const me = authMe as Me | null;
-  if (!me || authLoading) {
-    return (
-      <AppShell
-        role={me?.role ?? shellRoleHint ?? 'EMPLOYEE'}
-        title="Departments"
-        subtitle=""
-        onSignOut={() => void ctxSignOut()}
-      >
-        <PortalPageLoader variant="embedded" />
-      </AppShell>
-    );
-  }
-  const isCeo = me.role === 'CEO';
-  const isHead = isDepartmentManagerRole(me.role);
+  const shellRole = me?.role ?? shellRoleHint ?? 'EMPLOYEE';
+  const isBooting = !me || authLoading;
+  const isCeo = me?.role === 'CEO';
+  const isHead = me ? isDepartmentManagerRole(me.role) : false;
   const ceoMessagesMode = isCeo && locHash === '#team-members';
   const managerEmailSet = useMemo(
     () =>
@@ -705,8 +695,8 @@ export default function DepartmentsPage() {
 
   return (
     <AppShell
-      role={me.role}
-      companyName={me.company_name ?? null}
+      role={shellRole}
+      companyName={me?.company_name ?? null}
       userDisplayName={authMe?.full_name?.trim() || authMe?.email}
       title={ceoMessagesMode ? 'Messages & alerts' : isCeo ? 'Departments' : 'Messages'}
       subtitle={
@@ -718,6 +708,9 @@ export default function DepartmentsPage() {
       }
       onSignOut={() => void ctxSignOut()}
     >
+      {isBooting ? <PortalPageLoader variant="embedded" /> : null}
+      {!isBooting ? (
+        <>
       {isCeo && !ceoMessagesMode ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-slate-500">Company org</p>
@@ -1441,6 +1434,8 @@ export default function DepartmentsPage() {
             </form>
           </div>
         </div>
+      ) : null}
+        </>
       ) : null}
     </AppShell>
   );
