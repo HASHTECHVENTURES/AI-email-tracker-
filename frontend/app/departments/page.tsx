@@ -46,6 +46,7 @@ type CxoChatPerson = {
   email: string;
   department_name: string;
   isManager: boolean;
+  hasEmployeeMailbox: boolean;
   canMessage: boolean;
 };
 
@@ -494,6 +495,7 @@ export default function DepartmentsPage() {
         email: member.email,
         department_name: member.department_name,
         isManager,
+        hasEmployeeMailbox: true,
         canMessage: true,
       });
     }
@@ -508,6 +510,7 @@ export default function DepartmentsPage() {
         email: mgr.email,
         department_name: dept.name,
         isManager: true,
+        hasEmployeeMailbox: false,
         canMessage: true,
       });
     }
@@ -518,7 +521,7 @@ export default function DepartmentsPage() {
     const q = recipientSearch.trim().toLowerCase();
     return ceoPeople.filter((member) => {
       if (recipientFilter === 'manager' && !member.isManager) return false;
-      if (recipientFilter === 'employee' && member.isManager) return false;
+      if (recipientFilter === 'employee' && !member.hasEmployeeMailbox) return false;
       if (!q) return true;
       return (
         member.name.toLowerCase().includes(q) ||
@@ -533,7 +536,6 @@ export default function DepartmentsPage() {
     return teamMembers.filter((member) => {
       const isManager = managerEmailSet.has(member.email.trim().toLowerCase());
       if (recipientFilter === 'manager' && !isManager) return false;
-      if (recipientFilter === 'employee' && isManager) return false;
       if (!q) return true;
       return (
         member.name.toLowerCase().includes(q) ||
