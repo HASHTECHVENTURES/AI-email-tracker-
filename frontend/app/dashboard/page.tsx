@@ -1188,39 +1188,6 @@ export default function DashboardPage() {
                               <div className="flex flex-wrap justify-end gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => router.push(conversationReadPath(c.conversation_id, '/dashboard'))}
-                                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300"
-                                >
-                                  Read mail
-                                </button>
-                                <a
-                                  href={c.open_gmail_link}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300"
-                                >
-                                  Gmail
-                                </a>
-                                <button
-                                  type="button"
-                                  onClick={() => setReassignTarget(c)}
-                                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-brand-200 hover:text-brand-700"
-                                >
-                                  Reassign
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void markDone(c.conversation_id)}
-                                  disabled={
-                                    resolvingConversationId === c.conversation_id ||
-                                    deletingConversationId === c.conversation_id
-                                  }
-                                  className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:opacity-95 disabled:opacity-50"
-                                >
-                                  {resolvingConversationId === c.conversation_id ? 'Resolving…' : 'Resolve'}
-                                </button>
-                                <button
-                                  type="button"
                                   onClick={() => void deleteThread(c.conversation_id, c.client_email)}
                                   disabled={
                                     resolvingConversationId === c.conversation_id ||
