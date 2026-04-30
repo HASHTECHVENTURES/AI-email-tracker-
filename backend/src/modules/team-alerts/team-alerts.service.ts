@@ -47,11 +47,17 @@ export class TeamAlertsService {
     private readonly employeesService: EmployeesService,
   ) {}
 
-  async sendFromManager(ctx: RequestContext, fromUserId: string, employeeId: string, message: string) {
-    if (ctx.role !== 'HEAD') {
-      throw new ForbiddenException('Only department managers can send alerts to team members');
+  async sendFromManager(
+    ctx: RequestContext,
+    fromUserId: string,
+    employeeId: string | undefined,
+    recipientEmail: string | undefined,
+    message: string,
+  ) {
+    if (ctx.role !== 'HEAD' && ctx.role !== 'CEO') {
+      throw new ForbiddenException('Only managers or company admin can send messages');
     }
-    if (!ctx.departmentId) {
+    if (ctx.role === 'HEAD' && !ctx.departmentId) {
       throw new ForbiddenException('Your manager profile must be assigned to a department');
     }
     const body = message.trim();
@@ -62,20 +68,60 @@ export class TeamAlertsService {
       throw new BadRequestException('Message must be at most 4000 characters');
     }
 
+    let targetEmployeeId = employeeId?.trim() || null;
+    const recipientEmailNorm = recipientEmail?.trim().toLowerCase() || null;
+    if (!targetEmployeeId && !recipientEmailNorm) {
+      throw new BadRequestException('employeeId or recipientEmail is required');
+    }
+
+    if (!targetEmployeeId && recipientEmailNorm) {
+      const { data: directRows, error: directErr } = await this.supabase
+        .from('employees')
+        .select('id')
+        .eq('company_id', ctx.companyId)
+        .eq('email', recipientEmailNorm)
+        .eq('is_active', true)
+        .order('roster_duplicate', { ascending: true })
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (directErr) {
+        this.logger.warn(`sendFromManager: recipient lookup by email failed: ${directErr.message}`);
+      }
+      if ((directRows ?? []).length > 0) {
+        targetEmployeeId = (directRows![0] as { id: string }).id;
+      } else {
+        const { data: managerUser, error: managerErr } = await this.supabase
+          .from('users')
+          .select('linked_employee_id')
+          .eq('company_id', ctx.companyId)
+          .eq('email', recipientEmailNorm)
+          .eq('role', 'HEAD')
+          .maybeSingle();
+        if (managerErr) {
+          this.logger.warn(`sendFromManager: manager lookup by email failed: ${managerErr.message}`);
+        }
+        const linkedId =
+          (managerUser as { linked_employee_id?: string | null } | null)?.linked_employee_id ?? null;
+        if (linkedId) targetEmployeeId = linkedId;
+      }
+    }
+
     const { data: emp, error: empErr } = await this.supabase
       .from('employees')
       .select('id, company_id, department_id')
-      .eq('id', employeeId)
+      .eq('id', targetEmployeeId ?? '')
       .maybeSingle();
 
     if (empErr || !emp) {
-      this.logger.warn(`sendFromManager: employee not found ${employeeId}: ${empErr?.message}`);
-      throw new NotFoundException('Team member not found');
+      this.logger.warn(
+        `sendFromManager: employee not found ${targetEmployeeId ?? recipientEmailNorm ?? ''}: ${empErr?.message}`,
+      );
+      throw new NotFoundException('Recipient not found');
     }
     if (emp.company_id !== ctx.companyId) {
       throw new ForbiddenException('Team member is outside your company');
     }
-    if (emp.department_id !== ctx.departmentId) {
+    if (ctx.role === 'HEAD' && emp.department_id !== ctx.departmentId) {
       throw new ForbiddenException('You can only alert people in your department');
     }
 
@@ -83,7 +129,7 @@ export class TeamAlertsService {
       .from('team_alerts')
       .insert({
         company_id: ctx.companyId,
-        employee_id: employeeId,
+        employee_id: emp.id,
         from_user_id: fromUserId,
         body,
       })

@@ -518,7 +518,7 @@ export default function DepartmentsPage() {
         email: mgr.email,
         department_name: dept.name,
         isManager: true,
-        canMessage: false,
+        canMessage: true,
       });
     }
     return Array.from(byEmail.values());
@@ -649,7 +649,9 @@ export default function DepartmentsPage() {
     setCeoSendingForEmployeeId(employeeId);
     setError(null);
     try {
+      const activePerson = ceoPeople.find((p) => p.id === employeeId) ?? null;
       const latestRootForEmployee = (ceoRootsByEmployee.get(employeeId) ?? []).slice(-1)[0] ?? null;
+      const isPseudoManagerTarget = employeeId.startsWith('manager:');
       const res = latestRootForEmployee
         ? await apiFetch('/team-alerts/reply-manager', token, {
             method: 'POST',
@@ -657,7 +659,11 @@ export default function DepartmentsPage() {
           })
         : await apiFetch('/team-alerts/send', token, {
             method: 'POST',
-            body: JSON.stringify({ employeeId, message: text }),
+            body: JSON.stringify(
+              isPseudoManagerTarget
+                ? { recipientEmail: activePerson?.email ?? '', message: text }
+                : { employeeId, message: text },
+            ),
           });
       if (!res.ok) {
         setError(await readApiErrorMessage(res, 'Could not send your message.'));
@@ -1105,11 +1111,7 @@ export default function DepartmentsPage() {
                             disabled={
                               ceoSendingForEmployeeId === ceoActiveMember.id || !ceoActiveMember.canMessage
                             }
-                            placeholder={
-                              ceoActiveMember.canMessage
-                                ? 'Type a message'
-                                : 'Add this person in Employees first to enable chat'
-                            }
+                            placeholder={ceoActiveMember.canMessage ? 'Type a message' : 'Type a message'}
                             className="min-h-[44px] w-full resize-none rounded-2xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50"
                           />
                           <button
@@ -1117,7 +1119,6 @@ export default function DepartmentsPage() {
                             onClick={() => void sendCeoMessage(ceoActiveMember.id)}
                             disabled={
                               ceoSendingForEmployeeId === ceoActiveMember.id ||
-                              !ceoActiveMember.canMessage ||
                               !(ceoDraftByEmployeeId[ceoActiveMember.id]?.trim())
                             }
                             className="h-11 shrink-0 rounded-2xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 text-xs font-semibold text-white hover:opacity-95 disabled:opacity-50"

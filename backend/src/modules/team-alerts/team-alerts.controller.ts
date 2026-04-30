@@ -55,23 +55,30 @@ export class TeamAlertsController {
   @Post('send')
   async send(
     @Req() req: Request,
-    @Body() body: { employeeId?: string; message?: string },
+    @Body() body: { employeeId?: string; recipientEmail?: string; message?: string },
   ) {
     const ctx = this.employeeInboxContext(req);
     const user = req.user;
     if (!user) throw new ForbiddenException();
     const employeeId = body.employeeId?.trim();
+    const recipientEmail = body.recipientEmail?.trim();
     const message = body.message ?? '';
-    if (!employeeId) {
-      throw new BadRequestException('employeeId is required');
+    if (!employeeId && !recipientEmail) {
+      throw new BadRequestException('employeeId or recipientEmail is required');
     }
-    const result = await this.teamAlertsService.sendFromManager(ctx, user.id, employeeId, message);
+    const result = await this.teamAlertsService.sendFromManager(
+      ctx,
+      user.id,
+      employeeId,
+      recipientEmail,
+      message,
+    );
     await this.auditLogService.log({
       userId: user.id,
       companyId: ctx.companyId,
       action: 'team_alert_sent',
       entity: 'employee',
-      entityId: employeeId,
+      entityId: employeeId || recipientEmail || 'unknown',
     });
     return result;
   }
