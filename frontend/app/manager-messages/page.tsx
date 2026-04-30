@@ -20,6 +20,18 @@ type SentItem = {
   replies: Array<{ id: string; body: string; created_at: string; from_manager: boolean }>;
 };
 
+type ReceivedItem = {
+  id: string;
+  body: string;
+  created_at: string;
+  read_at: string | null;
+  from_user_id?: string;
+  from_manager_name: string | null;
+  from_manager_email: string | null;
+  in_reply_to?: string | null;
+  is_own_message?: boolean;
+};
+
 function lastActivityMs(thread: SentItem): number {
   let t = new Date(thread.created_at).getTime();
   for (const r of thread.replies ?? []) {
@@ -32,6 +44,7 @@ export default function ManagerMessagesPage() {
   const router = useRouter();
   const { me, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
   const [items, setItems] = useState<SentItem[]>([]);
+  const [receivedItems, setReceivedItems] = useState<ReceivedItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -42,10 +55,16 @@ export default function ManagerMessagesPage() {
 
   const load = useCallback(async () => {
     if (!token) return;
-    const res = await apiFetch('/team-alerts/sent', token);
+    const [res, receivedRes] = await Promise.all([
+      apiFetch('/team-alerts/sent', token),
+      me?.linked_employee_id?.trim()
+        ? apiFetch('/team-alerts/mine', token)
+        : Promise.resolve({ ok: false } as Response),
+    ]);
     if (!res.ok) {
       setError(await readApiErrorMessage(res, 'Could not load conversations.'));
       setItems([]);
+      setReceivedItems([]);
       return;
     }
     const body = (await res.json()) as { items?: SentItem[] };
@@ -58,8 +77,14 @@ export default function ManagerMessagesPage() {
         })),
       })),
     );
+    if (receivedRes.ok) {
+      const receivedBody = (await receivedRes.json()) as { items?: ReceivedItem[] };
+      setReceivedItems(receivedBody.items ?? []);
+    } else {
+      setReceivedItems([]);
+    }
     setError(null);
-  }, [token]);
+  }, [me?.linked_employee_id, token]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -133,6 +158,13 @@ export default function ManagerMessagesPage() {
   }, [items, activeThreadId, firstLatestRootId]);
 
   const awaitingCount = sidebarRows.filter((r) => r.anyUnread).length;
+  const receivedRoots = useMemo(
+    () =>
+      receivedItems
+        .filter((i) => !i.in_reply_to)
+        .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)),
+    [receivedItems],
+  );
 
   useEffect(() => {
     const el = chatScrollRef.current;
@@ -207,7 +239,7 @@ export default function ManagerMessagesPage() {
 
   if (!me || authLoading) {
     return (
-      <AppShell role="HEAD" title="Conversations" subtitle="" onSignOut={() => void ctxSignOut()}>
+      <AppShell role="HEAD" title="Messages & alerts" subtitle="" onSignOut={() => void ctxSignOut()}>
         <PortalPageLoader variant="embedded" />
       </AppShell>
     );
@@ -218,8 +250,8 @@ export default function ManagerMessagesPage() {
       role={me.role}
       companyName={me.company_name ?? null}
       userDisplayName={me.full_name?.trim() || me.email}
-      title="Conversations"
-      subtitle="Threads with your team — send alerts and follow up when they reply."
+      title="Messages & alerts"
+      subtitle="One place for team conversations and alerts."
       onSignOut={() => void ctxSignOut()}
     >
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
@@ -233,11 +265,56 @@ export default function ManagerMessagesPage() {
         </Link>
       </div>
 
+      {receivedRoots.length > 0 ? (
+        <section className="mb-6 rounded-2xl border border-amber-200 bg-amber-50/70 p-4 shadow-card">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-bold text-amber-950">Messages to you</p>
+              <p className="mt-1 text-xs text-amber-900/80">
+                Alerts sent to your employee mailbox. You can handle these without leaving manager login.
+              </p>
+            </div>
+            <Link
+              href="/messages"
+              className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-950 shadow-sm hover:bg-amber-100"
+            >
+              Open messages
+            </Link>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {receivedRoots.slice(0, 4).map((msg) => (
+              <Link
+                key={msg.id}
+                href="/messages"
+                className="block rounded-xl border border-amber-200 bg-white px-4 py-3 text-sm shadow-sm hover:bg-amber-50"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-slate-900">
+                      From {msg.from_manager_name?.trim() || 'your manager'}
+                    </p>
+                    <p className="mt-1 line-clamp-2 text-slate-700">{msg.body}</p>
+                    <p className="mt-2 text-xs text-slate-500">{new Date(msg.created_at).toLocaleString()}</p>
+                  </div>
+                  {!msg.read_at ? (
+                    <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
+                      New
+                    </span>
+                  ) : null}
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {loading ? (
         <PortalPageLoader variant="embedded" dense />
       ) : items.length === 0 ? (
         <section className="rounded-2xl border border-dashed border-slate-200 bg-surface-card p-10 text-center shadow-card">
-          <p className="text-sm text-slate-600">Nothing sent yet. Open <span className="font-semibold text-slate-800">Alerts</span> and pick a teammate.</p>
+          <p className="text-sm text-slate-600">
+            Nothing sent by you yet. Open <span className="font-semibold text-slate-800">Alerts</span> and pick a teammate.
+          </p>
         </section>
       ) : (
         <section className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">

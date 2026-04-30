@@ -178,8 +178,8 @@ export function AppShell({
   const actAsMailbox = useActAsEmployeeMailboxView(canActAsMailbox);
   /** Employee portal nav, or manager viewing their linked mailbox. */
   const mailboxNav = isEmployee || actAsMailbox;
-  /** Dual-role managers should see employee-side manager alerts without switching portals. */
-  const mailboxMessagesNav = mailboxNav || canActAsMailbox;
+  /** Employee/linked mailbox messages shortcut (hidden in manager sidebar to avoid duplicate comms entries). */
+  const mailboxMessagesNav = (mailboxNav || canActAsMailbox) && !(isHead && !actAsMailbox);
   /** Manager-only sidebar (hidden in mailbox view). */
   const managerNavVisible = isHead && !isPlatformAdmin && !actAsMailbox;
   /** CEO (full My Email), department manager (HEAD), or Employee portal — Historical Search + scoped mailboxes. */
@@ -205,6 +205,7 @@ export function AppShell({
     pathname === '/my-email' && locHash === '#team-mailboxes-ceo';
   const managerMessagesActive = pathname === '/manager-messages';
   const teamMailSyncActive = pathname === '/team-mail-sync';
+  const managerInboxActive = managerMessagesActive || deptAlertsFocus;
   const brandTitle = companyName?.trim() || 'AI Auto Mail';
   const personLine = userDisplayName?.trim() || null;
   const showTeamSwitcher =
@@ -350,14 +351,9 @@ export function AppShell({
               ) : null}
 
               {showOrg && managerNavVisible ? (
-                <>
-                  <SafeLink href="/manager-messages" className={navItemClass(managerMessagesActive)}>
-                    Conversations
-                  </SafeLink>
-                  <SafeLink href="/departments#team-members" className={navItemClass(deptAlertsFocus)}>
-                    Alerts
-                  </SafeLink>
-                </>
+                <SafeLink href="/manager-messages" className={navItemClass(managerInboxActive)}>
+                  Messages & alerts
+                </SafeLink>
               ) : null}
 
               {!isPlatformAdmin ? (
@@ -524,14 +520,9 @@ export function AppShell({
                 </SafeLink>
               ) : null}
               {showOrg && managerNavVisible ? (
-                <>
-                  <SafeLink href="/manager-messages" className={navMobileClass(managerMessagesActive)}>
-                    Conversations
-                  </SafeLink>
-                  <SafeLink href="/departments#team-members" className={navMobileClass(deptAlertsFocus)}>
-                    Alerts
-                  </SafeLink>
-                </>
+                <SafeLink href="/manager-messages" className={navMobileClass(managerInboxActive)}>
+                  Messages & alerts
+                </SafeLink>
               ) : null}
               {!isPlatformAdmin ? (
                 <SafeLink href="/settings" className={navMobileClass(pathname === '/settings')}>
