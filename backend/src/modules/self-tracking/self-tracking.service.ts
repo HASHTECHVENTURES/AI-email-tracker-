@@ -104,9 +104,25 @@ export class SelfTrackingService {
         uid,
         callerEmail,
       );
+      let linkedRows: OrgEmployeeDto[] = [];
+      const { data: linkedProfile } = await this.supabase
+        .from('users')
+        .select('linked_employee_id')
+        .eq('company_id', ctx.companyId)
+        .eq('id', uid)
+        .maybeSingle();
+      const linkedId = (linkedProfile as { linked_employee_id?: string | null } | null)?.linked_employee_id ?? null;
+      if (linkedId) {
+        linkedRows = await this.employeesService.getLinkedPortalEmployeeMailbox({
+          ...ctx,
+          role: 'EMPLOYEE',
+          employeeId: linkedId,
+        });
+      }
       const byId = new Map<string, OrgEmployeeDto>();
       for (const m of teamRows) byId.set(m.id, m);
       for (const m of selfRows) byId.set(m.id, m);
+      for (const m of linkedRows) byId.set(m.id, m);
       return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
     }
     if (ctx.role === 'EMPLOYEE') {

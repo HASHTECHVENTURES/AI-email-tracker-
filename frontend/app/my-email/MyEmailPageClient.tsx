@@ -2009,12 +2009,20 @@ function MyEmailPageInner() {
       );
       if (selfs.length > 0) return selfs;
     }
-    /** Department manager: all your `SELF` personal rows (any address). */
-    if (isDepartmentManagerRole(me?.role)) {
-      const selfs = mailboxes.filter((mb) => mb.mailbox_type === 'SELF');
-      if (selfs.length > 0) return selfs;
-    }
     const linkId = me?.linked_employee_id?.trim();
+    /** Department manager: include linked employee mailbox (if any) and SELF rows. */
+    if (isDepartmentManagerRole(me?.role)) {
+      const mine: Mailbox[] = [];
+      if (linkId) {
+        const linked = mailboxes.find((mb) => mb.id === linkId);
+        if (linked) mine.push(linked);
+      }
+      const selfs = mailboxes.filter((mb) => mb.mailbox_type === 'SELF');
+      for (const mb of selfs) {
+        if (!mine.some((m) => m.id === mb.id)) mine.push(mb);
+      }
+      if (mine.length > 0) return mine;
+    }
     if (linkId) {
       const byLink = mailboxes.filter((mb) => mb.id === linkId);
       if (byLink.length > 0) return byLink;
