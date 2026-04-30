@@ -208,6 +208,7 @@ export function AppShell({
   const managerMessagesActive = pathname === '/manager-messages';
   const teamMailSyncActive = pathname === '/team-mail-sync';
   const managerInboxActive = managerMessagesActive || deptAlertsFocus;
+  const ceoDepartmentsActive = pathname === '/departments' && !deptAlertsFocus;
   const brandTitle = companyName?.trim() || 'AI Auto Mail';
   const personLine = userDisplayName?.trim() || null;
   const showTeamSwitcher =
@@ -354,7 +355,7 @@ export function AppShell({
                   <SafeLink href="/departments#team-members" className={navItemClass(deptAlertsFocus)}>
                     Messages & alerts
                   </SafeLink>
-                  <SafeLink href="/departments" className={navItemClass(pathname === '/departments')}>
+                  <SafeLink href="/departments" className={navItemClass(ceoDepartmentsActive)}>
                     Departments
                   </SafeLink>
                   <SafeLink href="/employees" className={navItemClass(pathname === '/employees')}>
@@ -528,7 +529,7 @@ export function AppShell({
                   <SafeLink href="/departments#team-members" className={navMobileClass(deptAlertsFocus)}>
                     Messages
                   </SafeLink>
-                  <SafeLink href="/departments" className={navMobileClass(pathname === '/departments')}>
+                  <SafeLink href="/departments" className={navMobileClass(ceoDepartmentsActive)}>
                     Departments
                   </SafeLink>
                   <SafeLink href="/employees" className={navMobileClass(pathname === '/employees')}>
