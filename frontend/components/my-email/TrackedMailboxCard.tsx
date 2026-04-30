@@ -19,6 +19,7 @@ type TrackedMailboxCardProps = {
   onTogglePause?: (paused: boolean) => void;
   removing: boolean;
   togglePauseLoading?: boolean;
+  hideReconnectWhenConnected?: boolean;
 };
 
 export function TrackedMailboxCard({
@@ -28,8 +29,10 @@ export function TrackedMailboxCard({
   onTogglePause,
   removing,
   togglePauseLoading = false,
+  hideReconnectWhenConnected = false,
 }: TrackedMailboxCardProps) {
   const isOn = mb.tracking_paused !== true && mb.gmail_connected === true;
+  const showConnectButton = !(hideReconnectWhenConnected && mb.gmail_connected);
 
   return (
     <div className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-card hover:-translate-y-[1px] hover:shadow-card-hover">
@@ -39,13 +42,15 @@ export function TrackedMailboxCard({
           <p className="truncate text-xs text-slate-500">{mb.email}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={onConnectGmail}
-            className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 hover:shadow-md"
-          >
-            {mb.gmail_connected ? 'Reconnect' : 'Connect Gmail'}
-          </button>
+          {showConnectButton ? (
+            <button
+              type="button"
+              onClick={onConnectGmail}
+              className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 hover:shadow-md"
+            >
+              {mb.gmail_connected ? 'Reconnect' : 'Connect Gmail'}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onRemove}
