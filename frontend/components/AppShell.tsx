@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
+import { apiFetch } from '@/lib/api';
 import { setActAsEmployeeView } from '@/lib/api';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { useActAsEmployeeMailboxView } from '@/lib/use-act-as-employee-mailbox';
@@ -155,8 +156,9 @@ export function AppShell({
 }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const { me, managerActiveDepartmentId, setManagerActiveDepartmentId } = useAuth();
+  const { me, token, managerActiveDepartmentId, setManagerActiveDepartmentId } = useAuth();
   const managedTeams = me?.managed_departments ?? [];
+  const [fallbackMailboxCrawlEnabled, setFallbackMailboxCrawlEnabled] = useState<boolean | undefined>(undefined);
   const [locHash, setLocHash] = useState('');
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -210,6 +212,23 @@ export function AppShell({
   const personLine = userDisplayName?.trim() || null;
   const showTeamSwitcher =
     isHead && !isPlatformAdmin && (managedTeams.length > 1);
+  const effectiveMailboxCrawlEnabled =
+    mailboxCrawlEnabled === undefined ? fallbackMailboxCrawlEnabled : mailboxCrawlEnabled;
+
+  useEffect(() => {
+    if (mailboxCrawlEnabled !== undefined || !token || isPlatformAdmin) return;
+    let cancelled = false;
+    (async () => {
+      const res = await apiFetch('/settings', token);
+      if (!res.ok) return;
+      const body = (await res.json().catch(() => ({}))) as { email_crawl_enabled?: unknown };
+      if (cancelled) return;
+      setFallbackMailboxCrawlEnabled(body.email_crawl_enabled !== false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mailboxCrawlEnabled, token, isPlatformAdmin, pathname]);
 
   return (
     <div className="min-h-screen bg-surface text-slate-900">
@@ -562,7 +581,7 @@ export function AppShell({
                 ) : null}
               </div>
               <ShellStatusStrip
-                mailboxCrawlEnabled={mailboxCrawlEnabled}
+                mailboxCrawlEnabled={effectiveMailboxCrawlEnabled}
                 isActive={isActive}
                 syncStripKind={syncStripKind}
                 aiBriefingsEnabled={aiBriefingsEnabled}
