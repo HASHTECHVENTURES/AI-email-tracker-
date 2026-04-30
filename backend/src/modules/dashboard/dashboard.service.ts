@@ -1411,6 +1411,7 @@ ${dataBlock}`;
       .from('employees')
       .select('id, name, email, department_id')
       .eq('company_id', companyId)
+      .eq('is_active', true)
       .or('mailbox_type.is.null,mailbox_type.eq.TEAM')
       .order('name', { ascending: true });
     if (departmentIds && departmentIds.length > 0) {
@@ -1485,6 +1486,7 @@ ${dataBlock}`;
       .from('employees')
       .select('id, name, email, department_id')
       .eq('company_id', companyId)
+      .eq('is_active', true)
       .in('id', extraIds)
       .or('mailbox_type.is.null,mailbox_type.eq.TEAM');
     if (extraErr) {

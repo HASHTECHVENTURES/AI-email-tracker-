@@ -56,6 +56,9 @@ export class DashboardController {
         ? [...new Set(filterEmployeeIdsRaw.split(',').map((s) => s.trim()).filter(Boolean))]
         : undefined;
     const actAs = ctx.actAsEmployeePortal === true;
+    if (u.role === 'HEAD' && !actAs && !ctx.departmentId) {
+      throw new ForbiddenException('This manager is not assigned to an active department.');
+    }
     const effectiveRole = actAs ? 'EMPLOYEE' : u.role;
     return this.dashboardService.getDashboard(
       ctx.companyId,
@@ -102,6 +105,9 @@ export class DashboardController {
   ) {
     const ctx = getRequestContext(req);
     const actAs = ctx.actAsEmployeePortal === true;
+    if (ctx.role === 'HEAD' && !actAs && !ctx.departmentId) {
+      throw new ForbiddenException('This manager is not assigned to an active department.');
+    }
     const conversations = await this.dashboardService.getConversationsList({
       companyId: ctx.companyId,
       departmentId: actAs || ctx.role !== 'HEAD' ? undefined : ctx.departmentId,

@@ -938,6 +938,7 @@ export class EmployeesService {
         'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type, roster_duplicate',
       )
       .eq('company_id', ctx.companyId)
+      .eq('is_active', true)
       .or('mailbox_type.is.null,mailbox_type.eq.TEAM')
       .order('name', { ascending: true });
 
@@ -959,6 +960,7 @@ export class EmployeesService {
           'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
         )
         .eq('company_id', ctx.companyId)
+        .eq('is_active', true)
         .order('name', { ascending: true });
       if (ctx.role === 'HEAD') {
         if (!ctx.departmentId) {
@@ -1085,6 +1087,7 @@ export class EmployeesService {
         'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
       )
       .eq('company_id', companyId)
+      .eq('is_active', true)
       .eq('roster_duplicate', false)
       .or('mailbox_type.is.null,mailbox_type.eq.TEAM')
       .order('name', { ascending: true });
@@ -1101,6 +1104,7 @@ export class EmployeesService {
           'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled',
         )
         .eq('company_id', companyId)
+        .eq('is_active', true)
         .eq('roster_duplicate', false)
         .order('name', { ascending: true });
       if (r2.error) {

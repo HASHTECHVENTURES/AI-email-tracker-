@@ -276,6 +276,17 @@ export class DepartmentsService {
     }
   }
 
+  private async safeDeleteAuthUser(userId: string): Promise<void> {
+    try {
+      const { error } = await this.supabase.auth.admin.deleteUser(userId);
+      if (error) {
+        this.logger.warn(`delete auth user ${userId}: ${error.message}`);
+      }
+    } catch (err) {
+      this.logger.warn(`delete auth user ${userId}: ${(err as Error).message}`);
+    }
+  }
+
   async delete(companyId: string, id: string): Promise<void> {
     const { error } = await this.supabase
       .from('departments')
@@ -289,6 +300,83 @@ export class DepartmentsService {
   }
 
   async deleteWithCleanup(companyId: string, id: string): Promise<void> {
+    const [membershipManagers, legacyManagers, teamRows] = await Promise.all([
+      this.supabase
+        .from('manager_department_memberships')
+        .select('user_id')
+        .eq('company_id', companyId)
+        .eq('department_id', id),
+      this.supabase
+        .from('users')
+        .select('id')
+        .eq('company_id', companyId)
+        .eq('role', 'HEAD')
+        .eq('department_id', id),
+      this.supabase
+        .from('employees')
+        .select('id')
+        .eq('company_id', companyId)
+        .eq('department_id', id),
+    ]);
+
+    if (membershipManagers.error) {
+      this.logger.warn(`Failed to load manager memberships for dept ${id}: ${membershipManagers.error.message}`);
+    }
+    if (legacyManagers.error) {
+      this.logger.warn(`Failed to load legacy managers for dept ${id}: ${legacyManagers.error.message}`);
+    }
+    if (teamRows.error) {
+      this.logger.warn(`Failed to load team employees for dept ${id}: ${teamRows.error.message}`);
+    }
+
+    const managerIds = new Set<string>();
+    for (const row of membershipManagers.data ?? []) {
+      const uid = (row as { user_id?: string }).user_id;
+      if (uid) managerIds.add(uid);
+    }
+    for (const row of legacyManagers.data ?? []) {
+      const uid = (row as { id?: string }).id;
+      if (uid) managerIds.add(uid);
+    }
+
+    const employeeIds = (teamRows.data ?? [])
+      .map((row) => (row as { id?: string }).id)
+      .filter((employeeId): employeeId is string => Boolean(employeeId));
+
+    if (employeeIds.length > 0) {
+      const { data: linkedUsers, error: linkedErr } = await this.supabase
+        .from('users')
+        .select('id')
+        .eq('company_id', companyId)
+        .in('linked_employee_id', employeeIds);
+      if (linkedErr) {
+        this.logger.warn(`Failed to load linked employee users for dept ${id}: ${linkedErr.message}`);
+      }
+      for (const row of linkedUsers ?? []) {
+        const uid = (row as { id?: string }).id;
+        if (!uid) continue;
+        const { error: delProfileErr } = await this.supabase
+          .from('users')
+          .delete()
+          .eq('company_id', companyId)
+          .eq('id', uid);
+        if (delProfileErr) {
+          this.logger.warn(`Failed to delete employee profile ${uid}: ${delProfileErr.message}`);
+          continue;
+        }
+        await this.safeDeleteAuthUser(uid);
+      }
+
+      const { error: empDelErr } = await this.supabase
+        .from('employees')
+        .delete()
+        .eq('company_id', companyId)
+        .eq('department_id', id);
+      if (empDelErr) {
+        this.logger.warn(`Failed to delete team employees for dept ${id}: ${empDelErr.message}`);
+      }
+    }
+
     const { error: memErr } = await this.supabase
       .from('manager_department_memberships')
       .delete()
@@ -298,22 +386,74 @@ export class DepartmentsService {
       this.logger.warn(`Failed to clear manager_department_memberships for dept ${id}: ${memErr.message}`);
     }
 
-    const { error: empErr } = await this.supabase
-      .from('employees')
-      .update({ department_id: null })
-      .eq('company_id', companyId)
-      .eq('department_id', id);
-    if (empErr) {
-      this.logger.warn(`Failed to unassign employees from dept ${id}: ${empErr.message}`);
-    }
+    for (const managerId of managerIds) {
+      const { data: profile, error: profileErr } = await this.supabase
+        .from('users')
+        .select('id, role, department_id, linked_employee_id')
+        .eq('company_id', companyId)
+        .eq('id', managerId)
+        .maybeSingle();
+      if (profileErr || !profile) {
+        if (profileErr) this.logger.warn(`Failed to load manager ${managerId}: ${profileErr.message}`);
+        continue;
+      }
 
-    const { error: userErr } = await this.supabase
-      .from('users')
-      .update({ department_id: null })
-      .eq('company_id', companyId)
-      .eq('department_id', id);
-    if (userErr) {
-      this.logger.warn(`Failed to unassign users from dept ${id}: ${userErr.message}`);
+      const { data: remainingMems, error: remainingErr } = await this.supabase
+        .from('manager_department_memberships')
+        .select('department_id')
+        .eq('company_id', companyId)
+        .eq('user_id', managerId);
+      if (remainingErr) {
+        this.logger.warn(`Failed to load remaining manager memberships for ${managerId}: ${remainingErr.message}`);
+      }
+
+      const remainingDepartmentId = (remainingMems ?? [])[0]?.department_id as string | undefined;
+      const currentDepartmentId = (profile as { department_id?: string | null }).department_id ?? null;
+      const linkedEmployeeId = (profile as { linked_employee_id?: string | null }).linked_employee_id ?? null;
+
+      if (remainingDepartmentId) {
+        if (currentDepartmentId === id || !currentDepartmentId) {
+          const { error: updateErr } = await this.supabase
+            .from('users')
+            .update({ department_id: remainingDepartmentId })
+            .eq('company_id', companyId)
+            .eq('id', managerId);
+          if (updateErr) {
+            this.logger.warn(`Failed to move manager ${managerId} to remaining dept: ${updateErr.message}`);
+          }
+        }
+        continue;
+      }
+
+      if (linkedEmployeeId) {
+        const { data: linkedEmp } = await this.supabase
+          .from('employees')
+          .select('department_id')
+          .eq('company_id', companyId)
+          .eq('id', linkedEmployeeId)
+          .maybeSingle();
+        const employeeDepartmentId = (linkedEmp as { department_id?: string | null } | null)?.department_id ?? null;
+        const { error: demoteErr } = await this.supabase
+          .from('users')
+          .update({ role: 'EMPLOYEE', department_id: employeeDepartmentId })
+          .eq('company_id', companyId)
+          .eq('id', managerId);
+        if (demoteErr) {
+          this.logger.warn(`Failed to demote manager ${managerId}: ${demoteErr.message}`);
+        }
+        continue;
+      }
+
+      const { error: delProfileErr } = await this.supabase
+        .from('users')
+        .delete()
+        .eq('company_id', companyId)
+        .eq('id', managerId);
+      if (delProfileErr) {
+        this.logger.warn(`Failed to delete manager profile ${managerId}: ${delProfileErr.message}`);
+        continue;
+      }
+      await this.safeDeleteAuthUser(managerId);
     }
 
     await this.delete(companyId, id);
