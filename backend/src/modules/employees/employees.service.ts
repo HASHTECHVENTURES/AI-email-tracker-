@@ -1188,13 +1188,19 @@ export class EmployeesService {
     // where a manager is assigned but users.role may not currently be HEAD).
     const { data: memberships, error: memErr } = await this.supabase
       .from('manager_department_memberships')
-      .select('user_id')
+      .select('user_id, department_id')
       .eq('company_id', companyId);
-    const membershipUserIds = new Set(
-      ((memberships ?? []) as Array<{ user_id?: string | null }>)
-        .map((m) => m.user_id ?? '')
-        .filter((id) => id.length > 0),
-    );
+    const membershipRows = (memberships ?? []) as Array<{ user_id?: string | null; department_id?: string | null }>;
+    const membershipUserIds = new Set(membershipRows.map((m) => m.user_id ?? '').filter((id) => id.length > 0));
+    const membershipDeptIdsByUser = new Map<string, Set<string>>();
+    for (const m of membershipRows) {
+      const uid = m.user_id ?? '';
+      const did = m.department_id ?? '';
+      if (!uid || !did) continue;
+      const bag = membershipDeptIdsByUser.get(uid) ?? new Set<string>();
+      bag.add(did);
+      membershipDeptIdsByUser.set(uid, bag);
+    }
     if (memErr) {
       this.logger.warn(`getManagerMailboxIndicators memberships fallback skipped: ${memErr.message}`);
     }
@@ -1217,11 +1223,55 @@ export class EmployeesService {
     const linkedEmployeeIds = new Set<string>();
     const emailsNormalized = new Set<string>();
     const headUserIds = new Set<string>();
+    const missingLinkedByUser = new Map<string, { email: string; deptIds: Set<string> }>();
     for (const row of allManagerRows) {
       const r = row as { id?: string; email?: string; linked_employee_id?: string | null };
       if (r.id) headUserIds.add(r.id);
       if (r.linked_employee_id) linkedEmployeeIds.add(r.linked_employee_id);
-      if (r.email) emailsNormalized.add(String(r.email).trim().toLowerCase());
+      const emailNorm = r.email ? String(r.email).trim().toLowerCase() : '';
+      if (emailNorm) emailsNormalized.add(emailNorm);
+      if (r.id && !r.linked_employee_id && emailNorm) {
+        missingLinkedByUser.set(r.id, {
+          email: emailNorm,
+          deptIds: membershipDeptIdsByUser.get(r.id) ?? new Set<string>(),
+        });
+      }
+    }
+
+    if (missingLinkedByUser.size > 0) {
+      const missingEmails = [...new Set(Array.from(missingLinkedByUser.values()).map((x) => x.email))];
+      const { data: empCandidates, error: empErr } = await this.supabase
+        .from('employees')
+        .select('id, email, department_id, created_at')
+        .eq('company_id', companyId)
+        .eq('is_active', true)
+        .in('email', missingEmails);
+      if (empErr) {
+        this.logger.warn(`getManagerMailboxIndicators employee fallback skipped: ${empErr.message}`);
+      } else {
+        const byEmail = new Map<string, Array<{ id: string; department_id: string | null; created_at: string }>>();
+        for (const row of (empCandidates ?? []) as Array<{
+          id: string;
+          email: string;
+          department_id: string | null;
+          created_at: string;
+        }>) {
+          const em = row.email.trim().toLowerCase();
+          const arr = byEmail.get(em) ?? [];
+          arr.push({ id: row.id, department_id: row.department_id, created_at: row.created_at });
+          byEmail.set(em, arr);
+        }
+        for (const info of missingLinkedByUser.values()) {
+          const candidates = byEmail.get(info.email) ?? [];
+          if (candidates.length === 0) continue;
+          const inManagedDept = candidates.filter(
+            (c) => c.department_id != null && info.deptIds.has(c.department_id),
+          );
+          const pool = inManagedDept.length > 0 ? inManagedDept : candidates;
+          pool.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+          if (pool[0]?.id) linkedEmployeeIds.add(pool[0].id);
+        }
+      }
     }
     return { linkedEmployeeIds, emailsNormalized, headUserIds };
   }

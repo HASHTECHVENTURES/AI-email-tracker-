@@ -153,11 +153,9 @@ export class SelfTrackingService {
       const merged = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
       const indicators = await this.employeesService.getManagerMailboxIndicators(ctx.companyId);
       return merged.map((m) => {
-        const em = m.email.trim().toLowerCase();
         const createdBy = m.created_by ?? null;
         const is_manager_mailbox =
           indicators.linkedEmployeeIds.has(m.id) ||
-          indicators.emailsNormalized.has(em) ||
           (m.mailbox_type === 'SELF' &&
             createdBy != null &&
             indicators.headUserIds.has(createdBy));
