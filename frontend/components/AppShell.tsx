@@ -97,7 +97,7 @@ function ShellStatusStrip({
     mailboxCrawlEnabled === false
       ? { dot: 'bg-slate-300', text: 'Sync paused' as const }
       : syncStripKind === 'gmail_not_linked'
-        ? { dot: 'bg-slate-400', text: 'Gmail not connected' as const }
+        ? { dot: 'bg-slate-400', text: 'Sync paused' as const }
         : isActive
           ? { dot: 'bg-emerald-500', text: 'In sync' as const }
           : { dot: 'bg-red-500', text: 'Sync issue' as const };
