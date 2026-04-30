@@ -3727,6 +3727,9 @@ function MyEmailPageInner() {
       title={pageTitle}
       subtitle={shellSubtitle}
       isActive={headerInboxGmailConnected}
+      mailboxCrawlEnabled={
+        liveIngestSchedule == null ? undefined : liveIngestSchedule.nextIngestionAt != null
+      }
       lastSyncLabel={headerOwnInboxLastSyncLabel}
       onSignOut={() => void ctxSignOut()}
     >
