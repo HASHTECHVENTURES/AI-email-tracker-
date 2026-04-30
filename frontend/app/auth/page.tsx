@@ -421,12 +421,12 @@ function AuthPageInner() {
   ]);
 
   useEffect(() => {
-    if (phase !== 'boot' || authCtxLoading) return;
+    if (phase !== 'boot') return;
     const id = window.setTimeout(() => {
       setPhase('auth');
     }, 1500);
     return () => window.clearTimeout(id);
-  }, [phase, authCtxLoading]);
+  }, [phase]);
 
   /** Map SignupRole UI value → backend API role string. */
   function signupRoleToApiRole(r: SignupRole | ''): string | null {

@@ -148,6 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await supabase.auth.signOut();
         setMe(null);
         setToken(null);
+        setLoading(false);
         setError(null);
         setManagerActiveDepartmentIdState(null);
         setShellRoleHint(null);
@@ -237,6 +238,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!session) {
         setMe(null);
         setToken(null);
+        setLoading(false);
         setError(null);
         setManagerActiveDepartmentIdState(null);
         setShellRoleHint(null);
