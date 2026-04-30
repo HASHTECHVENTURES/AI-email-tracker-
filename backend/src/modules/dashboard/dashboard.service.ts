@@ -991,24 +991,75 @@ ${dataBlock}`;
 
     const empIds = [...new Set(raw.map((r) => r.employee_id))];
     let empDeptById = new Map<string, string | null>();
+    let empEmailById = new Map<string, string>();
     if (empIds.length > 0) {
       const { data: emps, error: eErr } = await this.supabase
         .from('employees')
-        .select('id, department_id')
+        .select('id, department_id, email')
         .eq('company_id', companyId)
         .in('id', empIds);
       if (eErr) {
         this.logger.warn(`getCeoDepartmentRollups employees: ${eErr.message}`);
       } else {
-        empDeptById = new Map((emps ?? []).map((e: { id: string; department_id: string | null }) => [e.id, e.department_id]));
+        empDeptById = new Map(
+          (emps ?? []).map((e: { id: string; department_id: string | null }) => [e.id, e.department_id]),
+        );
+        empEmailById = new Map(
+          (emps ?? []).map((e: { id: string; email?: string | null }) => [
+            e.id,
+            String(e.email ?? '').trim().toLowerCase(),
+          ]),
+        );
+      }
+    }
+
+    /**
+     * Some manager-linked mailbox rows can have NULL `employees.department_id` (legacy/self rows).
+     * Map those by manager email to a concrete department so they don't inflate "Unassigned".
+     */
+    const managerDeptByEmail = new Map<string, string>();
+    const { data: headUsers } = await this.supabase
+      .from('users')
+      .select('id, email, department_id')
+      .eq('company_id', companyId)
+      .eq('role', 'HEAD');
+    const headRows =
+      (headUsers ?? []) as Array<{ id: string; email: string | null; department_id: string | null }>;
+    for (const h of headRows) {
+      const em = String(h.email ?? '').trim().toLowerCase();
+      const did = String(h.department_id ?? '').trim();
+      if (em && did) managerDeptByEmail.set(em, did);
+    }
+    const { data: memberships } = await this.supabase
+      .from('manager_department_memberships')
+      .select('user_id, department_id')
+      .eq('company_id', companyId);
+    if (memberships?.length) {
+      const memRows = memberships as Array<{ user_id: string; department_id: string }>;
+      const deptByUser = new Map<string, string>();
+      for (const m of memRows) {
+        if (!deptByUser.has(m.user_id)) {
+          deptByUser.set(m.user_id, m.department_id);
+        }
+      }
+      for (const h of headRows) {
+        const em = String(h.email ?? '').trim().toLowerCase();
+        if (!em) continue;
+        if (managerDeptByEmail.has(em)) continue;
+        const dep = deptByUser.get(h.id);
+        if (dep) managerDeptByEmail.set(em, dep);
       }
     }
 
     const deptFilterFn = (r: RawAggRow, allowDept: Set<string>): boolean => {
       const fromConv = normDept(r.department_id);
       const fromEmp = normDept(empDeptById.get(r.employee_id) ?? null);
+      const fromManagerMailbox = normDept(
+        managerDeptByEmail.get(empEmailById.get(r.employee_id) ?? '') ?? null,
+      );
       const eff = fromConv ?? fromEmp ?? null;
-      return eff != null && allowDept.has(eff);
+      const effective = eff ?? fromManagerMailbox ?? null;
+      return effective != null && allowDept.has(effective);
     };
 
     /**
@@ -1040,7 +1091,10 @@ ${dataBlock}`;
     const rows: Row[] = raw.map((r) => {
       const fromConv = normDept(r.department_id);
       const fromEmp = normDept(empDeptById.get(r.employee_id) ?? null);
-      const eff = fromConv ?? fromEmp ?? null;
+      const fromManagerMailbox = normDept(
+        managerDeptByEmail.get(empEmailById.get(r.employee_id) ?? '') ?? null,
+      );
+      const eff = fromConv ?? fromEmp ?? fromManagerMailbox ?? null;
       return {
         department_id: eff,
         follow_up_status: r.follow_up_status,
