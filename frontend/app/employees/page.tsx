@@ -602,20 +602,6 @@ function EmployeesPageInner() {
                       <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
                         <button
                           type="button"
-                          onClick={() => void connectGmail(emp.id)}
-                          className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-2 text-xs font-semibold text-white hover:opacity-95"
-                        >
-                          {emp.gmail_connected ? 'Reconnect' : 'Connect Gmail'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => router.push(`/employees/${encodeURIComponent(emp.id)}/mails`)}
-                          className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                        >
-                          View mails
-                        </button>
-                        <button
-                          type="button"
                           onClick={() => void deleteEmployee(emp.id, emp.name)}
                           className="rounded-xl border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50"
                         >

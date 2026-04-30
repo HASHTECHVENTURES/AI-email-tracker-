@@ -2972,14 +2972,14 @@ function MyEmailPageInner() {
     return managerMailboxes.filter((m) => selected.has(m.id));
   }, [managerMailboxes, managerScopeMailboxIds]);
 
-  /** Individual contributors & other team mailboxes (not the CEO inbox, not a manager row). */
+  /** Employee mail tab: all non-CEO team mailboxes, including manager rows. */
   const teamMailboxesOnly = useMemo(
     () =>
       mailboxes.filter((mb) => {
         if (ceoEmailNorm !== '' && mb.email.trim().toLowerCase() === ceoEmailNorm) {
           return false;
         }
-        return mb.is_manager_mailbox !== true;
+        return true;
       }),
     [mailboxes, ceoEmailNorm],
   );
@@ -4994,8 +4994,7 @@ function MyEmailPageInner() {
                   className="scroll-mt-24 rounded-2xl border border-slate-100 bg-white px-4 py-5 shadow-sm sm:px-6"
                 >
                   <p className="text-xs text-slate-600">
-                    Individual contributors and other org mail — <strong>not</strong> your CEO login and{' '}
-                    <strong>not</strong> department manager rows (those are under Manager mail).
+                    All non-CEO org mailboxes, including department managers and individual contributors.
                   </p>
                   {teamMailboxesOnly.length > 1 ? (
                     <div className="mt-3 max-w-sm">
@@ -5019,7 +5018,7 @@ function MyEmailPageInner() {
                         </select>
                       </label>
                       <p className="mt-1 text-[11px] text-slate-500">
-                        Select one, two, or any number of employee inboxes. Leave unselected to show all.
+                        Select one or more mailboxes. Leave unselected to show all.
                       </p>
                     </div>
                   ) : null}
