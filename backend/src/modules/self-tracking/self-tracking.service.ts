@@ -111,7 +111,22 @@ export class SelfTrackingService {
         .eq('company_id', ctx.companyId)
         .eq('id', uid)
         .maybeSingle();
-      const linkedId = (linkedProfile as { linked_employee_id?: string | null } | null)?.linked_employee_id ?? null;
+      let linkedId = (linkedProfile as { linked_employee_id?: string | null } | null)?.linked_employee_id ?? null;
+      if (!linkedId) {
+        const callerNorm = callerEmail.trim().toLowerCase();
+        if (callerNorm.length > 0) {
+          const { data: empByEmail } = await this.supabase
+            .from('employees')
+            .select('id')
+            .eq('company_id', ctx.companyId)
+            .eq('is_active', true)
+            .eq('email', callerNorm)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          linkedId = (empByEmail as { id?: string } | null)?.id ?? null;
+        }
+      }
       if (linkedId) {
         linkedRows = await this.employeesService.getLinkedPortalEmployeeMailbox({
           ...ctx,
