@@ -43,6 +43,8 @@ type Mailbox = {
   tracking_start_at?: string | null;
   tracking_paused?: boolean;
   ai_enabled?: boolean;
+  /** True when this mailbox email has an app portal login. */
+  has_portal_login?: boolean;
 };
 
 /** Prefer API boolean; fall back to status string (some paths only set `gmail_status`). */
@@ -2972,14 +2974,15 @@ function MyEmailPageInner() {
     return managerMailboxes.filter((m) => selected.has(m.id));
   }, [managerMailboxes, managerScopeMailboxIds]);
 
-  /** Employee mail tab: non-manager mailboxes (keep manager rows under Manager mail). */
+  /** Employee mail tab: non-manager mailboxes + dual-role manager mailboxes (manager with portal login). */
   const teamMailboxesOnly = useMemo(
     () =>
       mailboxes.filter((mb) => {
         if (ceoEmailNorm !== '' && mb.email.trim().toLowerCase() === ceoEmailNorm) {
           return false;
         }
-        return mb.is_manager_mailbox !== true;
+        if (mb.is_manager_mailbox !== true) return true;
+        return mb.has_portal_login === true;
       }),
     [mailboxes, ceoEmailNorm],
   );
@@ -4994,7 +4997,7 @@ function MyEmailPageInner() {
                   className="scroll-mt-24 rounded-2xl border border-slate-100 bg-white px-4 py-5 shadow-sm sm:px-6"
                 >
                   <p className="text-xs text-slate-600">
-                    Individual contributors and non-manager org mailboxes (manager rows are under Manager mail).
+                    Individual contributors plus dual-role manager mailboxes (manager-only rows stay under Manager mail).
                   </p>
                   {teamMailboxesOnly.length > 1 ? (
                     <div className="mt-3 max-w-sm">
