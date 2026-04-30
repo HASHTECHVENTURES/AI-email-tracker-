@@ -1175,7 +1175,7 @@ export class EmployeesService {
     /** `users.id` for every department manager — used to tag SELF mailboxes they created. */
     headUserIds: Set<string>;
   }> {
-    const { data, error } = await this.supabase
+    const { data: headRows, error } = await this.supabase
       .from('users')
       .select('id, email, linked_employee_id')
       .eq('company_id', companyId)
@@ -1184,10 +1184,42 @@ export class EmployeesService {
       this.logger.error('getManagerMailboxIndicators', error.message);
       return { linkedEmployeeIds: new Set(), emailsNormalized: new Set(), headUserIds: new Set() };
     }
+    const headRowsNorm = (headRows ?? []) as Array<{ id?: string; email?: string; linked_employee_id?: string | null }>;
+
+    // Also treat users in manager_department_memberships as managers (covers legacy/transition rows
+    // where a manager is assigned but users.role may not currently be HEAD).
+    const { data: memberships, error: memErr } = await this.supabase
+      .from('manager_department_memberships')
+      .select('user_id')
+      .eq('company_id', companyId);
+    const membershipUserIds = new Set(
+      ((memberships ?? []) as Array<{ user_id?: string | null }>)
+        .map((m) => m.user_id ?? '')
+        .filter((id) => id.length > 0),
+    );
+    if (memErr) {
+      this.logger.warn(`getManagerMailboxIndicators memberships fallback skipped: ${memErr.message}`);
+    }
+
+    let memberRows: Array<{ id?: string; email?: string; linked_employee_id?: string | null }> = [];
+    if (membershipUserIds.size > 0) {
+      const { data: byMembership, error: byMemErr } = await this.supabase
+        .from('users')
+        .select('id, email, linked_employee_id')
+        .eq('company_id', companyId)
+        .in('id', [...membershipUserIds]);
+      if (byMemErr) {
+        this.logger.warn(`getManagerMailboxIndicators users by membership skipped: ${byMemErr.message}`);
+      } else {
+        memberRows = (byMembership ?? []) as Array<{ id?: string; email?: string; linked_employee_id?: string | null }>;
+      }
+    }
+
+    const allManagerRows = [...headRowsNorm, ...memberRows];
     const linkedEmployeeIds = new Set<string>();
     const emailsNormalized = new Set<string>();
     const headUserIds = new Set<string>();
-    for (const row of data ?? []) {
+    for (const row of allManagerRows) {
       const r = row as { id?: string; email?: string; linked_employee_id?: string | null };
       if (r.id) headUserIds.add(r.id);
       if (r.linked_employee_id) linkedEmployeeIds.add(r.linked_employee_id);
