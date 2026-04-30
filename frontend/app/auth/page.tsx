@@ -467,6 +467,15 @@ function AuthPageInner() {
         return;
       }
       const statusRes = await apiFetch('/auth/status', session.access_token);
+      if (!statusRes.ok) {
+        if (statusRes.status === 401) {
+          await supabase.auth.signOut();
+          setInfo('This login exists in Supabase but is not linked to an app account. Ask the admin to create your portal login or check the email/role.');
+        } else {
+          setInfo('Could not verify this account. Try again.');
+        }
+        return;
+      }
       const status = (await statusRes.json().catch(() => ({}))) as {
         needs_onboarding?: boolean;
         user?: { role?: string };
@@ -529,6 +538,8 @@ function AuthPageInner() {
       router.replace(
         consumeGmailConnectedRedirect(postLoginPath(status.user?.role, safeNext), gmailConnectedParam),
       );
+    } catch {
+      setInfo('Sign in could not complete. Please try again.');
     } finally {
       setLoading(false);
     }
