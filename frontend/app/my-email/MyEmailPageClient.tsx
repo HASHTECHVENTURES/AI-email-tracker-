@@ -137,7 +137,7 @@ function getInboxAiBlockers(s: IngestAiSettings, mb: Mailbox): string[] {
   }
   if (!s.gemini_api_key_configured) {
     blockers.push(
-      'The API your browser calls does not see a Gemini key yet. Add GEMINI_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY) on the **same Railway service that runs this backend**, then click **Redeploy** (variables apply to new deploys). Check `https://YOUR-BACKEND-HOST/health` — `gemini_configured` must be `true`.',
+      'The API your browser calls does not see an AI key yet. Add GEMINI_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY) on the **same Railway service that runs this backend**, then click **Redeploy** (variables apply to new deploys). Check `https://YOUR-BACKEND-HOST/health` — `gemini_configured` must be `true`.',
     );
     blockers.push(
       'If `/health` already shows `gemini_configured: true` but you still see this, the **frontend is pointed at a different server**: set `NEXT_PUBLIC_API_URL` on Vercel (or your host) to that Railway API URL and redeploy the frontend.',
@@ -3566,12 +3566,12 @@ function MyEmailPageInner() {
   const shellSubtitle =
     me.role === 'CEO'
       ? myEmailTab === 'ceo'
-        ? 'Your CEO inbox only. Gemini reads mail in your tracking window and keeps messages that may need a reply or follow-up.'
+        ? 'Your CEO inbox only. Mail in your tracking window appears here for follow-up.'
         : myEmailTab === 'manager'
           ? 'Department heads’ tracked inboxes.'
           : 'Individual contributors and other org mailboxes (not your CEO login).'
       : isDepartmentManagerRole(me.role)
-        ? 'Your inbox only. Gemini reads mail in your tracking window and keeps messages that may need a reply or follow-up.'
+        ? 'Your inbox only. Mail in your tracking window appears here for follow-up.'
         : me.role === 'EMPLOYEE'
           ? 'Your inbox: live mail, follow-ups, and historical search — same My Email tools as leadership, scoped to your mailbox. Connect Gmail here, run sync when you need it, and track SLAs on your threads.'
           : 'My Email';
@@ -3637,10 +3637,10 @@ function MyEmailPageInner() {
             }
           >
             {pipelineStep3Done
-              ? '3. Gemini inbox classification completed'
+              ? '3. Smart inbox filtering completed'
               : serverSyncPhase
-                ? '3. Gemini classifies each message (with thread context) as mail is ingested'
-                : '3. Gemini inbox classification...'}
+                ? '3. Smart filtering checks each message (with thread context) as mail is ingested'
+                : '3. Smart inbox filtering...'}
           </p>
           <p
             className={
@@ -3750,11 +3750,11 @@ function MyEmailPageInner() {
         >
           <div className="w-full max-w-md rounded-2xl border border-amber-200 bg-white p-6 shadow-2xl">
             <h2 id="ingest-without-ai-title" className="text-lg font-semibold text-slate-900">
-              Import without Inbox AI?
+              Import without filtering?
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-600">
-              Gemini cannot run inbox classification until the items below are fixed. Otherwise you can still sync and we
-              will store <strong className="font-medium">all</strong> mail in your tracking window (no AI filter).
+              Smart filtering cannot run until the items below are fixed. Otherwise you can still sync and we
+              will store <strong className="font-medium">all</strong> mail in your tracking window (no filter).
             </p>
             {ingestWithoutAiPrompt.blockers.length > 0 ? (
               <ul className="mt-3 list-inside list-disc space-y-1.5 rounded-lg border border-amber-100 bg-amber-50/80 px-3 py-2.5 text-left text-xs text-amber-950">
@@ -3763,9 +3763,7 @@ function MyEmailPageInner() {
                 ))}
               </ul>
             ) : null}
-            <p className="mt-3 text-xs text-slate-500">
-              Prefer AI filtering? Fix the list above, then click Start again without confirming unfiltered import.
-            </p>
+            <p className="mt-3 text-xs text-slate-500">Prefer filtering? Fix the list above, then click Start again.</p>
             <div className="mt-5 flex flex-wrap justify-end gap-2">
               <button
                 type="button"
@@ -4212,7 +4210,7 @@ function MyEmailPageInner() {
                               : 'pt-0.5'
                           }`}
                         >
-                          <p className="text-sm font-semibold text-slate-900">Inbox AI (Gemini)</p>
+                          <p className="text-sm font-semibold text-slate-900">Inbox filtering</p>
                           <div className="mt-2 flex flex-wrap items-baseline gap-2 tabular-nums">
                             <span
                               key={histLive.currentIndex}

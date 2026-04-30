@@ -1229,24 +1229,8 @@ ${dataBlock}`;
       });
     }
 
-    const orphan = byDept.get('___unassigned___') ?? [];
-    if (orphan.length > 0) {
-      const missed = orphan.filter((x) => x.follow_up_status === 'MISSED').length;
-      const pending = orphan.filter((x) => x.follow_up_status === 'PENDING').length;
-      const done = orphan.filter((x) => x.follow_up_status === 'DONE').length;
-      const need_attention_count = orphan.filter(needsAttentionRow).length;
-      rollups.push({
-        department_id: 'unassigned',
-        department_name: 'Unassigned (no department)',
-        manager_name: null,
-        manager_email: null,
-        total_threads: orphan.length,
-        missed,
-        pending,
-        done,
-        need_attention_count,
-      });
-    }
+    // Product decision: CEO org-load should only show real departments.
+    // We intentionally hide the synthetic "Unassigned" bucket from this panel.
 
     return rollups.sort((a, b) => {
       if (b.need_attention_count !== a.need_attention_count) return b.need_attention_count - a.need_attention_count;
