@@ -4997,7 +4997,7 @@ function MyEmailPageInner() {
                     <div key={mb.id} className="space-y-2">
                       <TrackedMailboxCard
                         mb={mb}
-                        ceoEmailNorm={ceoEmailNorm}
+                        showConnectGmail={false}
                         onConnectGmail={() => void connectGmail(mb.id)}
                         onRemove={() => void removeMailbox(mb.id)}
                         onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
@@ -5072,7 +5072,7 @@ function MyEmailPageInner() {
                       <div key={mb.id} className="space-y-2">
                         <TrackedMailboxCard
                           mb={mb}
-                          ceoEmailNorm={ceoEmailNorm}
+                          showConnectGmail={false}
                           onConnectGmail={() => void connectGmail(mb.id)}
                           onRemove={() => void removeMailbox(mb.id)}
                           onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
@@ -5278,7 +5278,9 @@ function MyEmailPageInner() {
               <div className="mt-6">
                 {!skippedMailboxCandidates.some((m) => isMailboxGmailConnected(m)) ? (
                   <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center text-sm text-slate-600">
-                    Connect Gmail on a mailbox card below to load skipped-message history.
+                    {myEmailTab === 'ceo'
+                      ? 'Connect Gmail on your inbox card above to load skipped-message history.'
+                      : 'Skipped mail history appears after at least one mailbox in this view has Gmail linked (owner connects on Employees or their login).'}
                   </div>
                 ) : (
                   <SkippedMailsTabTable
@@ -5317,7 +5319,9 @@ function MyEmailPageInner() {
                   ? 'No mailboxes in this view yet. Use Connect my Gmail in the Your inbox section above.'
                   : mailboxesForInboxShortcuts.some((m) => isMailboxGmailConnected(m))
                     ? 'No conversations yet — sync will create threads from relevant mail.'
-                    : 'Connect Gmail on a mailbox card below to start.'}
+                    : myEmailTab === 'ceo'
+                      ? 'Connect Gmail on your inbox card above to start.'
+                      : 'No linked Gmail in this view yet. Each mailbox owner connects their own inbox (Employees or their portal); you cannot connect for them here.'}
               </div>
             ) : searchFilteredTabRows.length === 0 ? (
               <p className="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">

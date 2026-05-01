@@ -13,7 +13,13 @@ export type TrackedMailbox = {
 
 type TrackedMailboxCardProps = {
   mb: TrackedMailbox;
-  ceoEmailNorm: string;
+  /** @deprecated Reserved for future use; connect visibility uses `showConnectGmail`. */
+  ceoEmailNorm?: string;
+  /**
+   * OAuth for Gmail must run as the mailbox owner. Hide on CEO “Manager mail” / “Employee mail”
+   * (and any tab listing other people’s inboxes) so leaders are not offered a broken Connect flow.
+   */
+  showConnectGmail?: boolean;
   onConnectGmail: () => void;
   onRemove: () => void;
   onTogglePause?: (paused: boolean) => void;
@@ -24,6 +30,7 @@ type TrackedMailboxCardProps = {
 
 export function TrackedMailboxCard({
   mb,
+  showConnectGmail = true,
   onConnectGmail,
   onRemove,
   onTogglePause,
@@ -32,7 +39,8 @@ export function TrackedMailboxCard({
   hideReconnectWhenConnected = false,
 }: TrackedMailboxCardProps) {
   const isOn = mb.tracking_paused !== true && mb.gmail_connected === true;
-  const showConnectButton = !(hideReconnectWhenConnected && mb.gmail_connected);
+  const showConnectButton =
+    showConnectGmail && !(hideReconnectWhenConnected && mb.gmail_connected);
 
   return (
     <div className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-card hover:-translate-y-[1px] hover:shadow-card-hover">
@@ -96,6 +104,11 @@ export function TrackedMailboxCard({
           </div>
         ) : null}
       </div>
+      {!showConnectGmail && !mb.gmail_connected ? (
+        <p className="mt-2 text-[10px] leading-snug text-slate-500">
+          Only the mailbox owner can connect Gmail (their login, Employees page, or team-mail sync).
+        </p>
+      ) : null}
 
       {mb.gmail_connected ? (
         <p className="mt-3 border-t border-slate-100 pt-2 text-[10px] leading-snug text-slate-500">
