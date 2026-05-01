@@ -16,7 +16,7 @@ function tablesSignature(tables: readonly RealtimeTableSpec[]): string {
 /**
  * Subscribes to Supabase Realtime `postgres_changes` for the given tables and debounces
  * `onSignal` (typically refetch via your Nest API). Requires DB publication + RLS SELECT
- * for `authenticated` — see backend migration `024_supabase_realtime_rls_select.sql`.
+ * for `authenticated` — see `024a` / `024b` migrations (enum must commit before policies).
  */
 export function useSupabaseRealtimeRefresh(options: {
   enabled: boolean;
