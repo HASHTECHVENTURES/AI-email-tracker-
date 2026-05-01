@@ -105,6 +105,109 @@ export class EmployeesService {
     );
   }
 
+  /**
+   * Manager mail is mailbox-driven (`employees` rows), while department assignment is user-driven.
+   * Keep a TEAM mailbox row for every department manager so CEO Manager mail can list them directly.
+   */
+  async ensureDepartmentManagerMailboxes(companyId: string): Promise<void> {
+    const { data: memberships, error: memErr } = await this.supabase
+      .from('manager_department_memberships')
+      .select('user_id, department_id')
+      .eq('company_id', companyId);
+    if (memErr) {
+      this.logger.warn(`ensureDepartmentManagerMailboxes memberships skipped: ${memErr.message}`);
+      return;
+    }
+
+    const rows = (memberships ?? []) as Array<{ user_id?: string | null; department_id?: string | null }>;
+    const userIds = [...new Set(rows.map((m) => m.user_id ?? '').filter((id) => id.length > 0))];
+    if (userIds.length === 0) return;
+
+    const { data: users, error: usersErr } = await this.supabase
+      .from('users')
+      .select('id, email, full_name')
+      .eq('company_id', companyId)
+      .in('id', userIds);
+    if (usersErr) {
+      this.logger.warn(`ensureDepartmentManagerMailboxes users skipped: ${usersErr.message}`);
+      return;
+    }
+
+    const userById = new Map(
+      ((users ?? []) as Array<{ id: string; email?: string | null; full_name?: string | null }>).map((u) => [u.id, u]),
+    );
+    await Promise.all(
+      rows.map(async (membership) => {
+        const userId = membership.user_id ?? '';
+        const departmentId = membership.department_id ?? '';
+        const user = userById.get(userId);
+        if (!user || !departmentId) return;
+        await this.ensureDepartmentManagerMailbox(companyId, departmentId, {
+          id: user.id,
+          email: user.email ?? '',
+          full_name: user.full_name ?? null,
+        });
+      }),
+    );
+  }
+
+  private async ensureDepartmentManagerMailbox(
+    companyId: string,
+    departmentId: string,
+    manager: { id: string; email: string; full_name: string | null },
+  ): Promise<void> {
+    const email = manager.email.trim().toLowerCase();
+    if (!email) return;
+
+    const { data: existing, error: existingErr } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('department_id', departmentId)
+      .eq('email', email)
+      .maybeSingle();
+    if (existingErr) {
+      this.logger.warn(`ensureDepartmentManagerMailbox existing lookup skipped: ${existingErr.message}`);
+      return;
+    }
+    if (existing) return;
+
+    const { data: primaryRows, error: primaryErr } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('email', email)
+      .eq('is_active', true)
+      .eq('roster_duplicate', false);
+    if (primaryErr) {
+      this.logger.warn(`ensureDepartmentManagerMailbox primary lookup skipped: ${primaryErr.message}`);
+      return;
+    }
+
+    const payload: Record<string, unknown> = {
+      name: manager.full_name?.trim() || email.split('@')[0] || 'Manager',
+      email,
+      company_id: companyId,
+      department_id: departmentId,
+      created_by: manager.id,
+      is_active: true,
+      ai_enabled: true,
+      tracking_paused: true,
+      tracking_start_at: null,
+      mailbox_type: 'TEAM',
+      roster_duplicate: ((primaryRows ?? []) as Array<{ id: string }>).length > 0,
+    };
+
+    let insertResult = await this.supabase.from('employees').insert(payload).select('id').single();
+    if (insertResult.error && this.isMissingMailboxTypeColumn(insertResult.error)) {
+      const { mailbox_type: _mailboxType, ...fallback } = payload;
+      insertResult = await this.supabase.from('employees').insert(fallback).select('id').single();
+    }
+    if (insertResult.error && (insertResult.error as { code?: string }).code !== '23505') {
+      this.logger.warn(`ensureDepartmentManagerMailbox insert skipped: ${insertResult.error.message}`);
+    }
+  }
+
   /** HEAD: personal `SELF` mailboxes they created (any `department_id`, often null). */
   private isHeadOwnSelfMailboxRow(
     ctx: RequestContext,

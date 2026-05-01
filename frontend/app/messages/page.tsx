@@ -65,7 +65,41 @@ function dateSeparatorLabel(iso: string): string {
 export default function MessagesPage() {
   const router = useRouter();
   const { me: authMe, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
-  const [me, setMe] = useState<Me | null>(null);
+  const allowEmployeeMessages =
+    !!authMe &&
+    (authMe.role === 'EMPLOYEE' ||
+      (isDepartmentManagerRole(authMe.role) && !!authMe.linked_employee_id?.trim()));
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!authMe || !token) {
+      router.replace('/auth');
+      return;
+    }
+    if (authMe.role === 'PLATFORM_ADMIN') {
+      router.replace('/admin');
+      return;
+    }
+    if (!allowEmployeeMessages) {
+      router.replace('/dashboard');
+    }
+  }, [authLoading, authMe, token, allowEmployeeMessages, router]);
+
+  if (authLoading || !authMe || !token || !allowEmployeeMessages) {
+    return (
+      <AppShell role="EMPLOYEE" title="Messages & alerts" subtitle="" onSignOut={() => void ctxSignOut()}>
+        <PortalPageLoader variant="embedded" />
+      </AppShell>
+    );
+  }
+
+  return <MessagesPageInner />;
+}
+
+function MessagesPageInner() {
+  const router = useRouter();
+  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut } = useAuth();
+  const me = authMe as Me;
   const [items, setItems] = useState<TeamAlertItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -194,7 +228,6 @@ export default function MessagesPage() {
       router.replace('/dashboard');
       return;
     }
-    setMe(authMe as Me);
     (async () => {
       await load();
       setLoading(false);
@@ -251,14 +284,6 @@ export default function MessagesPage() {
       return;
     }
     await load();
-  }
-
-  if (!me || authLoading) {
-    return (
-      <AppShell role="EMPLOYEE" title="Messages & alerts" subtitle="" onSignOut={() => void ctxSignOut()}>
-        <PortalPageLoader variant="embedded" />
-      </AppShell>
-    );
   }
 
   const rootMessageCount = roots.length;

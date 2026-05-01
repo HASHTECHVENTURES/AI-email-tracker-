@@ -146,6 +146,7 @@ export class SelfTrackingService {
 
     const selfRows = await this.employeesService.listSelfTracked(ctx.companyId);
     if (ctx.role === 'CEO') {
+      await this.employeesService.ensureDepartmentManagerMailboxes(ctx.companyId);
       const teamRows = await this.employeesService.listTeamMailboxesAcrossCompany(ctx.companyId);
       const byId = new Map<string, OrgEmployeeDto>();
       for (const m of teamRows) byId.set(m.id, m);

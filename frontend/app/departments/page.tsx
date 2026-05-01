@@ -83,6 +83,45 @@ function dateSeparatorLabel(iso: string): string {
 
 export default function DepartmentsPage() {
   const router = useRouter();
+  const { me: authMe, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
+  const shellRole = authMe?.role ?? shellRoleHint ?? 'EMPLOYEE';
+  const isBooting = authLoading || !authMe || !token;
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!authMe || !token) {
+      router.replace('/auth');
+      return;
+    }
+    if (authMe.role === 'PLATFORM_ADMIN') {
+      router.replace('/admin');
+      return;
+    }
+    if (authMe.role === 'EMPLOYEE') {
+      router.replace('/dashboard');
+    }
+  }, [authLoading, authMe, token, router]);
+
+  if (isBooting || authMe.role === 'PLATFORM_ADMIN' || authMe.role === 'EMPLOYEE') {
+    return (
+      <AppShell
+        role={shellRole}
+        companyName={authMe?.company_name ?? null}
+        userDisplayName={authMe?.full_name?.trim() || authMe?.email}
+        title="Departments"
+        subtitle=""
+        onSignOut={() => void ctxSignOut()}
+      >
+        <PortalPageLoader variant="embedded" />
+      </AppShell>
+    );
+  }
+
+  return <DepartmentsPageInner />;
+}
+
+function DepartmentsPageInner() {
+  const router = useRouter();
   const pathname = usePathname();
   const { me: authMe, token, loading: authLoading, signOut: ctxSignOut, shellRoleHint } = useAuth();
   const [rows, setRows] = useState<Department[]>([]);
@@ -1112,22 +1151,12 @@ export default function DepartmentsPage() {
             </div>
           </div>
           {teamLoadError ? <p className="text-sm text-red-600">{teamLoadError}</p> : null}
-          {!teamLoadError && (isHead ? teamMembers.length === 0 : ceoPeople.length === 0) ? (
+          {!teamLoadError && teamMembers.length === 0 ? (
             <p className="text-sm text-slate-500">
-              {isHead ? (
-                <>
-                  No team members yet. Add mailboxes from <span className="font-medium text-slate-800">Employees</span>.
-                </>
-              ) : (
-                <>
-                  No managers or tracked team mailboxes yet. Add department managers under{' '}
-                  <span className="font-medium text-slate-800">Departments</span> and employee mailboxes under{' '}
-                  <span className="font-medium text-slate-800">Employees</span>.
-                </>
-              )}
+              No team members yet. Add mailboxes from <span className="font-medium text-slate-800">Employees</span>.
             </p>
           ) : null}
-          {ceoPeople.length > 0 && isCeo && ceoMessagesMode ? (
+          {teamMembers.length > 0 && isCeo && ceoMessagesMode ? (
             <section className="overflow-hidden rounded-3xl border border-slate-200/70 bg-white shadow-card">
               <div className="grid min-h-[68vh] lg:grid-cols-[340px_minmax(0,1fr)]">
                 <aside className="border-r border-slate-200 bg-white">
