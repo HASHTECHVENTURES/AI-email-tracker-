@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
@@ -775,8 +775,12 @@ export default function PlatformAdminPage() {
       apiFetch('/platform-admin/companies', token),
     ]);
     if (sRes.ok) setStats((await sRes.json()) as Stats);
-    if (cRes.ok) setCompanies(((await cRes.json()) as CompanyRow[]) ?? []);
-    setError(null);
+    if (cRes.ok) {
+      setCompanies(((await cRes.json()) as CompanyRow[]) ?? []);
+      setError(null);
+    } else {
+      setError(await readApiErrorMessage(cRes, 'Could not load companies. Try again.'));
+    }
     setLoading(false);
   }, [token]);
 
@@ -856,6 +860,13 @@ export default function PlatformAdminPage() {
         setError((j as { message?: string }).message ?? 'Delete failed');
         return;
       }
+      setCompanies((rows) => rows.filter((c) => c.id !== id));
+      setCompanyDetails((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setExpandedCompanyId((cur) => (cur === id ? null : cur));
       await load();
     } finally {
       setDeletingId(null);

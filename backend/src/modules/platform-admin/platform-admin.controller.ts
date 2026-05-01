@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   Param,
   Patch,
   Post,
@@ -24,12 +25,14 @@ export class PlatformAdminController {
   }
 
   @Get('stats')
+  @Header('Cache-Control', 'no-store')
   @UseGuards(PlatformAdminGuard)
   stats() {
     return this.platformAdminService.getStats();
   }
 
   @Get('companies')
+  @Header('Cache-Control', 'no-store')
   @UseGuards(PlatformAdminGuard)
   companies() {
     return this.platformAdminService.listCompanies();
@@ -70,12 +73,14 @@ export class PlatformAdminController {
   }
 
   @Get('companies/:id/detail')
+  @Header('Cache-Control', 'no-store')
   @UseGuards(PlatformAdminGuard)
   companyDetail(@Param('id') id: string) {
     return this.platformAdminService.getCompanyDetail(id);
   }
 
   @Delete('companies/:id')
+  @Header('Cache-Control', 'no-store')
   @UseGuards(PlatformAdminGuard)
   async deleteCompany(@Param('id') id: string) {
     await this.platformAdminService.deleteCompany(id);

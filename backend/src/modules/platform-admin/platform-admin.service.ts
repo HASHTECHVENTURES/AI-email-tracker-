@@ -508,9 +508,18 @@ export class PlatformAdminService {
 
     const rows = (userRows ?? []) as { id: string; email: string }[];
 
-    const { error: delErr } = await this.supabase.from('companies').delete().eq('id', companyId);
+    const { data: deletedRows, error: delErr } = await this.supabase
+      .from('companies')
+      .delete()
+      .eq('id', companyId)
+      .select('id');
     if (delErr) {
       throw new BadRequestException(delErr.message);
+    }
+    if (!deletedRows?.length) {
+      throw new BadRequestException(
+        'Company delete had no effect. The API must use SUPABASE_SERVICE_ROLE_KEY (not the anon key) so deletes bypass RLS. Also confirm the company id is correct.',
+      );
     }
 
     if (!process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()) {
