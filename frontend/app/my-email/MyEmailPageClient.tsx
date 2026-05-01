@@ -45,6 +45,8 @@ type Mailbox = {
   ai_enabled?: boolean;
   /** True when this mailbox email has an app portal login. */
   has_portal_login?: boolean;
+  /** Same email on another dept roster; mail sync uses the primary row (`roster_duplicate` false). */
+  roster_duplicate?: boolean;
 };
 
 /** Prefer API boolean; fall back to status string (some paths only set `gmail_status`). */
@@ -2968,16 +2970,41 @@ function MyEmailPageInner() {
   }, [token, historicalThreadSelectedIds, refreshHistoricalWindowTable]);
 
   /** Department managers only — matches HEAD user in org (not every IC). */
-  const managerMailboxes = useMemo(
-    () =>
-      mailboxes.filter((mb) => {
-        if (ceoEmailNorm !== '' && mb.email.trim().toLowerCase() === ceoEmailNorm) {
-          return false;
-        }
-        return mb.is_manager_mailbox === true;
-      }),
-    [mailboxes, ceoEmailNorm],
-  );
+  const managerMailboxes = useMemo(() => {
+    const raw = mailboxes.filter((mb) => {
+      if (ceoEmailNorm !== '' && mb.email.trim().toLowerCase() === ceoEmailNorm) {
+        return false;
+      }
+      return mb.is_manager_mailbox === true;
+    });
+    const byEmail = new Map<string, Mailbox[]>();
+    for (const mb of raw) {
+      const e = mb.email.trim().toLowerCase();
+      if (!e) continue;
+      const arr = byEmail.get(e) ?? [];
+      arr.push(mb);
+      byEmail.set(e, arr);
+    }
+    const picked: Mailbox[] = [];
+    for (const arr of byEmail.values()) {
+      if (arr.length === 1) {
+        picked.push(arr[0]);
+        continue;
+      }
+      const sorted = [...arr].sort((a, b) => {
+        const dupA = a.roster_duplicate === true ? 1 : 0;
+        const dupB = b.roster_duplicate === true ? 1 : 0;
+        if (dupA !== dupB) return dupA - dupB;
+        const gA = isMailboxGmailConnected(a) ? 0 : 1;
+        const gB = isMailboxGmailConnected(b) ? 0 : 1;
+        if (gA !== gB) return gA - gB;
+        return a.id.localeCompare(b.id);
+      });
+      picked.push(sorted[0]);
+    }
+    picked.sort((a, b) => a.name.localeCompare(b.name));
+    return picked;
+  }, [mailboxes, ceoEmailNorm]);
 
   useEffect(() => {
     const allowed = new Set(managerMailboxes.map((m) => m.id));

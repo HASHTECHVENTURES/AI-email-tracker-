@@ -1190,7 +1190,7 @@ export class EmployeesService {
     const teamResult = await this.supabase
       .from('employees')
       .select(
-        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type',
+        'id, name, email, company_id, department_id, created_by, created_at, gmail_status, last_synced_at, sla_hours_default, tracking_start_at, tracking_paused, ai_enabled, mailbox_type, roster_duplicate',
       )
       .eq('company_id', companyId)
       .eq('is_active', true)
@@ -1262,6 +1262,7 @@ export class EmployeesService {
         tracking_paused: r.tracking_paused === true,
         ai_enabled: r.ai_enabled !== false,
         mailbox_type: (r.mailbox_type as 'TEAM' | null | undefined) ?? null,
+        roster_duplicate: r.roster_duplicate === true,
       };
     });
   }
