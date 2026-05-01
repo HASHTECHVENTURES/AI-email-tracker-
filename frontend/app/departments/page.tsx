@@ -1112,12 +1112,22 @@ export default function DepartmentsPage() {
             </div>
           </div>
           {teamLoadError ? <p className="text-sm text-red-600">{teamLoadError}</p> : null}
-          {!teamLoadError && teamMembers.length === 0 ? (
+          {!teamLoadError && (isHead ? teamMembers.length === 0 : ceoPeople.length === 0) ? (
             <p className="text-sm text-slate-500">
-              No team members yet. Add mailboxes from <span className="font-medium text-slate-800">Employees</span>.
+              {isHead ? (
+                <>
+                  No team members yet. Add mailboxes from <span className="font-medium text-slate-800">Employees</span>.
+                </>
+              ) : (
+                <>
+                  No managers or tracked team mailboxes yet. Add department managers under{' '}
+                  <span className="font-medium text-slate-800">Departments</span> and employee mailboxes under{' '}
+                  <span className="font-medium text-slate-800">Employees</span>.
+                </>
+              )}
             </p>
           ) : null}
-          {teamMembers.length > 0 && isCeo && ceoMessagesMode ? (
+          {ceoPeople.length > 0 && isCeo && ceoMessagesMode ? (
             <section className="overflow-hidden rounded-3xl border border-slate-200/70 bg-white shadow-card">
               <div className="grid min-h-[68vh] lg:grid-cols-[340px_minmax(0,1fr)]">
                 <aside className="border-r border-slate-200 bg-white">
