@@ -141,11 +141,16 @@ export class DepartmentsService {
   ): Promise<(DepartmentRow & { employee_count: number; manager: DepartmentManagerSummary | null })[]> {
     const depts = await this.list(companyId);
     const withCounts = await Promise.all(
-      depts.map(async (d) => ({
-        ...d,
-        employee_count: await this.countEmployees(companyId, d.id),
-        manager: await this.getDepartmentManager(companyId, d.id),
-      })),
+      depts.map(async (d) => {
+        const [manager, employee_count] = await Promise.all([
+          this.getDepartmentManager(companyId, d.id),
+          this.countEmployees(companyId, d.id),
+        ]);
+        if (manager) {
+          await this.ensureManagerTrackedMailboxAfterAssignment(companyId, d.id, manager);
+        }
+        return { ...d, employee_count, manager };
+      }),
     );
     return withCounts;
   }
@@ -211,13 +216,15 @@ export class DepartmentsService {
         this.logger.error('Failed to insert manager_department_memberships', memInsErr.message);
         throw memInsErr;
       }
-      return insertedUser as {
+      const out = insertedUser as {
         id: string;
         email: string;
         full_name: string | null;
         role: string;
         department_id: string | null;
       };
+      await this.ensureManagerTrackedMailboxAfterAssignment(companyId, departmentId, out);
+      return out;
     }
 
     const existingRow = user as {
@@ -253,13 +260,15 @@ export class DepartmentsService {
       this.logger.error('Failed to assign manager role', updErr.message);
       throw updErr;
     }
-    return updated as {
+    const out = updated as {
       id: string;
       email: string;
       full_name: string | null;
       role: string;
       department_id: string | null;
     };
+    await this.ensureManagerTrackedMailboxAfterAssignment(companyId, departmentId, out);
+    return out;
   }
 
   async resetManagerPassword(companyId: string, departmentId: string, newPassword: string): Promise<void> {
@@ -277,6 +286,86 @@ export class DepartmentsService {
     if (error) {
       this.logger.error('Failed to reset manager password', error.message);
       throw new Error('PASSWORD_RESET_FAILED');
+    }
+  }
+
+  /** PostgREST / Postgres when `employees.mailbox_type` migration (013) was not applied */
+  private isMissingMailboxTypeColumn(err: unknown): boolean {
+    const m = String((err as Error)?.message ?? err ?? '');
+    const c = String((err as { code?: string })?.code ?? '');
+    return (
+      c === '42703' ||
+      m.includes('mailbox_type') ||
+      (m.includes('column') && m.includes('does not exist'))
+    );
+  }
+
+  /**
+   * CEO Manager mail and Gmail sync use `employees` rows. Historically `assignManager` only wrote
+   * `users` + `manager_department_memberships`, so department heads were missing from mailboxes.
+   */
+  private async ensureManagerTrackedMailboxAfterAssignment(
+    companyId: string,
+    departmentId: string,
+    manager: { id: string; email: string; full_name: string | null },
+  ): Promise<void> {
+    const email = manager.email.trim().toLowerCase();
+    if (!email) return;
+
+    const { data: inDept, error: deptErr } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('department_id', departmentId)
+      .eq('email', email)
+      .maybeSingle();
+    if (deptErr) {
+      this.logger.warn(`ensureManagerTrackedMailbox: dept lookup ${deptErr.message}`);
+      return;
+    }
+    if (inDept) return;
+
+    const name =
+      manager.full_name?.trim() ||
+      email.split('@')[0] ||
+      'Manager';
+
+    const { data: primaryRows, error: primErr } = await this.supabase
+      .from('employees')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('email', email)
+      .eq('is_active', true)
+      .eq('roster_duplicate', false);
+    if (primErr) {
+      this.logger.warn(`ensureManagerTrackedMailbox: primary lookup ${primErr.message}`);
+      return;
+    }
+    const hasPrimaryElsewhere = ((primaryRows ?? []) as { id: string }[]).length > 0;
+    const roster_duplicate = hasPrimaryElsewhere;
+
+    const payload: Record<string, unknown> = {
+      name,
+      email,
+      company_id: companyId,
+      department_id: departmentId,
+      created_by: manager.id,
+      is_active: true,
+      ai_enabled: true,
+      tracking_paused: true,
+      tracking_start_at: null,
+      mailbox_type: 'TEAM',
+      roster_duplicate,
+    };
+
+    let ins = await this.supabase.from('employees').insert(payload).select('id').single();
+    if (ins.error && this.isMissingMailboxTypeColumn(ins.error)) {
+      const { mailbox_type: _m, ...rest } = payload;
+      ins = await this.supabase.from('employees').insert(rest).select('id').single();
+    }
+    if (ins.error) {
+      if ((ins.error as { code?: string }).code === '23505') return;
+      this.logger.warn(`ensureManagerTrackedMailbox: insert ${ins.error.message}`);
     }
   }
 

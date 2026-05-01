@@ -154,11 +154,14 @@ export class SelfTrackingService {
       const indicators = await this.employeesService.getManagerMailboxIndicators(ctx.companyId);
       return merged.map((m) => {
         const createdBy = m.created_by ?? null;
+        const emailNorm = m.email.trim().toLowerCase();
+        /** TEAM rows for department heads often omit `linked_employee_id`; match portal login email too. */
         const is_manager_mailbox =
           indicators.linkedEmployeeIds.has(m.id) ||
           (m.mailbox_type === 'SELF' &&
             createdBy != null &&
-            indicators.headUserIds.has(createdBy));
+            indicators.headUserIds.has(createdBy)) ||
+          (emailNorm.length > 0 && indicators.emailsNormalized.has(emailNorm));
         return { ...m, is_manager_mailbox };
       });
     }
