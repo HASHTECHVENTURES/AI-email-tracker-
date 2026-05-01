@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { apiFetch, readApiErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 import Link from 'next/link';
@@ -111,6 +112,8 @@ export default function ManagerMessagesPage() {
     }
     setError(null);
   }, [me?.linked_employee_id, token, ctxSignOut]);
+
+  useRefetchOnFocus(() => void load(), Boolean(token && me && !authLoading));
 
   useEffect(() => {
     if (authLoading) return;

@@ -14,6 +14,7 @@ import { Badge } from '@/components/Badge';
 import { conversationReadPath } from '@/lib/conversation-read';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { useActAsEmployeeMailboxView } from '@/lib/use-act-as-employee-mailbox';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { ReassignModal } from '@/components/ReassignModal';
 import { TeamAlertReplyModal } from '@/components/TeamAlertReplyModal';
 
@@ -300,6 +301,8 @@ export default function DashboardPage() {
       setTeamAlerts(null);
     }
   }, [buildDashboardPath, canActAsMailbox, ctxSignOut, me?.role, token]);
+
+  useRefetchOnFocus(() => void refresh(), Boolean(me && token));
 
   useEffect(() => {
     if (authLoading) return;

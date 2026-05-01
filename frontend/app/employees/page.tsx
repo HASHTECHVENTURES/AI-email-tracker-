@@ -7,6 +7,7 @@ import { apiFetch, oauthErrorMessage, tryRecoverFromUnauthorized } from '@/lib/a
 import { useAuth } from '@/lib/auth-context';
 import { subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { PasswordInput } from '@/components/PasswordInput';
@@ -135,6 +136,13 @@ function EmployeesPageInner() {
       setMailboxCrawlOn(s.email_crawl_enabled !== false);
     }
   }
+
+  useRefetchOnFocus(
+    () => {
+      if (token && authMe) void loadLists(token);
+    },
+    Boolean(token && authMe && !authLoading),
+  );
 
   useEffect(() => {
     if (authLoading) return;

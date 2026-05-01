@@ -8,6 +8,7 @@ import { apiFetch, oauthErrorMessage, tryRecoverFromUnauthorized } from '@/lib/a
 import { useAuth } from '@/lib/auth-context';
 import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 
@@ -147,6 +148,13 @@ function TeamMailSyncInner() {
     }
     setError(null);
   }, [ctxSignOut]);
+
+  useRefetchOnFocus(
+    () => {
+      if (token && me && isDepartmentManagerRole(me.role)) void loadTeamData(token);
+    },
+    Boolean(token && me && !authLoading && isDepartmentManagerRole(me.role)),
+  );
 
   useEffect(() => {
     if (authLoading) return;

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { apiFetch, readApiErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 
@@ -157,6 +158,8 @@ export default function MessagesPage() {
     setItems(body.items ?? []);
     setError(null);
   }, [token, ctxSignOut]);
+
+  useRefetchOnFocus(() => void load(), Boolean(token && authMe && !authLoading));
 
   useEffect(() => {
     if (authLoading) return;

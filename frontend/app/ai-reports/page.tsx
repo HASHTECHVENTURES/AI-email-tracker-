@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 
@@ -154,6 +155,13 @@ export default function AiReportsPage() {
       setError('Could not load reports.');
     }
   }, [ctxSignOut]);
+
+  useRefetchOnFocus(
+    () => {
+      if (token && authMe?.role === 'CEO') void loadData(token);
+    },
+    Boolean(token && authMe?.role === 'CEO' && !authLoading),
+  );
 
   useEffect(() => {
     if (authLoading) return;

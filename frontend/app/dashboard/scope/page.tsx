@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/AppShell';
 import {
@@ -115,6 +116,25 @@ export default function DashboardScopePage() {
       cancelled = true;
     };
   }, [token, me?.role]);
+
+  const refetchScopeCatalog = useCallback(async () => {
+    if (!token || me?.role !== 'CEO') return;
+    const [r, empR] = await Promise.all([apiFetch('/departments', token), apiFetch('/employees', token)]);
+    if (r.ok) {
+      const rows = (await r.json()) as CeoDeptDirectoryRow[];
+      setCeoDeptOptions(Array.isArray(rows) ? rows : []);
+    }
+    setCeoOrgEmployeesLoading(true);
+    if (!empR.ok) {
+      setCeoOrgEmployeesLoading(false);
+      return;
+    }
+    const empRows = (await empR.json()) as CeoScopeOrgEmployee[];
+    setCeoOrgEmployees(Array.isArray(empRows) ? empRows : []);
+    setCeoOrgEmployeesLoading(false);
+  }, [token, me?.role]);
+
+  useRefetchOnFocus(() => void refetchScopeCatalog(), Boolean(token && me?.role === 'CEO' && !authLoading));
 
   useEffect(() => {
     if (me?.role !== 'CEO' || ceoDeptOptions.length === 0) return;

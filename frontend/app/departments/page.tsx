@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client';
 import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
+import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { PasswordInput } from '@/components/PasswordInput';
@@ -178,6 +179,19 @@ export default function DepartmentsPage() {
       })),
     );
   }, [ctxSignOut]);
+
+  const refetchDepartmentsPage = useCallback(async () => {
+    if (!token || !authMe) return;
+    await load(token);
+    if (isDepartmentManagerRole(authMe.role) || authMe.role === 'CEO') {
+      await loadTeam(token);
+    }
+    if (authMe.role === 'CEO') {
+      await loadCeoSentChats(token);
+    }
+  }, [token, authMe, load, loadTeam, loadCeoSentChats]);
+
+  useRefetchOnFocus(() => void refetchDepartmentsPage(), Boolean(token && authMe && !authLoading));
 
   useEffect(() => {
     if (authLoading) return;
