@@ -15,6 +15,7 @@ import { conversationReadPath } from '@/lib/conversation-read';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { useActAsEmployeeMailboxView } from '@/lib/use-act-as-employee-mailbox';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
+import { useSupabaseRealtimeRefresh } from '@/lib/use-supabase-realtime-refresh';
 import { ReassignModal } from '@/components/ReassignModal';
 import { TeamAlertReplyModal } from '@/components/TeamAlertReplyModal';
 
@@ -303,6 +304,32 @@ export default function DashboardPage() {
   }, [buildDashboardPath, canActAsMailbox, ctxSignOut, me?.role, token]);
 
   useRefetchOnFocus(() => void refresh(), Boolean(me && token));
+
+  const dashboardRealtimeTables = useMemo(() => {
+    const out: Array<{ table: string }> = [];
+    if (!me) return out;
+    if (me.role === 'EMPLOYEE' || canActAsMailbox) {
+      out.push({ table: 'team_alerts' });
+    }
+    if (me.role === 'CEO' || me.role === 'HEAD' || canActAsMailbox) {
+      out.push({ table: 'conversations' });
+    }
+    return out;
+  }, [me, canActAsMailbox]);
+
+  const dashboardRealtimeDebounceMs = useMemo(() => {
+    if (!me) return 450;
+    if (me.role === 'EMPLOYEE' || canActAsMailbox) return 650;
+    return 1200;
+  }, [me, canActAsMailbox]);
+
+  useSupabaseRealtimeRefresh({
+    enabled: Boolean(me && token && dashboardRealtimeTables.length > 0),
+    channelSuffix: 'dashboard',
+    tables: dashboardRealtimeTables,
+    onSignal: () => void refresh(),
+    debounceMs: dashboardRealtimeDebounceMs,
+  });
 
   useEffect(() => {
     if (authLoading) return;

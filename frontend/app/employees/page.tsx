@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/auth-context';
 import { subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
+import { useSupabaseRealtimeRefresh } from '@/lib/use-supabase-realtime-refresh';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { PasswordInput } from '@/components/PasswordInput';
@@ -143,6 +144,16 @@ function EmployeesPageInner() {
     },
     Boolean(token && authMe && !authLoading),
   );
+
+  useSupabaseRealtimeRefresh({
+    enabled: Boolean(token && authMe && !authLoading && me && me.role !== 'EMPLOYEE'),
+    channelSuffix: 'employees-roster',
+    tables: [{ table: 'employees' }, { table: 'departments' }],
+    onSignal: () => {
+      if (token) void loadLists(token);
+    },
+    debounceMs: 450,
+  });
 
   useEffect(() => {
     if (authLoading) return;

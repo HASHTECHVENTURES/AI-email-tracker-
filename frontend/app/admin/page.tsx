@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
+import { useSupabaseRealtimeRefresh } from '@/lib/use-supabase-realtime-refresh';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { PasswordInput } from '@/components/PasswordInput';
@@ -786,6 +787,14 @@ export default function PlatformAdminPage() {
   }, [token]);
 
   useRefetchOnFocus(() => void load(), Boolean(token && !authLoading && allowed === true));
+
+  useSupabaseRealtimeRefresh({
+    enabled: Boolean(token && !authLoading && allowed === true),
+    channelSuffix: 'platform-admin-companies',
+    tables: [{ table: 'companies' }],
+    onSignal: () => void load(),
+    debounceMs: 450,
+  });
 
   const toggleCompanyDetail = useCallback(async (companyId: string) => {
     if (expandedCompanyId === companyId) {

@@ -6,6 +6,7 @@ import { apiFetch, readApiErrorMessage, tryRecoverFromUnauthorized } from '@/lib
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
+import { useSupabaseRealtimeRefresh } from '@/lib/use-supabase-realtime-refresh';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 
@@ -160,6 +161,21 @@ export default function MessagesPage() {
   }, [token, ctxSignOut]);
 
   useRefetchOnFocus(() => void load(), Boolean(token && authMe && !authLoading));
+
+  const messagesRealtimeEnabled =
+    !!token &&
+    !!authMe &&
+    !authLoading &&
+    (authMe.role === 'EMPLOYEE' ||
+      (isDepartmentManagerRole(authMe.role) && !!authMe.linked_employee_id?.trim()));
+
+  useSupabaseRealtimeRefresh({
+    enabled: messagesRealtimeEnabled,
+    channelSuffix: 'employee-messages',
+    tables: [{ table: 'team_alerts' }],
+    onSignal: () => void load(),
+    debounceMs: 450,
+  });
 
   useEffect(() => {
     if (authLoading) return;

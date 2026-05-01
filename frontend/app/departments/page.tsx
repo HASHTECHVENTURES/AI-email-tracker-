@@ -7,6 +7,7 @@ import { apiFetch, readApiErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
+import { useSupabaseRealtimeRefresh } from '@/lib/use-supabase-realtime-refresh';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { PasswordInput } from '@/components/PasswordInput';
@@ -192,6 +193,14 @@ export default function DepartmentsPage() {
   }, [token, authMe, load, loadTeam, loadCeoSentChats]);
 
   useRefetchOnFocus(() => void refetchDepartmentsPage(), Boolean(token && authMe && !authLoading));
+
+  useSupabaseRealtimeRefresh({
+    enabled: Boolean(token && authMe && !authLoading && authMe.role !== 'PLATFORM_ADMIN'),
+    channelSuffix: 'departments-roster',
+    tables: [{ table: 'employees' }, { table: 'departments' }, { table: 'team_alerts' }],
+    onSignal: () => void refetchDepartmentsPage(),
+    debounceMs: 450,
+  });
 
   useEffect(() => {
     if (authLoading) return;
