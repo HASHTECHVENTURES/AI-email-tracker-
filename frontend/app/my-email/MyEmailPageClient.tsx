@@ -55,6 +55,37 @@ function isMailboxGmailConnected(m: Pick<Mailbox, 'gmail_connected' | 'gmail_sta
   return m.gmail_status === 'CONNECTED';
 }
 
+/** One UI row per inbox email when duplicate `employees` roster rows exist (e.g. secondary team listing). */
+function dedupeMailboxesByEmailPreferPrimary(mailboxes: Mailbox[]): Mailbox[] {
+  const byEmail = new Map<string, Mailbox[]>();
+  for (const mb of mailboxes) {
+    const e = mb.email.trim().toLowerCase();
+    if (!e) continue;
+    const arr = byEmail.get(e) ?? [];
+    arr.push(mb);
+    byEmail.set(e, arr);
+  }
+  const picked: Mailbox[] = [];
+  for (const arr of byEmail.values()) {
+    if (arr.length === 1) {
+      picked.push(arr[0]);
+      continue;
+    }
+    const sorted = [...arr].sort((a, b) => {
+      const dupA = a.roster_duplicate === true ? 1 : 0;
+      const dupB = b.roster_duplicate === true ? 1 : 0;
+      if (dupA !== dupB) return dupA - dupB;
+      const gA = isMailboxGmailConnected(a) ? 0 : 1;
+      const gB = isMailboxGmailConnected(b) ? 0 : 1;
+      if (gA !== gB) return gA - gB;
+      return a.id.localeCompare(b.id);
+    });
+    picked.push(sorted[0]);
+  }
+  picked.sort((a, b) => a.name.localeCompare(b.name));
+  return picked;
+}
+
 /** Same fallback as self-tracking when `sla_hours_default` is null (see backend self-tracking.service). */
 const DEFAULT_MAILBOX_SLA_HOURS = 24;
 
@@ -2977,33 +3008,7 @@ function MyEmailPageInner() {
       }
       return mb.is_manager_mailbox === true;
     });
-    const byEmail = new Map<string, Mailbox[]>();
-    for (const mb of raw) {
-      const e = mb.email.trim().toLowerCase();
-      if (!e) continue;
-      const arr = byEmail.get(e) ?? [];
-      arr.push(mb);
-      byEmail.set(e, arr);
-    }
-    const picked: Mailbox[] = [];
-    for (const arr of byEmail.values()) {
-      if (arr.length === 1) {
-        picked.push(arr[0]);
-        continue;
-      }
-      const sorted = [...arr].sort((a, b) => {
-        const dupA = a.roster_duplicate === true ? 1 : 0;
-        const dupB = b.roster_duplicate === true ? 1 : 0;
-        if (dupA !== dupB) return dupA - dupB;
-        const gA = isMailboxGmailConnected(a) ? 0 : 1;
-        const gB = isMailboxGmailConnected(b) ? 0 : 1;
-        if (gA !== gB) return gA - gB;
-        return a.id.localeCompare(b.id);
-      });
-      picked.push(sorted[0]);
-    }
-    picked.sort((a, b) => a.name.localeCompare(b.name));
-    return picked;
+    return dedupeMailboxesByEmailPreferPrimary(raw);
   }, [mailboxes, ceoEmailNorm]);
 
   useEffect(() => {
@@ -3017,18 +3022,22 @@ function MyEmailPageInner() {
     return managerMailboxes.filter((m) => selected.has(m.id));
   }, [managerMailboxes, managerScopeMailboxIds]);
 
-  /** Employee mail tab: org/employee rows only. SELF manager inboxes stay under Manager mail. */
-  const teamMailboxesOnly = useMemo(
-    () =>
-      mailboxes.filter((mb) => {
-        const emailNorm = mb.email.trim().toLowerCase();
-        if (ceoEmailNorm !== '' && emailNorm === ceoEmailNorm) {
-          return false;
-        }
-        return mb.mailbox_type !== 'SELF';
-      }),
-    [mailboxes, ceoEmailNorm],
-  );
+  /**
+   * Employee mail tab: tracked TEAM mailboxes that are **not** department-manager inboxes
+   * (`is_manager_mailbox` lives under Manager mail). Dedupe by email for roster_duplicate rows.
+   */
+  const teamMailboxesOnly = useMemo(() => {
+    const raw = mailboxes.filter((mb) => {
+      const emailNorm = mb.email.trim().toLowerCase();
+      if (ceoEmailNorm !== '' && emailNorm === ceoEmailNorm) {
+        return false;
+      }
+      if (mb.mailbox_type === 'SELF') return false;
+      if (mb.is_manager_mailbox === true) return false;
+      return true;
+    });
+    return dedupeMailboxesByEmailPreferPrimary(raw);
+  }, [mailboxes, ceoEmailNorm]);
 
   useEffect(() => {
     const allowed = new Set(teamMailboxesOnly.map((m) => m.id));
@@ -5114,7 +5123,8 @@ function MyEmailPageInner() {
                     <p className="mt-3 text-center text-sm text-slate-500">
                       {teamMailboxesOnly.length === 0 ? (
                         <>
-                          No team mailboxes yet. Add people on <strong>Employees</strong> or use{' '}
+                          No team-only mailboxes here yet — department managers are under{' '}
+                          <strong>Manager mail</strong>. Add teammates on <strong>Employees</strong> or use{' '}
                           <strong>+ Add another mailbox</strong> above.
                         </>
                       ) : (
