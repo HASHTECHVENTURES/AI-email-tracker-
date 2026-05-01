@@ -156,13 +156,20 @@ export class SelfTrackingService {
       return merged.map((m) => {
         const createdBy = m.created_by ?? null;
         const emailNorm = m.email.trim().toLowerCase();
-        /** TEAM rows for department heads often omit `linked_employee_id`; match portal login email too. */
+        const rosterDup = m.roster_duplicate === true;
+        const linked = indicators.linkedEmployeeIds.has(m.id);
+        const emailMatchesHead =
+          emailNorm.length > 0 && indicators.emailsNormalized.has(emailNorm);
+        /**
+         * Canonical manager inbox for CEO Manager mail — not `roster_duplicate` directory rows
+         * (same HEAD may also appear on another team’s roster as an employee under someone else).
+         */
         const is_manager_mailbox =
-          indicators.linkedEmployeeIds.has(m.id) ||
+          linked ||
           (m.mailbox_type === 'SELF' &&
             createdBy != null &&
             indicators.headUserIds.has(createdBy)) ||
-          (emailNorm.length > 0 && indicators.emailsNormalized.has(emailNorm));
+          (emailMatchesHead && !rosterDup);
         return { ...m, is_manager_mailbox };
       });
     }

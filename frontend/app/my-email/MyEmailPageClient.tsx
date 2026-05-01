@@ -3023,8 +3023,9 @@ function MyEmailPageInner() {
   }, [managerMailboxes, managerScopeMailboxIds]);
 
   /**
-   * Employee mail tab: tracked TEAM mailboxes that are **not** department-manager inboxes
-   * (`is_manager_mailbox` lives under Manager mail). Dedupe by email for roster_duplicate rows.
+   * Employee mail: TEAM mailboxes except CEO self. Omit **canonical** manager inboxes only
+   * (`is_manager_mailbox` and not a secondary roster row) — dual-role heads keep their
+   * `roster_duplicate` row here. Dedupe by email for duplicate roster rows.
    */
   const teamMailboxesOnly = useMemo(() => {
     const raw = mailboxes.filter((mb) => {
@@ -3033,7 +3034,7 @@ function MyEmailPageInner() {
         return false;
       }
       if (mb.mailbox_type === 'SELF') return false;
-      if (mb.is_manager_mailbox === true) return false;
+      if (mb.is_manager_mailbox === true && mb.roster_duplicate !== true) return false;
       return true;
     });
     return dedupeMailboxesByEmailPreferPrimary(raw);
@@ -5123,9 +5124,9 @@ function MyEmailPageInner() {
                     <p className="mt-3 text-center text-sm text-slate-500">
                       {teamMailboxesOnly.length === 0 ? (
                         <>
-                          No team-only mailboxes here yet — department managers are under{' '}
-                          <strong>Manager mail</strong>. Add teammates on <strong>Employees</strong> or use{' '}
-                          <strong>+ Add another mailbox</strong> above.
+                          No team mailboxes in this view yet. Add teammates on <strong>Employees</strong> or use{' '}
+                          <strong>+ Add another mailbox</strong> above. Heads also appear under{' '}
+                          <strong>Manager mail</strong> for their own inbox.
                         </>
                       ) : (
                         'No employee mailbox matches this selection.'
