@@ -760,6 +760,14 @@ function SkippedMailsTabTable({
                       <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
                         {skipKindShortLabel(row.skip_kind)}
                       </span>
+                      {row.skip_kind === 'before_tracking' ? (
+                        <p className="mt-1 max-w-[11rem] text-[10px] leading-snug text-slate-500">
+                          This mail is dated <strong>before</strong> your mailbox &quot;Track live mail from&quot; time. Live
+                          sync won&apos;t add it to Need to reply until you move that start <strong>earlier</strong> than this
+                          message, then use <strong>Re-try on next sync</strong> (or run a sync).{' '}
+                          <strong>Add to inbox</strong> also requires that — same rule on the server.
+                        </p>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2.5">
                       <div className="max-w-[14rem] font-medium text-slate-900 sm:max-w-xs">
