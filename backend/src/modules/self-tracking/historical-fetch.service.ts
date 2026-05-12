@@ -9,6 +9,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { GmailService, buildGmailHistoricalWindowQuery } from '../email-ingestion/gmail.service';
 import { buildSharedIngestRelevancePrompt } from '../email-ingestion/relevance-prompt.builder';
+import { looksLikeDirectHumanMail } from '../email-ingestion/relevance-guards';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { SettingsService } from '../settings/settings.service';
@@ -218,6 +219,26 @@ export class HistoricalFetchService {
       settings.email_ai_relevance_enabled &&
       employee.ai_enabled !== false;
     const ingestWithoutAiConfirmed = settings.email_ingest_without_ai_confirmed;
+    const inboundAiRequired = !ingestWithoutAiConfirmed;
+    if (inboundAiRequired && !allowGeminiRelevance) {
+      const reasons: string[] = [];
+      if (!this.relevanceModel) {
+        reasons.push('Inbox AI is not configured on the server (missing Gemini API key).');
+      }
+      if (!companyAiOn) {
+        reasons.push('Company AI is disabled.');
+      }
+      if (!settings.email_ai_relevance_enabled) {
+        reasons.push('Inbox AI relevance is turned off in Settings.');
+      }
+      if (employee.ai_enabled === false) {
+        reasons.push('Mailbox AI is turned off for this inbox.');
+      }
+      const detail = reasons.join(' ') || 'Inbox AI is required but not available.';
+      throw new BadRequestException(
+        `${detail} Enable Inbox AI, or confirm “import without Inbox AI” on My Email before running a historical backfill.`,
+      );
+    }
 
     const threadMetaCache = new Map<string, gmail_v1.Schema$Message[]>();
     const messages: EmailMessage[] = [];
@@ -481,36 +502,61 @@ export class HistoricalFetchService {
     return [...slice].sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
   }
 
+  /** Same retry behavior as live ingestion so transient 429s do not blank a whole historical window. */
   private async callGeminiRelevance(prompt: string): Promise<{ relevant: boolean; reason: string | null } | null> {
     if (!this.relevanceModel) return null;
     if (this.monthlyQuotaExhausted) {
       return null;
     }
-    try {
-      const result = await this.relevanceModel.generateContent(prompt);
-      const text = result.response.text().replace(/```json\s*/gi, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(text) as { relevant?: boolean; reason?: string };
-      if (typeof parsed.relevant === 'boolean') {
-        return {
-          relevant: parsed.relevant,
-          reason: typeof parsed.reason === 'string' ? parsed.reason.trim().slice(0, 500) : null,
-        };
-      }
-      return null;
-    } catch (err) {
-      const msg = (err as Error).message ?? String(err);
-      const is429 = /\b429\b|quota|Quota|rate|Rate|resource_exhausted/i.test(msg);
-      const isMonthly = /monthly|exceeded its|spending\s+cap|spend\s+cap/i.test(msg);
-      if (is429 && isMonthly) {
-        this.monthlyQuotaExhausted = true;
-        this.logger.error(
-          `Gemini monthly quota or spend cap exhausted — historical relevance paused. ${msg.slice(0, 200)}`,
-        );
+    const retries = 2;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const result = await this.relevanceModel.generateContent(prompt);
+        const text = result.response.text().replace(/```json\s*/gi, '').replace(/```/g, '').trim();
+        const parsed = JSON.parse(text) as { relevant?: boolean; reason?: string };
+        if (typeof parsed.relevant === 'boolean') {
+          return {
+            relevant: parsed.relevant,
+            reason: typeof parsed.reason === 'string' ? parsed.reason.trim().slice(0, 500) : null,
+          };
+        }
+        this.logger.warn('Historical Gemini relevance: JSON missing boolean relevant flag');
+        return null;
+      } catch (err) {
+        const msg = (err as Error).message ?? String(err);
+        const is429 = /\b429\b|quota|Quota|rate|Rate|resource_exhausted/i.test(msg);
+        const isMonthly = /monthly|exceeded its|spending\s+cap|spend\s+cap/i.test(msg);
+        if (is429 && isMonthly) {
+          this.monthlyQuotaExhausted = true;
+          this.logger.error(
+            `Gemini monthly quota or spend cap exhausted — historical relevance paused. ${msg.slice(0, 200)}`,
+          );
+          return null;
+        }
+        if (is429 && attempt < retries) {
+          const secMatch = msg.match(/retry in (\d+(\.\d+)?)\s*s/i);
+          const msMatch = !secMatch ? msg.match(/retry in (\d+(\.\d+)?)\s*ms/i) : null;
+          let waitSec = secMatch ? Math.ceil(Number(secMatch[1])) : msMatch ? Math.ceil(Number(msMatch[1]) / 1000) : 45;
+          waitSec = Math.max(1, Math.min(waitSec, 120));
+          this.logger.warn(
+            `Historical Gemini rate limit — retry ${attempt + 1}/${retries} in ${waitSec}s: ${msg.slice(0, 160)}`,
+          );
+          await new Promise((r) => setTimeout(r, waitSec * 1000));
+          continue;
+        }
+        if (attempt < retries && !is429) {
+          const backoff = 400 * Math.pow(2, attempt);
+          this.logger.warn(
+            `Historical Gemini relevance failed (attempt ${attempt + 1}/${retries}) — retry in ${backoff}ms: ${msg.slice(0, 200)}`,
+          );
+          await new Promise((r) => setTimeout(r, backoff));
+          continue;
+        }
+        this.logger.warn(`Historical Gemini relevance failed after retries: ${msg.slice(0, 200)}`);
         return null;
       }
-      this.logger.warn(`Gemini relevance error: ${msg.slice(0, 200)}`);
-      return null;
     }
+    return null;
   }
 
   private async classifyMessage(
@@ -535,7 +581,16 @@ export class HistoricalFetchService {
       );
       const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
       const parsed = await this.callGeminiRelevance(prompt);
-      if (parsed) return parsed;
+      if (parsed) {
+        if (!parsed.relevant && looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+          return {
+            relevant: true,
+            reason:
+              'Safety override: direct human mailbox message kept even though Inbox AI marked it not relevant.',
+          };
+        }
+        return parsed;
+      }
       if (this.monthlyQuotaExhausted && !ingestWithoutAiConfirmed) {
         return {
           relevant: false,
@@ -543,7 +598,17 @@ export class HistoricalFetchService {
             'Inbox AI unavailable: Gemini monthly quota or spend cap exceeded. Historical messages are not imported until billing is restored.',
         };
       }
-      return { relevant: ingestWithoutAiConfirmed, reason: null };
+      if (ingestWithoutAiConfirmed) {
+        return { relevant: true, reason: 'Unfiltered import — Inbox AI unavailable' };
+      }
+      this.logger.warn(
+        'Historical relevance: no verdict from Gemini for this message — fail-open to relevant=true so the window is not silently emptied.',
+      );
+      return {
+        relevant: true,
+        reason:
+          'Inbox AI did not return a usable verdict; message kept so your backfill is not empty. Check Gemini logs and API key.',
+      };
     }
     if (ingestWithoutAiConfirmed) {
       return { relevant: true, reason: 'Unfiltered import — Inbox AI unavailable' };
