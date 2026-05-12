@@ -15,6 +15,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import {
   apiFetch,
+  apiPostSse,
   formatNetworkFetchFailureMessage,
   oauthErrorMessage,
   readApiErrorMessage,
@@ -467,6 +468,138 @@ function trackingWindowPreviewLine(dateYmd: string, timeHm: string): string | nu
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+/** Live progress for POST /self-tracking/historical-fetch-stream (same engine as Historical Search). */
+type HistoricalBackfillUi = {
+  employeeId: string;
+  mailboxEmail: string;
+  mailboxIndex?: number;
+  mailboxTotal?: number;
+  phase: string;
+  totalIds: number;
+  messageIndex: number;
+  messageTotal: number;
+  lastSubject: string;
+  lastFrom: string;
+  lastRelevant?: boolean;
+  lastReason?: string | null;
+  savingCount?: number;
+  recomputingThreads?: number;
+  complete?: {
+    fetched: number;
+    stored: number;
+    skipped: number;
+    conversationsCreated: number;
+  };
+  error?: string;
+};
+
+function HistoricalBackfillProgressBlock({
+  ui,
+  windowLine,
+}: {
+  ui: HistoricalBackfillUi | null;
+  windowLine?: string | null;
+}): ReactNode {
+  if (!ui) return null;
+  const multi =
+    ui.mailboxTotal != null && ui.mailboxTotal > 1 && ui.mailboxIndex != null
+      ? `Mailbox ${ui.mailboxIndex} of ${ui.mailboxTotal} · ${ui.mailboxEmail}`
+      : ui.mailboxEmail;
+  const capNote =
+    ui.totalIds >= 500 ? (
+      <p className="mt-2 text-[10px] leading-snug text-amber-800">
+        Same cap as Historical Search: up to <strong className="font-medium">500</strong> messages analyzed
+        in this pass. Narrow the window or run again later if you need more depth.
+      </p>
+    ) : null;
+  if (ui.phase === 'error') {
+    return (
+      <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900">
+        <p className="font-semibold">Analysis stopped</p>
+        <p className="mt-1">{ui.error ?? 'Something went wrong.'}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 space-y-2 rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-3 text-left text-xs text-slate-700">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        Historical-style backfill → now
+      </p>
+      {windowLine ? (
+        <p className="text-[11px] text-slate-600">
+          Window: <span className="font-medium text-slate-900">{windowLine}</span> through{' '}
+          <span className="font-medium text-slate-900">now</span>
+        </p>
+      ) : null}
+      <p className="text-[11px] text-slate-600">{multi}</p>
+      {ui.phase === 'connecting' ? (
+        <p className="text-sm text-slate-600">Connecting to Gmail and listing messages in your window…</p>
+      ) : null}
+      {ui.phase === 'listed' ? (
+        <p className="text-sm text-slate-800">
+          Listed <strong className="tabular-nums">{ui.totalIds}</strong> message
+          {ui.totalIds === 1 ? '' : 's'} from Gmail — running Inbox AI on each.
+        </p>
+      ) : null}
+      {(ui.phase === 'message' || ui.phase === 'ai_decision') && ui.messageTotal > 0 ? (
+        <p className="text-sm text-slate-800">
+          <span className="tabular-nums font-semibold text-slate-900">
+            {ui.messageIndex}/{ui.messageTotal}
+          </span>
+          {ui.lastSubject ? (
+            <>
+              {' '}
+              <span className="text-slate-600">—</span> {clipStr(ui.lastSubject, 72)}
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {ui.phase === 'ai_decision' && ui.lastSubject ? (
+        <p className="text-[11px] leading-relaxed text-slate-600">
+          <span className="font-medium text-slate-800">{clipStr(ui.lastFrom, 48)}</span>
+          {typeof ui.lastRelevant === 'boolean' ? (
+            <>
+              {' · '}
+              <span className={ui.lastRelevant ? 'text-emerald-700' : 'text-slate-500'}>
+                {ui.lastRelevant ? 'Will track in portal' : 'Skipped'}
+              </span>
+              {ui.lastReason ? (
+                <>
+                  {' — '}
+                  <span className="italic">{clipStr(ui.lastReason, 120)}</span>
+                </>
+              ) : null}
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {ui.phase === 'saving' ? (
+        <p className="text-sm text-slate-800">
+          Saving <strong className="tabular-nums">{ui.savingCount ?? 0}</strong> relevant message
+          {(ui.savingCount ?? 0) === 1 ? '' : 's'}…
+        </p>
+      ) : null}
+      {ui.phase === 'recomputing' ? (
+        <p className="text-sm text-slate-800">
+          Building follow-up threads for{' '}
+          <strong className="tabular-nums">{ui.recomputingThreads ?? 0}</strong> conversation
+          {(ui.recomputingThreads ?? 0) === 1 ? '' : 's'}…
+        </p>
+      ) : null}
+      {ui.phase === 'complete' && ui.complete ? (
+        <p className="text-[11px] leading-relaxed text-slate-700">
+          Backfill complete:{' '}
+          <strong className="tabular-nums">{ui.complete.fetched}</strong> fetched,{' '}
+          <strong className="tabular-nums">{ui.complete.stored}</strong> stored,{' '}
+          <strong className="tabular-nums">{ui.complete.skipped}</strong> skipped by AI,{' '}
+          <strong className="tabular-nums">{ui.complete.conversationsCreated}</strong> threads updated.
+        </p>
+      ) : null}
+      {capNote}
+    </div>
+  );
 }
 
 /** Map a stored ISO window boundary to `input[type=date]` value in local time. */
@@ -1101,6 +1234,138 @@ function MyEmailPageInner() {
   const [onboardingTime, setOnboardingTime] = useState('');
   const [onboardingBusy, setOnboardingBusy] = useState(false);
 
+  /** Same engine as Historical Search (SSE), then live `/email-ingestion/run`. */
+  const [historicalBackfillUi, setHistoricalBackfillUi] = useState<HistoricalBackfillUi | null>(null);
+
+  const runTrackingHistoricalWindowToNow = useCallback(
+    async (
+      t: string,
+      opts: {
+        employeeId: string;
+        mailboxEmail: string;
+        startIso: string;
+        endIso: string;
+        mailboxIndex?: number;
+        mailboxTotal?: number;
+      },
+    ): Promise<void> => {
+      const { employeeId, mailboxEmail, startIso, endIso, mailboxIndex, mailboxTotal } = opts;
+      let sseError: string | null = null;
+      setHistoricalBackfillUi({
+        employeeId,
+        mailboxEmail,
+        mailboxIndex,
+        mailboxTotal,
+        phase: 'connecting',
+        totalIds: 0,
+        messageIndex: 0,
+        messageTotal: 0,
+        lastSubject: '',
+        lastFrom: '',
+      });
+      await apiPostSse(
+        '/self-tracking/historical-fetch-stream',
+        t,
+        { start: startIso, end: endIso, employee_id: employeeId },
+        (ev) => {
+          const phase = String(ev.phase ?? '');
+          if (phase === 'error') {
+            sseError = String(ev.message ?? 'Inbox analysis failed.');
+            setHistoricalBackfillUi((u) =>
+              u ? { ...u, phase: 'error', error: sseError ?? u.error } : u,
+            );
+            return;
+          }
+          if (phase === 'listed') {
+            const total = Number(ev.totalIds ?? 0);
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    phase: 'listed',
+                    totalIds: total,
+                    messageTotal: total,
+                    messageIndex: 0,
+                  }
+                : u,
+            );
+            return;
+          }
+          if (phase === 'message') {
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    phase: 'message',
+                    messageIndex: Number(ev.index ?? 0),
+                    messageTotal: Number(ev.total ?? u.messageTotal),
+                    lastSubject: String(ev.subject ?? u.lastSubject ?? ''),
+                    lastFrom: String(ev.from ?? u.lastFrom ?? ''),
+                  }
+                : u,
+            );
+            return;
+          }
+          if (phase === 'ai_decision') {
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    phase: 'ai_decision',
+                    messageIndex: Number(ev.index ?? 0),
+                    messageTotal: Number(ev.total ?? u.messageTotal),
+                    lastSubject: String(ev.subject ?? ''),
+                    lastFrom: String(ev.from ?? ''),
+                    lastRelevant: Boolean(ev.relevant),
+                    lastReason:
+                      ev.reason === null || ev.reason === undefined
+                        ? null
+                        : String(ev.reason),
+                  }
+                : u,
+            );
+            return;
+          }
+          if (phase === 'saving') {
+            setHistoricalBackfillUi((u) =>
+              u ? { ...u, phase: 'saving', savingCount: Number(ev.messageCount ?? 0) } : u,
+            );
+            return;
+          }
+          if (phase === 'recomputing') {
+            setHistoricalBackfillUi((u) =>
+              u
+                ? { ...u, phase: 'recomputing', recomputingThreads: Number(ev.threadCount ?? 0) }
+                : u,
+            );
+            return;
+          }
+          if (phase === 'complete') {
+            const r = ev.result as Record<string, unknown> | undefined;
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    phase: 'complete',
+                    complete: {
+                      fetched: Number(r?.fetched_from_gmail ?? 0),
+                      stored: Number(r?.stored_relevant ?? 0),
+                      skipped: Number(r?.skipped_irrelevant ?? 0),
+                      conversationsCreated: Number(r?.conversations_created ?? 0),
+                    },
+                  }
+                : u,
+            );
+          }
+        },
+      );
+      if (sseError) {
+        throw new Error(sseError);
+      }
+    },
+    [],
+  );
+
   /** Hide LOW-priority threads from primary tabs (still visible under Low / noise). */
   const [hideLowPriority, setHideLowPriority] = useState(true);
   /** Bulk delete selection for the active mail tab list. */
@@ -1550,8 +1815,23 @@ function MyEmailPageInner() {
     });
     setOperationStartingId(null);
     setSuccess(
-      'Sync running — use the progress card below. Large inboxes can take several minutes; elapsed time updates every second.',
+      'Backfilling your tracking window (Historical Search engine), then company sync — see the progress card below.',
     );
+
+    try {
+      await runTrackingHistoricalWindowToNow(token, {
+        employeeId: mb.id,
+        mailboxEmail: mb.email,
+        startIso: selectedTrackingIso,
+        endIso: new Date().toISOString(),
+      });
+    } catch (e) {
+      setHistoricalBackfillUi(null);
+      setPipeline(null);
+      setError(e instanceof Error ? e.message : 'Could not analyze your tracking window.');
+      return;
+    }
+    setHistoricalBackfillUi(null);
 
     const runRes = await apiFetch('/email-ingestion/run', token);
     const runBody = (await runRes.json().catch(() => ({}))) as {
@@ -2438,6 +2718,29 @@ function MyEmailPageInner() {
         }
       }
       liveTrackSourceRef.current = `${targets[0].id}:${trackingIso}`;
+      const endIso = new Date().toISOString();
+      for (let i = 0; i < targets.length; i++) {
+        const mb = targets[i];
+        try {
+          await runTrackingHistoricalWindowToNow(token, {
+            employeeId: mb.id,
+            mailboxEmail: mb.email,
+            startIso: trackingIso,
+            endIso,
+            mailboxIndex: i + 1,
+            mailboxTotal: targets.length,
+          });
+        } catch (e) {
+          setHistoricalBackfillUi(null);
+          setError(
+            e instanceof Error
+              ? e.message
+              : `Could not analyze the tracking window for ${mb.email}.`,
+          );
+          return;
+        }
+      }
+      setHistoricalBackfillUi(null);
       const runReq = apiFetch('/email-ingestion/run', token);
       const timed = await Promise.race([
         runReq.then((res) => ({ kind: 'response' as const, res })),
@@ -2496,6 +2799,7 @@ function MyEmailPageInner() {
     liveTrackDate,
     liveTrackTime,
     ownMailboxes,
+    runTrackingHistoricalWindowToNow,
   ]);
 
   const submitTrackingOnboarding = useCallback(async () => {
@@ -2520,6 +2824,20 @@ function MyEmailPageInner() {
         setError(await readApiErrorMessage(patchRes, 'Could not save your tracking window.'));
         return;
       }
+      const endIso = new Date().toISOString();
+      try {
+        await runTrackingHistoricalWindowToNow(token, {
+          employeeId: trackingOnboarding.mailboxId,
+          mailboxEmail: trackingOnboarding.email,
+          startIso: trackingIso,
+          endIso,
+        });
+      } catch (e) {
+        setHistoricalBackfillUi(null);
+        setError(e instanceof Error ? e.message : 'Could not analyze your tracking window.');
+        return;
+      }
+      setHistoricalBackfillUi(null);
       liveTrackSourceRef.current = `${trackingOnboarding.mailboxId}:${trackingIso}`;
       const parts = isoToLiveTrackingDateTime(trackingIso);
       setLiveTrackDate(parts.date);
@@ -2587,6 +2905,7 @@ function MyEmailPageInner() {
     loadDashboard,
     loadLiveIngestSchedule,
     syncEmployeeIdsParam,
+    runTrackingHistoricalWindowToNow,
   ]);
 
   const pipelineStep2Done =
@@ -2789,6 +3108,14 @@ function MyEmailPageInner() {
           Tracking window:{' '}
           {pipeline.trackingStartAt ? absoluteTime(pipeline.trackingStartAt) : 'Not set'}
         </p>
+        {historicalBackfillUi?.employeeId === mbId ? (
+          <HistoricalBackfillProgressBlock
+            ui={historicalBackfillUi}
+            windowLine={
+              pipeline.trackingStartAt ? absoluteTime(pipeline.trackingStartAt) : null
+            }
+          />
+        ) : null}
         {serverSyncPhase ? (
           <>
             <p
@@ -2989,32 +3316,27 @@ function MyEmailPageInner() {
         >
           <div className="w-full max-w-md rounded-2xl border border-brand-200 bg-white p-6 shadow-2xl">
             <h2 id="tracking-onboarding-title" className="text-lg font-semibold text-slate-900">
-              {onboardingBusy ? 'Analyzing your emails...' : 'Start tracking your emails'}
+              {onboardingBusy
+                ? 'Analyzing your inbox (same engine as Historical Search)'
+                : 'Start tracking your emails'}
             </h2>
             {onboardingBusy ? (
               <>
                 <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                  Tracking from:{' '}
-                  <strong className="font-medium text-slate-900">
-                    {trackingWindowPreviewLine(onboardingDate, onboardingTime) ?? 'your selected time'}
-                  </strong>
+                  We pull Gmail from your chosen start through{' '}
+                  <strong className="font-medium text-slate-900">right now</strong>, run Inbox AI on each
+                  message (identical flow to Historical Search), store follow-ups, then hand off to{' '}
+                  <strong className="font-medium text-slate-900">live</strong> sync for new mail only.
                 </p>
-                <p className="mt-1 text-sm leading-relaxed text-slate-600">
-                  AI is reviewing conversations and identifying pending follow-ups.
-                </p>
-                <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-slate-100">
-                  <div className="h-full w-3/4 animate-pulse rounded-full bg-gradient-to-r from-brand-600 to-violet-600" />
-                </div>
-                <div className="mt-4 grid gap-2 text-xs text-slate-600">
-                  {['Fetching emails', 'Analyzing threads', 'Categorizing conversations', 'Finalizing workspace'].map(
-                    (step) => (
-                      <div key={step} className="flex items-center gap-2">
-                        <span className="h-1.5 w-1.5 rounded-full bg-brand-500" />
-                        {step}
-                      </div>
-                    ),
-                  )}
-                </div>
+                <HistoricalBackfillProgressBlock
+                  ui={historicalBackfillUi}
+                  windowLine={trackingWindowPreviewLine(onboardingDate, onboardingTime)}
+                />
+                {!historicalBackfillUi ? (
+                  <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                    <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-brand-600 to-violet-600" />
+                  </div>
+                ) : null}
               </>
             ) : (
               <p className="mt-2 text-sm leading-relaxed text-slate-600">
@@ -3134,6 +3456,26 @@ function MyEmailPageInner() {
           {success}
         </div>
       )}
+
+      {historicalBackfillUi &&
+      !trackingOnboarding &&
+      !(pipeline && pipeline.mailboxId === historicalBackfillUi.employeeId) ? (
+        <div
+          className="mb-4 rounded-xl border border-violet-200 bg-violet-50/70 px-4 py-3 text-sm text-violet-950 shadow-sm"
+          aria-live="polite"
+        >
+          <p className="font-semibold text-violet-950">Backfilling your tracking window</p>
+          <HistoricalBackfillProgressBlock
+            ui={historicalBackfillUi}
+            windowLine={
+              (() => {
+                const iso = liveTrackingDateTimeToIso(liveTrackDate, liveTrackTime);
+                return iso ? absoluteTime(iso) : null;
+              })()
+            }
+          />
+        </div>
+      ) : null}
 
       {loading ? (
         <PortalPageLoader variant="embedded" />
