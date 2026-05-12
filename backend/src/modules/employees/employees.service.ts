@@ -1856,10 +1856,8 @@ export class EmployeesService {
       .from('employees')
       .update({
         tracking_start_at: iso,
-        tracking_paused:
-          Number((row as { sla_hours_default?: number | null }).sla_hours_default ?? 0) > 0
-            ? false
-            : true,
+        /** CEO chose a new window + Run sync — always resume live ingestion (do not tie to SLA hours). */
+        tracking_paused: false,
       })
       .eq('company_id', ctx.companyId)
       .eq('id', employeeId)

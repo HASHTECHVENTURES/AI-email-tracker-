@@ -1004,6 +1004,11 @@ function CeoLiveSyncStrip({
                     {formatNextCrawlLocal(nextIngestionAtIso)}
                   </p>
                 ) : null}
+                <p className="mt-2 text-[10px] leading-snug text-slate-400">
+                  This clock is only <strong className="font-medium text-slate-500">when the next crawl runs</strong> — it
+                  is not your tracking start. Your mail window is the &quot;Track live mail from&quot; date and time on
+                  the left.
+                </p>
               </>
             ) : (
               <>
