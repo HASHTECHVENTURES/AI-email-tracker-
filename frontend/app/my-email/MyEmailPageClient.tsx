@@ -486,6 +486,12 @@ type HistoricalBackfillUi = {
   lastReason?: string | null;
   savingCount?: number;
   recomputingThreads?: number;
+  /** CEO portal: running tallies from each Inbox AI decision (messages are saved in one batch afterward). */
+  runningTracked?: number;
+  runningSkippedAi?: number;
+  runningAlreadySynced?: number;
+  runningOutsideRange?: number;
+  runningCcOnly?: number;
   complete?: {
     fetched: number;
     stored: number;
@@ -498,9 +504,12 @@ type HistoricalBackfillUi = {
 function HistoricalBackfillProgressBlock({
   ui,
   windowLine,
+  ceoPortalDetail,
 }: {
   ui: HistoricalBackfillUi | null;
   windowLine?: string | null;
+  /** CEO · My Email (inbox tab): richer progress, running AI counts, and post-run spot-check hints. */
+  ceoPortalDetail?: boolean;
 }): ReactNode {
   if (!ui) return null;
   const multi =
@@ -514,6 +523,17 @@ function HistoricalBackfillProgressBlock({
         in this pass. Narrow the window or run again later if you need more depth.
       </p>
     ) : null;
+  const detail = Boolean(ceoPortalDetail);
+  const totalForBar = Math.max(1, ui.messageTotal || ui.totalIds || 1);
+  const barPct =
+    ui.phase === 'complete' || ui.phase === 'error'
+      ? 100
+      : Math.min(100, Math.round((100 * (ui.messageIndex || 0)) / totalForBar));
+  const rt = ui.runningTracked ?? 0;
+  const rsa = ui.runningSkippedAi ?? 0;
+  const ral = ui.runningAlreadySynced ?? 0;
+  const rout = ui.runningOutsideRange ?? 0;
+  const rcc = ui.runningCcOnly ?? 0;
   if (ui.phase === 'error') {
     return (
       <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900">
@@ -534,6 +554,69 @@ function HistoricalBackfillProgressBlock({
         </p>
       ) : null}
       <p className="text-[11px] text-slate-600">{multi}</p>
+      {detail ? (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+            <span>AI pass progress</span>
+            <span className="tabular-nums text-slate-700">{barPct}%</span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200/90 ring-1 ring-slate-300/60">
+            <div
+              className={`h-full rounded-full transition-[width] duration-300 ease-out ${
+                ui.phase === 'saving' || ui.phase === 'recomputing'
+                  ? 'animate-pulse bg-gradient-to-r from-violet-500 to-indigo-600'
+                  : 'bg-gradient-to-r from-brand-600 to-violet-600'
+              }`}
+              style={{ width: `${barPct}%` }}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-3">
+            <p className="text-[11px] text-slate-600">
+              <span className="font-medium text-slate-800">Will track</span>{' '}
+              <span className="tabular-nums font-semibold text-emerald-800">{rt}</span>
+            </p>
+            <p className="text-[11px] text-slate-600">
+              <span className="font-medium text-slate-800">Skipped (AI)</span>{' '}
+              <span className="tabular-nums font-semibold text-slate-800">{rsa}</span>
+            </p>
+            <p className="text-[11px] text-slate-600">
+              <span className="font-medium text-slate-800">Already synced</span>{' '}
+              <span className="tabular-nums font-semibold text-slate-700">{ral}</span>
+            </p>
+            <p className="text-[11px] text-slate-600">
+              <span className="font-medium text-slate-800">Outside window</span>{' '}
+              <span className="tabular-nums font-semibold text-slate-700">{rout}</span>
+            </p>
+            <p className="text-[11px] text-slate-600">
+              <span className="font-medium text-slate-800">CC-only (FYI)</span>{' '}
+              <span className="tabular-nums font-semibold text-sky-800">{rcc}</span>
+            </p>
+            <p className="text-[11px] text-slate-600">
+              <span className="font-medium text-slate-800">Processed</span>{' '}
+              <span className="tabular-nums font-semibold text-slate-900">
+                {rt + rsa + ral + rout}
+              </span>
+              {ui.messageTotal > 0 ? (
+                <span className="text-slate-500">
+                  {' '}
+                  / {ui.messageTotal} listed
+                </span>
+              ) : null}
+            </p>
+          </div>
+          {ui.phase === 'saving' || ui.phase === 'recomputing' ? (
+            <p className="text-[10px] leading-snug text-violet-900/90">
+              Stat cards and tab counts above refresh while messages are written and threads are recomputed — they
+              may lag the AI counters by a few seconds.
+            </p>
+          ) : ui.phase !== 'complete' ? (
+            <p className="text-[10px] leading-snug text-slate-500">
+              Each message is scored by Inbox AI before anything is saved; category chips fill in after the batch
+              save.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       {ui.phase === 'connecting' ? (
         <p className="text-sm text-slate-600">Connecting to Gmail and listing messages in your window…</p>
       ) : null}
@@ -589,13 +672,37 @@ function HistoricalBackfillProgressBlock({
         </p>
       ) : null}
       {ui.phase === 'complete' && ui.complete ? (
-        <p className="text-[11px] leading-relaxed text-slate-700">
-          Backfill complete:{' '}
-          <strong className="tabular-nums">{ui.complete.fetched}</strong> fetched,{' '}
-          <strong className="tabular-nums">{ui.complete.stored}</strong> stored,{' '}
-          <strong className="tabular-nums">{ui.complete.skipped}</strong> skipped by AI,{' '}
-          <strong className="tabular-nums">{ui.complete.conversationsCreated}</strong> threads updated.
-        </p>
+        <>
+          <p className="text-[11px] leading-relaxed text-slate-700">
+            Backfill complete:{' '}
+            <strong className="tabular-nums">{ui.complete.fetched}</strong> fetched,{' '}
+            <strong className="tabular-nums">{ui.complete.stored}</strong> stored,{' '}
+            <strong className="tabular-nums">{ui.complete.skipped}</strong> skipped by AI,{' '}
+            <strong className="tabular-nums">{ui.complete.conversationsCreated}</strong> threads updated.
+          </p>
+          {detail ? (
+            <div className="rounded-md border border-emerald-200/80 bg-emerald-50/60 px-2.5 py-2 text-[11px] leading-relaxed text-emerald-950">
+              <p className="font-semibold text-emerald-900">Check categories</p>
+              <p className="mt-1">
+                <strong className="tabular-nums">{ui.complete.stored}</strong> relevant messages were saved; threads
+                were split into <strong className="tabular-nums">{ui.complete.conversationsCreated}</strong> created or
+                updated rows. Open <strong className="font-medium">Need reply</strong>,{' '}
+                <strong className="font-medium">Waiting on them</strong>, <strong className="font-medium">CC&apos;d</strong>,{' '}
+                <strong className="font-medium">Done</strong>, and <strong className="font-medium">Low priority</strong>{' '}
+                to confirm everything landed where you expect. Compare the stat row for{' '}
+                <strong className="font-medium">Missed SLA</strong> and <strong className="font-medium">Resolved</strong>{' '}
+                as well. AI-only skips are under <strong className="font-medium">Skipped</strong> ({ui.complete.skipped}{' '}
+                this run).
+              </p>
+              {ui.complete.stored > 0 && rt > 0 && ui.complete.stored !== rt ? (
+                <p className="mt-1.5 text-[10px] text-emerald-900/85">
+                  Note: “Will track” during the pass ({rt}) can differ slightly from “stored” ({ui.complete.stored})
+                  if the server merged duplicates or trimmed the batch.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </>
       ) : null}
       {capNote}
     </div>
@@ -1262,6 +1369,11 @@ function MyEmailPageInner() {
         messageTotal: 0,
         lastSubject: '',
         lastFrom: '',
+        runningTracked: 0,
+        runningSkippedAi: 0,
+        runningAlreadySynced: 0,
+        runningOutsideRange: 0,
+        runningCcOnly: 0,
       });
       await apiPostSse(
         '/self-tracking/historical-fetch-stream',
@@ -1286,6 +1398,11 @@ function MyEmailPageInner() {
                     totalIds: total,
                     messageTotal: total,
                     messageIndex: 0,
+                    runningTracked: 0,
+                    runningSkippedAi: 0,
+                    runningAlreadySynced: 0,
+                    runningOutsideRange: 0,
+                    runningCcOnly: 0,
                   }
                 : u,
             );
@@ -1307,23 +1424,51 @@ function MyEmailPageInner() {
             return;
           }
           if (phase === 'ai_decision') {
-            setHistoricalBackfillUi((u) =>
-              u
-                ? {
-                    ...u,
-                    phase: 'ai_decision',
-                    messageIndex: Number(ev.index ?? 0),
-                    messageTotal: Number(ev.total ?? u.messageTotal),
-                    lastSubject: String(ev.subject ?? ''),
-                    lastFrom: String(ev.from ?? ''),
-                    lastRelevant: Boolean(ev.relevant),
-                    lastReason:
-                      ev.reason === null || ev.reason === undefined
-                        ? null
-                        : String(ev.reason),
-                  }
-                : u,
-            );
+            const relevant = Boolean(ev.relevant);
+            const reasonRaw =
+              ev.reason === null || ev.reason === undefined ? '' : String(ev.reason).trim();
+            const ccOnly = ev.user_cc_only === true;
+            setHistoricalBackfillUi((u) => {
+              if (!u) return u;
+              const tracked = u.runningTracked ?? 0;
+              const skipAi = u.runningSkippedAi ?? 0;
+              const already = u.runningAlreadySynced ?? 0;
+              const outside = u.runningOutsideRange ?? 0;
+              const cc = u.runningCcOnly ?? 0;
+              let nt = tracked;
+              let ns = skipAi;
+              let na = already;
+              let no = outside;
+              let nc = cc;
+              if (relevant) {
+                nt += 1;
+                if (ccOnly) nc += 1;
+              } else if (reasonRaw === 'Already synced' || reasonRaw.includes('Already synced')) {
+                na += 1;
+              } else if (
+                reasonRaw === 'Outside selected date range' ||
+                reasonRaw.includes('Outside selected')
+              ) {
+                no += 1;
+              } else {
+                ns += 1;
+              }
+              return {
+                ...u,
+                phase: 'ai_decision',
+                messageIndex: Number(ev.index ?? 0),
+                messageTotal: Number(ev.total ?? u.messageTotal),
+                lastSubject: String(ev.subject ?? ''),
+                lastFrom: String(ev.from ?? ''),
+                lastRelevant: relevant,
+                lastReason: reasonRaw.length > 0 ? reasonRaw : null,
+                runningTracked: nt,
+                runningSkippedAi: ns,
+                runningAlreadySynced: na,
+                runningOutsideRange: no,
+                runningCcOnly: nc,
+              };
+            });
             return;
           }
           if (phase === 'saving') {
@@ -2942,6 +3087,26 @@ function MyEmailPageInner() {
     return () => clearTimeout(id);
   }, [token, me, filterMailbox, loadDashboard, syncEmployeeIdsParam, myEmailTab]);
 
+  /** CEO inbox tab: while historical backfill writes threads, refresh dashboard so stat cards and tab counts catch up. */
+  useEffect(() => {
+    if (!token || me?.role !== 'CEO' || myEmailTab !== 'ceo') return;
+    const phase = historicalBackfillUi?.phase;
+    if (phase !== 'saving' && phase !== 'recomputing') return;
+    void loadDashboard(token, syncEmployeeIdsParam || undefined);
+    const id = window.setInterval(() => {
+      void loadDashboard(token, syncEmployeeIdsParam || undefined);
+    }, 2000);
+    return () => clearInterval(id);
+  }, [
+    token,
+    me?.role,
+    myEmailTab,
+    historicalBackfillUi?.phase,
+    historicalBackfillUi?.employeeId,
+    loadDashboard,
+    syncEmployeeIdsParam,
+  ]);
+
   useEffect(() => {
     setMailListPage(1);
   }, [
@@ -3098,6 +3263,9 @@ function MyEmailPageInner() {
           Math.round((100 * bulkDeleteProgress.done) / bulkDeleteProgress.total),
         );
 
+  /** CEO · My Email (default inbox tab): extra AI progress + live category refresh — not manager/team views. */
+  const ceoMyEmailAiPortalDetail = me.role === 'CEO' && myEmailTab === 'ceo';
+
   function livePipelineBelowCard(mbId: string): ReactNode {
     if (!pipeline || pipeline.mailboxId !== mbId) return null;
     const serverSyncPhase = pipeline.running && pipeline.status === 'running';
@@ -3114,6 +3282,7 @@ function MyEmailPageInner() {
             windowLine={
               pipeline.trackingStartAt ? absoluteTime(pipeline.trackingStartAt) : null
             }
+            ceoPortalDetail={ceoMyEmailAiPortalDetail}
           />
         ) : null}
         {serverSyncPhase ? (
@@ -3331,6 +3500,7 @@ function MyEmailPageInner() {
                 <HistoricalBackfillProgressBlock
                   ui={historicalBackfillUi}
                   windowLine={trackingWindowPreviewLine(onboardingDate, onboardingTime)}
+                  ceoPortalDetail={ceoMyEmailAiPortalDetail}
                 />
                 {!historicalBackfillUi ? (
                   <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-slate-100">
@@ -3473,6 +3643,7 @@ function MyEmailPageInner() {
                 return iso ? absoluteTime(iso) : null;
               })()
             }
+            ceoPortalDetail={ceoMyEmailAiPortalDetail}
           />
         </div>
       ) : null}
@@ -3504,6 +3675,17 @@ function MyEmailPageInner() {
                     />
               </>
             </div>
+          ) : null}
+
+          {me.role === 'CEO' &&
+          myEmailTab === 'ceo' &&
+          historicalBackfillUi &&
+          historicalBackfillUi.phase !== 'complete' &&
+          historicalBackfillUi.phase !== 'error' ? (
+            <p className="mb-3 text-center text-xs font-medium text-violet-800">
+              Stat cards and follow-up tab counts refresh live while messages are saved and threads are recomputed —
+              use the progress card for per-message AI decisions until then.
+            </p>
           ) : null}
 
           {/* ── KPI strip — follow-up command center (scoped to tab) ── */}
