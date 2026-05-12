@@ -461,6 +461,8 @@ export class ConversationsService {
       priority: looksAutomated ? 'LOW' : (existing?.priority ?? 'MEDIUM'),
       summary: summaryForRow,
       confidence: existing ? Number(existing.confidence) : 0,
+      classification_status: 'classified',
+      ai_confidence_score: existing ? Number(existing.confidence) : 0,
       updated_at: new Date().toISOString(),
     };
 

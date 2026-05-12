@@ -35,6 +35,9 @@ export interface AiSkippedMailItem {
   skipped_at: string;
   skip_kind: string;
   skip_reason: string | null;
+  skip_reason_code: string | null;
+  classification_status: string | null;
+  ai_confidence_score: number | null;
   subject: string | null;
   from_email: string | null;
   sent_at: string | null;
@@ -285,8 +288,13 @@ export class SelfTrackingService {
         const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
         const t0 = trackingStartMsByEmployee.get(targetId);
         if (t0 == null) return true;
-        if (!r.last_client_msg_at) return false;
-        return Date.parse(r.last_client_msg_at) >= t0;
+        const lastClientMs = r.last_client_msg_at ? Date.parse(r.last_client_msg_at) : NaN;
+        const lastReplyMs = r.last_employee_reply_at ? Date.parse(r.last_employee_reply_at) : NaN;
+        const activityMs = Math.max(
+          Number.isFinite(lastClientMs) ? lastClientMs : -Infinity,
+          Number.isFinite(lastReplyMs) ? lastReplyMs : -Infinity,
+        );
+        return Number.isFinite(activityMs) && activityMs >= t0;
       })
       .map((r) => {
         const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
@@ -876,6 +884,8 @@ export class SelfTrackingService {
     if (!allowed.has(id)) {
       throw new ForbiddenException('Mailbox not in your scope');
     }
+    const mailbox = mailboxes.find((m) => m.id === id);
+    const trackingStartIso = mailbox?.tracking_start_at?.trim() ?? '';
     const lim = Math.min(Math.max(1, limit), 100);
     const off = Math.max(0, offset);
 
@@ -885,6 +895,9 @@ export class SelfTrackingService {
       skipped_at: string;
       skip_kind: string | null;
       skip_reason: string | null;
+      skip_reason_code: string | null;
+      classification_status: string | null;
+      ai_confidence_score: number | null;
       subject: string | null;
       from_email: string | null;
       sent_at: string | null;
@@ -895,26 +908,42 @@ export class SelfTrackingService {
       skipped_at: r.skipped_at,
       skip_kind: r.skip_kind ?? 'legacy',
       skip_reason: r.skip_reason,
+      skip_reason_code: r.skip_reason_code,
+      classification_status: r.classification_status,
+      ai_confidence_score: r.ai_confidence_score,
       subject: r.subject,
       from_email: r.from_email,
       sent_at: r.sent_at,
       provider_thread_id: r.provider_thread_id,
     });
 
-    const win = window?.startIso?.trim() && window?.endIso?.trim()
-      ? { start: window.startIso.trim(), end: window.endIso.trim() }
-      : null;
+    const explicitWindow =
+      window?.startIso?.trim() && window?.endIso?.trim()
+        ? { start: window.startIso.trim(), end: window.endIso.trim() }
+        : null;
+    const win =
+      explicitWindow ??
+      (trackingStartIso
+        ? { start: new Date(trackingStartIso).toISOString(), end: new Date().toISOString() }
+        : null);
+    if (!win) {
+      return { total: 0, items: [] };
+    }
 
-    /** Historical Search window: merge rows with sent_at in range and rows with null sent_at but skipped_at in range. */
-    if (win) {
-      const MAX_FETCH = 4000;
+    /**
+     * Skipped in the product means "AI could not confidently categorize this eligible thread".
+     * Always scope by the selected tracking window, and never surface pre-window exclusions here.
+     */
+    {
+      const MAX_FETCH = 8000;
       const sel =
-        'employee_id, provider_message_id, skipped_at, skip_kind, skip_reason, subject, from_email, sent_at, provider_thread_id';
+        'employee_id, provider_message_id, skipped_at, skip_kind, skip_reason, skip_reason_code, classification_status, ai_confidence_score, subject, from_email, sent_at, provider_thread_id';
 
       const { data: withSent, error: e1 } = await this.supabase
         .from('email_ingestion_skips')
         .select(sel)
         .eq('employee_id', id)
+        .neq('skip_kind', 'before_tracking')
         .not('sent_at', 'is', null)
         .gte('sent_at', win.start)
         .lte('sent_at', win.end)
@@ -925,6 +954,7 @@ export class SelfTrackingService {
         .from('email_ingestion_skips')
         .select(sel)
         .eq('employee_id', id)
+        .neq('skip_kind', 'before_tracking')
         .is('sent_at', null)
         .gte('skipped_at', win.start)
         .lte('skipped_at', win.end)
@@ -955,36 +985,6 @@ export class SelfTrackingService {
         items: slice.map(mapRow),
       };
     }
-
-    const { count, error: cErr } = await this.supabase
-      .from('email_ingestion_skips')
-      .select('provider_message_id', { count: 'exact', head: true })
-      .eq('employee_id', id);
-    if (cErr) {
-      this.logger.warn(`listAiSkippedMails count: ${cErr.message}`);
-      throw new InternalServerErrorException(cErr.message);
-    }
-
-    const { data, error } = await this.supabase
-      .from('email_ingestion_skips')
-      .select(
-        'employee_id, provider_message_id, skipped_at, skip_kind, skip_reason, subject, from_email, sent_at, provider_thread_id',
-      )
-      .eq('employee_id', id)
-      .order('skipped_at', { ascending: false })
-      .range(off, off + lim - 1);
-
-    if (error) {
-      this.logger.warn(`listAiSkippedMails: ${error.message}`);
-      throw new InternalServerErrorException(error.message);
-    }
-
-    const rows = (data ?? []) as Array<Parameters<typeof mapRow>[0]>;
-
-    return {
-      total: count ?? rows.length,
-      items: rows.map(mapRow),
-    };
   }
 
   /**

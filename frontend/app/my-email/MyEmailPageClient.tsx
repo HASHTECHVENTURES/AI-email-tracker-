@@ -38,6 +38,8 @@ type Mailbox = {
   gmail_connected?: boolean;
   gmail_status?: 'CONNECTED' | 'EXPIRED' | 'REVOKED';
   last_synced_at?: string | null;
+  last_gmail_sync_at?: string | null;
+  last_ai_analysis_at?: string | null;
   sla_hours_default?: number | null;
   tracking_start_at?: string | null;
   tracking_paused?: boolean;
@@ -474,6 +476,9 @@ type AiSkippedMailItem = {
   skipped_at: string;
   skip_kind: string;
   skip_reason: string | null;
+  skip_reason_code?: string | null;
+  classification_status?: string | null;
+  ai_confidence_score?: number | null;
   subject: string | null;
   from_email: string | null;
   sent_at: string | null;
@@ -485,6 +490,31 @@ function skipKindShortLabel(kind: string): string {
   if (kind === 'before_tracking') return 'Before tracking';
   if (kind === 'legacy') return 'Older skip';
   return kind;
+}
+
+function skipReasonBadgeLabel(row: AiSkippedMailItem): string {
+  const code = row.skip_reason_code ?? '';
+  const labels: Record<string, string> = {
+    low_confidence: 'Low confidence',
+    missing_thread_context: 'Missing thread context',
+    unsupported_format: 'Unsupported format',
+    attachment_only: 'Attachment only',
+    empty_body: 'Empty body',
+    parsing_failed: 'Parsing failed',
+  };
+  if (labels[code]) return labels[code];
+  const reason = (row.skip_reason ?? '').toLowerCase();
+  if (reason.includes('attachment')) return labels.attachment_only;
+  if (reason.includes('empty')) return labels.empty_body;
+  if (reason.includes('parse') || reason.includes('failed')) return labels.parsing_failed;
+  if (reason.includes('context') || reason.includes('thread')) return labels.missing_thread_context;
+  if (reason.includes('format') || reason.includes('unsupported')) return labels.unsupported_format;
+  return labels.low_confidence;
+}
+
+function confidenceLabel(score: number | null | undefined): string {
+  if (typeof score !== 'number' || !Number.isFinite(score)) return 'Confidence unknown';
+  return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}% confidence`;
 }
 
 function clipStr(s: string | null | undefined, max: number): string {
@@ -516,8 +546,6 @@ function SkippedMailsTabTable({
   setAiSkippedOffset,
   onClearSkip,
   aiSkippedClearingId,
-  onImportToInbox,
-  aiSkippedImportingId,
   unfilteredPageCount,
   selectedIds,
   onToggleSelect,
@@ -538,9 +566,6 @@ function SkippedMailsTabTable({
   setAiSkippedOffset: Dispatch<SetStateAction<number>>;
   onClearSkip: (providerMessageId: string) => void;
   aiSkippedClearingId: string | null;
-  /** Fetch from Gmail and store immediately (bypasses Inbox AI). */
-  onImportToInbox: (providerMessageId: string) => void;
-  aiSkippedImportingId: string | null;
   selectedIds: Set<string>;
   onToggleSelect: (providerMessageId: string) => void;
   onSelectAllVisible: () => void;
@@ -597,9 +622,8 @@ function SkippedMailsTabTable({
           </p>
         </div>
       </div>
-      <p className="text-[11px] leading-relaxed text-slate-500">
-        <strong className="font-medium text-slate-700">Add to inbox</strong> imports the message into your tracker now (bypasses Inbox AI).{' '}
-        <strong className="font-medium text-slate-700">Re-try on next sync</strong> only removes the skip so a future run can try again.
+      <p className="rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
+        These conversations could not be confidently categorized by AI.
       </p>
       {rows.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -610,8 +634,8 @@ function SkippedMailsTabTable({
             className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800 shadow-sm hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {skippedBulkClearing
-              ? 'Clearing…'
-              : `Clear skip for selected (${selectedIds.size})`}
+              ? 'Analyzing…'
+              : `Reanalyze selected (${selectedIds.size})`}
           </button>
           <button
             type="button"
@@ -629,7 +653,7 @@ function SkippedMailsTabTable({
       {rows.length === 0 && !aiSkippedLoading ? (
         <p className="rounded-lg border border-slate-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
           {aiSkippedTotal === 0
-            ? 'No skipped messages in the ledger for this mailbox yet (or all were cleared).'
+            ? 'No skipped conversations in this tracking window.'
             : unfilteredPageCount > 0
               ? 'No matches for your search in the rows on this page — clear search or use Previous / Next.'
               : 'Nothing on this results page — use Previous / Next.'}
@@ -652,10 +676,10 @@ function SkippedMailsTabTable({
                     aria-label="Select all visible skipped messages"
                   />
                 </th>
-                <th className="px-3 py-2">When skipped</th>
-                <th className="px-3 py-2">Kind</th>
+                <th className="px-3 py-2">Analyzed</th>
+                <th className="px-3 py-2">Reason</th>
                 <th className="px-3 py-2">From / subject</th>
-                <th className="px-3 py-2">Reply</th>
+                <th className="px-3 py-2">Confidence</th>
                 <th className="px-3 py-2 text-right">Actions</th>
               </tr>
             </thead>
@@ -665,7 +689,6 @@ function SkippedMailsTabTable({
                   row.provider_thread_id && row.provider_thread_id.length > 0
                     ? `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(row.provider_thread_id)}`
                     : null;
-                const replyMailto = mailtoReplyHref(row.from_email, row.subject);
                 return (
                   <tr key={`${row.employee_id}:${row.provider_message_id}`} className="align-top">
                     <td className="px-2 py-2.5 align-top">
@@ -675,8 +698,7 @@ function SkippedMailsTabTable({
                         onChange={() => onToggleSelect(row.provider_message_id)}
                         disabled={
                           skippedBulkClearing ||
-                          aiSkippedClearingId === row.provider_message_id ||
-                          aiSkippedImportingId === row.provider_message_id
+                          aiSkippedClearingId === row.provider_message_id
                         }
                         className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 disabled:opacity-40"
                         aria-label={`Select skipped message ${row.subject ?? row.provider_message_id}`}
@@ -686,17 +708,12 @@ function SkippedMailsTabTable({
                       <RelWithAbsoluteDate iso={row.skipped_at} />
                     </td>
                     <td className="px-3 py-2.5">
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
-                        {skipKindShortLabel(row.skip_kind)}
+                      <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-100">
+                        {skipReasonBadgeLabel(row)}
                       </span>
-                      {row.skip_kind === 'before_tracking' ? (
-                        <p className="mt-1 max-w-[11rem] text-[10px] leading-snug text-slate-500">
-                          This mail is dated <strong>before</strong> your mailbox &quot;Track live mail from&quot; time. Live
-                          sync won&apos;t add it to Need to reply until you move that start <strong>earlier</strong> than this
-                          message, then use <strong>Re-try on next sync</strong> (or run a sync).{' '}
-                          <strong>Add to inbox</strong> also requires that — same rule on the server.
-                        </p>
-                      ) : null}
+                      <p className="mt-1 max-w-[12rem] text-[10px] leading-snug text-slate-500">
+                        {clipStr(row.skip_reason, 110) || skipKindShortLabel(row.skip_kind)}
+                      </p>
                     </td>
                     <td className="px-3 py-2.5">
                       <div className="max-w-[14rem] font-medium text-slate-900 sm:max-w-xs">
@@ -711,53 +728,29 @@ function SkippedMailsTabTable({
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5">
-                      <div className="flex flex-col gap-1.5">
-                        {replyMailto ? (
-                          <a
-                            href={replyMailto}
-                            className="inline-flex w-fit font-semibold text-brand-600 hover:underline"
-                          >
-                            Reply
-                          </a>
-                        ) : null}
-                        {gmailUrl ? (
-                          <a
-                            href={gmailUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex w-fit text-[11px] font-semibold text-slate-600 hover:underline"
-                          >
-                            Open in Gmail
-                          </a>
-                        ) : null}
-                        {!replyMailto && !gmailUrl ? <span className="text-slate-400">—</span> : null}
-                      </div>
+                    <td className="px-3 py-2.5 text-xs text-slate-600">
+                      {confidenceLabel(row.ai_confidence_score)}
                     </td>
                     <td className="px-3 py-2.5 text-right">
                       <div className="flex flex-col items-end gap-2">
                         <button
                           type="button"
-                          disabled={
-                            aiSkippedImportingId === row.provider_message_id ||
-                            aiSkippedClearingId === row.provider_message_id
-                          }
-                          onClick={() => onImportToInbox(row.provider_message_id)}
+                          disabled={aiSkippedClearingId === row.provider_message_id}
+                          onClick={() => onClearSkip(row.provider_message_id)}
                           className="rounded-lg bg-brand-600 px-2.5 py-1.5 text-[11px] font-bold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {aiSkippedImportingId === row.provider_message_id ? 'Adding…' : 'Add to inbox'}
+                          {aiSkippedClearingId === row.provider_message_id ? 'Analyzing…' : 'Reanalyze'}
                         </button>
-                        <button
-                          type="button"
-                          disabled={
-                            aiSkippedClearingId === row.provider_message_id ||
-                            aiSkippedImportingId === row.provider_message_id
-                          }
-                          onClick={() => onClearSkip(row.provider_message_id)}
-                          className="text-[11px] font-semibold text-slate-600 hover:underline disabled:opacity-40"
-                        >
-                          {aiSkippedClearingId === row.provider_message_id ? '…' : 'Re-try on next sync'}
-                        </button>
+                        {gmailUrl ? (
+                          <a
+                            href={gmailUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[11px] font-semibold text-slate-600 hover:underline"
+                          >
+                            Open in Gmail
+                          </a>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -812,12 +805,12 @@ function formatElapsedSince(startedAtMs: number): string {
   return `${m}m ${r}s`;
 }
 
-/** Latest `last_synced_at` among mailboxes (server’s last Gmail + processing pass for that row). */
+/** Latest Gmail sync time among mailboxes. Tracking start remains a separate product window. */
 function pickLatestMailboxSyncIso(mailboxes: Mailbox[]): string | null {
   let best = -1;
   let iso: string | null = null;
   for (const m of mailboxes) {
-    const raw = m.last_synced_at;
+    const raw = m.last_gmail_sync_at ?? m.last_synced_at;
     if (!raw) continue;
     const t = Date.parse(raw);
     if (!Number.isNaN(t) && t > best) {
@@ -927,141 +920,53 @@ function CeoLiveSyncStrip({
   }
 
   return (
-    <div className="rounded-2xl border-2 border-brand-200/90 bg-gradient-to-br from-brand-50/95 via-white to-violet-50/40 px-4 py-5 shadow-md shadow-brand-600/10 sm:px-6 sm:py-5">
-      <div className="flex flex-wrap items-start gap-3 border-b border-brand-100/90 pb-4">
-        <div
-          className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-600 text-white shadow-sm"
-          aria-hidden
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-            <path
-              fillRule="evenodd"
-              d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25ZM12.75 6a.75.75 0 0 0-1.5 0v6c0 .414.336.75.75.75h4.5a.75.75 0 0 0 0-1.5h-3.75V6Z"
-              clipRule="evenodd"
-            />
-          </svg>
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-bold uppercase tracking-wide text-brand-800">Live mail · Gmail &amp; AI</p>
-          {latestIso ? (
-            <>
-              <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">
-                Last sync <span className="text-brand-700">{formatLiveSyncRelative(latestIso, nowMs)}</span>
-              </p>
-              <p className="text-sm text-slate-600">{formatLiveSyncAbsolute(latestIso)}</p>
-            </>
-          ) : syncBusy ? (
-            <p className="mt-1 max-w-prose text-sm leading-relaxed text-slate-700">
-              <span className="font-semibold text-brand-800">Sync in progress.</span> Last sync time appears here when this
-              run finishes and the inbox updates.
+    <div className="rounded-2xl border border-slate-200/80 bg-white px-4 py-4 shadow-card sm:px-5">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="grid flex-1 gap-4 sm:grid-cols-2">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Tracking since</p>
+            <p className="mt-1 text-base font-semibold text-slate-900">
+              {trackingWindowPreview ?? 'Choose a start date'}
             </p>
-          ) : awaitingAfterRun ? (
-            <p className="mt-1 max-w-prose text-sm leading-relaxed text-slate-700">
-              <span className="font-semibold text-slate-800">Sync was triggered.</span> Last sync time fills in shortly after
-              the server finishes (often under a minute). Use Refresh in the header if the page doesn&apos;t update.
-            </p>
-          ) : (
-            <p className="mt-1 max-w-prose text-sm leading-relaxed text-slate-600">
-              Last sync time appears after the first completed mailbox run. Use{' '}
-              <span className="font-medium text-slate-800">Run sync now</span> below or wait for the next automatic crawl.
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-4 lg:grid-cols-2 lg:gap-6 lg:items-stretch">
-        <section
-          className="flex flex-col rounded-xl border border-slate-200/90 bg-white p-4 shadow-sm"
-          aria-labelledby="live-mail-tracking-heading"
-        >
-          <h2 id="live-mail-tracking-heading" className="text-sm font-semibold text-slate-900">
-            Your tracking window
-          </h2>
-          <p className="mt-1 text-sm leading-relaxed text-slate-600">
-            Mail <strong className="font-medium text-slate-800">on or after</strong> this date and time is eligible for
-            follow-up (through each sync). Older messages stay out unless you move the start earlier. Times use your
-            device timezone.
-          </p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <label className="flex flex-col gap-1.5 text-sm font-medium text-slate-700">
-              Start date
-              <input
-                type="date"
-                value={liveTrackDate}
-                onChange={(e) => onLiveTrackDateChange(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-base text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-              />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm font-medium text-slate-700">
-              Start time
-              <input
-                type="time"
-                value={liveTrackTime}
-                onChange={(e) => onLiveTrackTimeChange(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-base text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-              />
-            </label>
           </div>
-          {trackingWindowPreview ? (
-            <p
-              className="mt-4 rounded-lg border border-brand-100 bg-brand-50/60 px-3 py-2.5 text-sm font-medium text-slate-800"
-              role="status"
-            >
-              <span className="text-slate-600">Evaluating from: </span>
-              {trackingWindowPreview}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Last synced</p>
+            <p className="mt-1 text-base font-semibold text-slate-900">
+              {latestIso
+                ? formatLiveSyncRelative(latestIso, nowMs)
+                : syncBusy || awaitingAfterRun
+                  ? 'Analyzing now'
+                  : 'Not synced yet'}
             </p>
-          ) : (
-            <p className="mt-4 text-sm text-amber-800">Pick a valid date and time to set the window.</p>
-          )}
-        </section>
-
-        <div className="flex min-h-0 flex-col gap-4">
-          <section
-            className="flex flex-1 flex-col rounded-xl border border-slate-200/90 bg-white p-4 text-center shadow-sm sm:text-left"
-            aria-labelledby="live-mail-crawl-heading"
-          >
-            <h2 id="live-mail-crawl-heading" className="text-sm font-semibold text-slate-900">
-              Next automatic crawl
-            </h2>
-            <p className="mt-1 text-sm leading-relaxed text-slate-600">
-              Countdown until the server polls Gmail again. This is <strong className="font-medium text-slate-800">not</strong>{' '}
-              the same as your tracking window on the left.
-            </p>
-            <div className="mt-4 flex flex-col items-center gap-1 sm:items-start">
-              {!scheduleReady ? (
-                <>
-                  <p className="font-mono text-3xl font-bold tabular-nums text-slate-400">…</p>
-                  <p className="text-sm text-slate-500">Loading schedule…</p>
-                </>
-              ) : nextTickMs != null ? (
-                <>
-                  <p className="font-mono text-3xl font-bold tabular-nums text-slate-900">
-                    {formatCountdownMmSs(nextTickMs)}
-                  </p>
-                  {nextIngestionAtIso ? (
-                    <p className="text-sm text-slate-600">{formatNextCrawlLocal(nextIngestionAtIso)}</p>
-                  ) : null}
-                </>
-              ) : (
-                <>
-                  <p className="text-2xl font-semibold tabular-nums text-slate-500">—</p>
-                  <p className="text-sm text-slate-500">Scheduled crawl off</p>
-                </>
-              )}
-            </div>
-          </section>
+            {latestIso ? <p className="mt-0.5 text-xs text-slate-500">{formatLiveSyncAbsolute(latestIso)}</p> : null}
+          </div>
+        </div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+            Start date
+            <input
+              type="date"
+              value={liveTrackDate}
+              onChange={(e) => onLiveTrackDateChange(e.target.value)}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+            Start time
+            <input
+              type="time"
+              value={liveTrackTime}
+              onChange={(e) => onLiveTrackTimeChange(e.target.value)}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+            />
+          </label>
           <button
             type="button"
             disabled={syncBusy || !canManualSync}
-            title={
-              !canManualSync
-                ? 'Company sync is run on a schedule. Ask your CEO or manager if you need an earlier pull.'
-                : undefined
-            }
             onClick={onSyncNow}
-            className="w-full shrink-0 rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-3.5 text-sm font-bold text-white shadow-lg shadow-brand-600/25 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60 lg:py-4"
+            className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-brand-600/20 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {syncBusy ? 'Running sync…' : !canManualSync ? 'Scheduled sync' : 'Run sync now'}
+            {syncBusy ? 'Syncing…' : 'Sync now'}
           </button>
         </div>
       </div>
@@ -1123,7 +1028,6 @@ function MyEmailPageInner() {
   const [aiSkippedLoading, setAiSkippedLoading] = useState(false);
   const [aiSkippedOffset, setAiSkippedOffset] = useState(0);
   const [aiSkippedClearingId, setAiSkippedClearingId] = useState<string | null>(null);
-  const [aiSkippedImportingId, setAiSkippedImportingId] = useState<string | null>(null);
   const [skippedSelectedIds, setSkippedSelectedIds] = useState<Set<string>>(new Set());
   const [skippedBulkClearing, setSkippedBulkClearing] = useState(false);
 
@@ -1666,7 +1570,7 @@ function MyEmailPageInner() {
       setPipeline(null);
       setError(
         runBody.message ??
-          'Mailbox crawl is off in Settings. Turn it on under Settings, then try Start again.',
+          'Email syncing is off in Settings. Turn it on, then try Start again.',
       );
       return;
     }
@@ -1925,11 +1829,12 @@ function MyEmailPageInner() {
     let bestIso: string | null = null;
     let bestMs = 0;
     for (const m of ownMailboxes) {
-      if (!m.last_synced_at) continue;
-      const t = Date.parse(m.last_synced_at);
+      const raw = m.last_gmail_sync_at ?? m.last_synced_at;
+      if (!raw) continue;
+      const t = Date.parse(raw);
       if (Number.isFinite(t) && t >= bestMs) {
         bestMs = t;
-        bestIso = m.last_synced_at;
+        bestIso = raw;
       }
     }
     if (!bestIso) return null;
@@ -2048,59 +1953,30 @@ function MyEmailPageInner() {
           employee_id: aiSkippedMailboxId,
           provider_message_id: providerMessageId,
         });
-        const res = await apiFetch(`/self-tracking/ai-skipped-mails?${params}`, token, {
-          method: 'DELETE',
-        });
-        if (!res.ok) {
-          setError(await readApiErrorMessage(res, 'Could not clear skip.'));
-          return;
-        }
-        setSkippedSelectedIds((prev) => {
-          const n = new Set(prev);
-          n.delete(providerMessageId);
-          return n;
-        });
-        await loadAiSkippedMails();
-        setSuccess('Skip removed — run sync again to re-fetch this message from Gmail.');
-      } finally {
-        setAiSkippedClearingId(null);
-      }
-    },
-    [token, aiSkippedMailboxId, loadAiSkippedMails],
-  );
-
-  const importAiSkippedToInbox = useCallback(
-    async (providerMessageId: string) => {
-      if (!token || !aiSkippedMailboxId) return;
-      setAiSkippedImportingId(providerMessageId);
-      setError(null);
-      try {
-        const params = new URLSearchParams({
-          employee_id: aiSkippedMailboxId,
-          provider_message_id: providerMessageId,
-        });
-        const res = await apiFetch(`/self-tracking/ai-skipped-mails/import?${params}`, token, {
+        const res = await apiFetch(`/self-tracking/ai-skipped-mails/reanalyze?${params}`, token, {
           method: 'POST',
         });
         if (!res.ok) {
-          setError(await readApiErrorMessage(res, 'Could not add to inbox.'));
+          setError(await readApiErrorMessage(res, 'Could not reanalyze this thread.'));
           return;
         }
         const body = (await res.json()) as { outcome?: string };
-        await loadAiSkippedMails();
-        await loadDashboard(token);
         setSkippedSelectedIds((prev) => {
           const n = new Set(prev);
           n.delete(providerMessageId);
           return n;
         });
+        await loadAiSkippedMails();
+        await loadDashboard(token);
         setSuccess(
-          body.outcome === 'already_in_portal'
-            ? 'This message was already in your tracker.'
-            : 'Added to your inbox — check Need your reply or All threads.',
+          body.outcome === 'classified'
+            ? 'Reanalyzed and added to your follow-up workspace.'
+            : body.outcome === 'already_in_portal'
+              ? 'This thread is already in your follow-up workspace.'
+              : 'Reanalyzed. AI still could not classify this thread confidently.',
         );
       } finally {
-        setAiSkippedImportingId(null);
+        setAiSkippedClearingId(null);
       }
     },
     [token, aiSkippedMailboxId, loadAiSkippedMails, loadDashboard],
@@ -2111,7 +1987,7 @@ function MyEmailPageInner() {
     const ids = [...skippedSelectedIds];
     if (
       !window.confirm(
-        `Clear skip for ${ids.length} message(s)? On the next sync, Inbox AI can re-evaluate them.`,
+        `Reanalyze ${ids.length} skipped message(s)?`,
       )
     ) {
       return;
@@ -2126,25 +2002,26 @@ function MyEmailPageInner() {
           employee_id: aiSkippedMailboxId,
           provider_message_id: providerMessageId,
         });
-        const res = await apiFetch(`/self-tracking/ai-skipped-mails?${params}`, token, {
-          method: 'DELETE',
+        const res = await apiFetch(`/self-tracking/ai-skipped-mails/reanalyze?${params}`, token, {
+          method: 'POST',
         });
         if (res.ok) ok++;
         else fail++;
       }
       setSkippedSelectedIds(new Set());
       if (fail > 0) {
-        setError(`${fail} message(s) could not be cleared (${ok} cleared).`);
+        setError(`${fail} message(s) could not be reanalyzed (${ok} completed).`);
       } else {
-        setSuccess(`${ok} skip(s) cleared — run sync again to re-fetch from Gmail if AI agrees.`);
+        setSuccess(`${ok} skipped thread${ok === 1 ? '' : 's'} reanalyzed.`);
       }
       await loadAiSkippedMails();
+      await loadDashboard(token);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Bulk clear failed.');
+      setError(e instanceof Error ? e.message : 'Bulk reanalysis failed.');
     } finally {
       setSkippedBulkClearing(false);
     }
-  }, [token, aiSkippedMailboxId, skippedSelectedIds, loadAiSkippedMails]);
+  }, [token, aiSkippedMailboxId, skippedSelectedIds, loadAiSkippedMails, loadDashboard]);
 
   useEffect(() => {
     if (!showFullInboxChrome || mailTab !== 'skipped') return;
@@ -2434,8 +2311,17 @@ function MyEmailPageInner() {
       const sub = (row.subject ?? '').toLowerCase();
       const from = (row.from_email ?? '').toLowerCase();
       const kind = (row.skip_kind ?? '').toLowerCase();
+      const reason = (row.skip_reason ?? '').toLowerCase();
+      const reasonCode = (row.skip_reason_code ?? '').toLowerCase();
       const mid = (row.provider_message_id ?? '').toLowerCase();
-      return sub.includes(q) || from.includes(q) || kind.includes(q) || mid.includes(q);
+      return (
+        sub.includes(q) ||
+        from.includes(q) ||
+        kind.includes(q) ||
+        reason.includes(q) ||
+        reasonCode.includes(q) ||
+        mid.includes(q)
+      );
     });
   }, [aiSkippedRows, threadSearch]);
 
@@ -2496,6 +2382,20 @@ function MyEmailPageInner() {
     [searchFilteredTabRowsSorted, mailListPage],
   );
   const hasMoreTabRows = searchFilteredTabRowsSorted.length > pagedTabRows.length;
+  const activeTabExplanation =
+    mailTab === 'action'
+      ? 'Conversations waiting for your response.'
+      : mailTab === 'waiting'
+        ? 'Conversations where you already replied.'
+        : mailTab === 'cc'
+          ? 'Conversations where you were included for awareness.'
+          : mailTab === 'closed'
+            ? 'Conversations already handled.'
+            : mailTab === 'noise'
+              ? 'Conversations that do not need urgent attention.'
+              : mailTab === 'skipped'
+                ? 'Conversations AI could not confidently categorize.'
+                : 'Conversations in your tracking window.';
 
   const syncEmployeeIdsParam = useMemo(() => {
     const m = filterMailbox.trim();
@@ -2568,7 +2468,7 @@ function MyEmailPageInner() {
       if (j.status === 'skipped') {
         setError(
           j.message ??
-            'Mailbox crawl is off. Open Settings, turn on mailbox crawl, then try Run sync again.',
+            'Email syncing is off. Open Settings, turn it on, then try Sync now again.',
         );
         return;
       }
@@ -2624,7 +2524,6 @@ function MyEmailPageInner() {
       const parts = isoToLiveTrackingDateTime(trackingIso);
       setLiveTrackDate(parts.date);
       setLiveTrackTime(parts.time);
-      setTrackingOnboarding(null);
       const runReq = apiFetch('/email-ingestion/run', token);
       const timed = await Promise.race([
         runReq.then((res) => ({ kind: 'response' as const, res })),
@@ -2637,6 +2536,7 @@ function MyEmailPageInner() {
         setSuccess('Tracking window saved. Sync is running in the background — your inbox will fill in shortly.');
         await loadDashboard(token, syncEmployeeIdsParam || undefined);
         void loadLiveIngestSchedule();
+        setTrackingOnboarding(null);
         window.setTimeout(() => {
           void loadDashboard(token, syncEmployeeIdsParam || undefined);
           void loadLiveIngestSchedule();
@@ -2651,14 +2551,16 @@ function MyEmailPageInner() {
       if (!res.ok) {
         setError(j.message ?? 'Tracking saved, but sync could not start. Use Run sync now below.');
         await loadDashboard(token, syncEmployeeIdsParam || undefined);
+        setTrackingOnboarding(null);
         return;
       }
       if (j.status === 'skipped') {
         setError(
           j.message ??
-            'Tracking saved. Turn on mailbox crawl in Settings, then use Run sync now.',
+            'Tracking saved. Turn on email syncing in Settings, then use Sync now.',
         );
         await loadDashboard(token, syncEmployeeIdsParam || undefined);
+        setTrackingOnboarding(null);
         return;
       }
       setLiveSyncAwaitingTimestamp(Date.now());
@@ -2669,6 +2571,7 @@ function MyEmailPageInner() {
       }
       await loadDashboard(token, syncEmployeeIdsParam || undefined);
       void loadLiveIngestSchedule();
+      setTrackingOnboarding(null);
       window.setTimeout(() => {
         void loadDashboard(token, syncEmployeeIdsParam || undefined);
         void loadLiveIngestSchedule();
@@ -3086,13 +2989,38 @@ function MyEmailPageInner() {
         >
           <div className="w-full max-w-md rounded-2xl border border-brand-200 bg-white p-6 shadow-2xl">
             <h2 id="tracking-onboarding-title" className="text-lg font-semibold text-slate-900">
-              When should live tracking start?
+              {onboardingBusy ? 'Analyzing your emails...' : 'Start tracking your emails'}
             </h2>
-            <p className="mt-2 text-sm leading-relaxed text-slate-600">
-              Gmail is connected for <strong className="font-medium text-slate-800">{trackingOnboarding.name}</strong>{' '}
-              ({trackingOnboarding.email}). Choose the earliest date and time to analyze mail from — like a historical
-              window, but live: we pull mail from that moment forward, then keep syncing new mail automatically.
-            </p>
+            {onboardingBusy ? (
+              <>
+                <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                  Tracking from:{' '}
+                  <strong className="font-medium text-slate-900">
+                    {trackingWindowPreviewLine(onboardingDate, onboardingTime) ?? 'your selected time'}
+                  </strong>
+                </p>
+                <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                  AI is reviewing conversations and identifying pending follow-ups.
+                </p>
+                <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                  <div className="h-full w-3/4 animate-pulse rounded-full bg-gradient-to-r from-brand-600 to-violet-600" />
+                </div>
+                <div className="mt-4 grid gap-2 text-xs text-slate-600">
+                  {['Fetching emails', 'Analyzing threads', 'Categorizing conversations', 'Finalizing workspace'].map(
+                    (step) => (
+                      <div key={step} className="flex items-center gap-2">
+                        <span className="h-1.5 w-1.5 rounded-full bg-brand-500" />
+                        {step}
+                      </div>
+                    ),
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                Choose the date and time from which AI should analyze your conversations.
+              </p>
+            )}
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
               <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
                 Start date
@@ -3113,10 +3041,11 @@ function MyEmailPageInner() {
                 />
               </label>
             </div>
-            <p className="mt-2 text-[11px] leading-snug text-slate-500">
-              Uses your device&apos;s timezone. You can change this anytime under <strong className="font-medium">Live mail</strong>{' '}
-              and Run sync now.
-            </p>
+            {!onboardingBusy ? (
+              <p className="mt-2 text-[11px] leading-snug text-slate-500">
+                Uses your device&apos;s timezone. You can change this later from the dashboard header.
+              </p>
+            ) : null}
             <div className="mt-5 flex flex-wrap justify-end gap-2">
               <button
                 type="button"
@@ -3127,7 +3056,7 @@ function MyEmailPageInner() {
                 disabled={onboardingBusy}
                 className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
               >
-                Later — I&apos;ll use Live mail below
+                Later
               </button>
               <button
                 type="button"
@@ -3135,7 +3064,7 @@ function MyEmailPageInner() {
                 disabled={onboardingBusy}
                 className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-md hover:opacity-95 disabled:opacity-50"
               >
-                {onboardingBusy ? 'Saving…' : 'Save window & start sync'}
+                {onboardingBusy ? 'Analyzing…' : 'Start Tracking'}
               </button>
             </div>
           </div>
@@ -3596,39 +3525,34 @@ function MyEmailPageInner() {
                 [
                   [
                     'action',
-                    'Need your reply',
-                    'Threads already in your tracker where you owe a reply (last inbound newer than your reply, or SLA missed). Respects hide-low and stale rules.',
+                    'Need reply',
+                    'Conversations waiting for your response.',
                   ],
                   [
                     'waiting',
                     'Waiting on them',
-                    'Threads in your tracker where you already replied at or after their last message.',
+                    'Conversations where you already replied.',
                   ],
                   [
                     'cc',
                     "CC'd",
-                    'Threads where the latest inbound had you only on Cc, not To.',
+                    'Conversations where you were included for awareness.',
                   ],
                   [
                     'closed',
                     'Done',
-                    'Threads marked resolved (follow-up done) in your tracker.',
+                    'Conversations already handled.',
                   ],
                   [
                     'noise',
-                    'Low / noise',
-                    'Threads the post-import AI marked LOW priority (newsletters, FYI, automated, etc.).',
-                  ],
-                  [
-                    'all',
-                    'All threads',
-                    'Every conversation in this view; optional status/priority filters apply.',
+                    'Low priority',
+                    'Conversations that do not need urgent attention.',
                   ],
                   ...([
                         [
                           'skipped',
                           'Skipped',
-                          'Messages Gmail sync did not import yet (Inbox AI not relevant, or before tracking start). Not the same list as other tabs until you add to inbox.',
+                          'Conversations AI could not confidently categorize.',
                         ],
                       ] as const),
                 ] as const
@@ -3662,15 +3586,13 @@ function MyEmailPageInner() {
                   {id === 'noise' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({kpiLowNoiseTabCount})</span>
                   ) : null}
-                  {id === 'all' ? (
-                    <span className="ml-1.5 tabular-nums opacity-80">({kpiAllThreadsTabCount})</span>
-                  ) : null}
                   {id === 'skipped' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({aiSkippedTotal})</span>
                   ) : null}
                 </button>
               ))}
             </div>
+            <p className="mt-3 text-sm text-slate-600">{activeTabExplanation}</p>
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               {mailTab !== 'skipped' && scopedPersonOptions.length > 1 ? (
@@ -3757,8 +3679,6 @@ function MyEmailPageInner() {
                     setAiSkippedOffset={setAiSkippedOffset}
                     onClearSkip={(id) => void clearAiSkipEntry(id)}
                     aiSkippedClearingId={aiSkippedClearingId}
-                    onImportToInbox={(id) => void importAiSkippedToInbox(id)}
-                    aiSkippedImportingId={aiSkippedImportingId}
                     selectedIds={skippedSelectedIds}
                     onToggleSelect={(id) =>
                       setSkippedSelectedIds((prev) => {

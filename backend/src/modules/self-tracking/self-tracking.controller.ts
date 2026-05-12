@@ -283,6 +283,32 @@ export class SelfTrackingController {
   /**
    * Import one AI-skipped message into the portal now (bypasses Inbox AI). Fetches from Gmail, stores, recomputes thread.
    */
+  @Post('ai-skipped-mails/reanalyze')
+  async reanalyzeAiSkippedMail(
+    @Req() req: Request,
+    @Query('employee_id') employeeId?: string,
+    @Query('provider_message_id') providerMessageId?: string,
+  ) {
+    const user = req.user;
+    if (!user) throw new UnauthorizedException();
+    const ctx = getRequestContext(req);
+    assertSelfTrackingReader(ctx);
+    const eid = employeeId?.trim();
+    const mid = providerMessageId?.trim();
+    if (!eid || !mid) {
+      throw new BadRequestException('employee_id and provider_message_id are required');
+    }
+    const mailboxes = await this.selfTrackingService.getVisibleMailboxes(ctx, user.email);
+    const allowed = new Set(mailboxes.map((m) => m.id));
+    if (!allowed.has(eid)) {
+      throw new ForbiddenException('Mailbox not in your scope');
+    }
+    return this.emailIngestionService.reanalyzeSkippedMessage(ctx.companyId, eid, mid);
+  }
+
+  /**
+   * Import one AI-skipped message into the portal now (bypasses Inbox AI). Fetches from Gmail, stores, recomputes thread.
+   */
   @Post('ai-skipped-mails/import')
   async importAiSkippedMailToPortal(
     @Req() req: Request,

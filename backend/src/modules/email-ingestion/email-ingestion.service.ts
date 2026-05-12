@@ -98,6 +98,14 @@ type MailSyncRow = {
   backfill_max_sent_at: string | null;
 };
 
+type SkipReasonCode =
+  | 'low_confidence'
+  | 'missing_thread_context'
+  | 'unsupported_format'
+  | 'attachment_only'
+  | 'empty_body'
+  | 'parsing_failed';
+
 @Injectable()
 export class EmailIngestionService {
   private readonly logger = new Logger(EmailIngestionService.name);
@@ -581,6 +589,7 @@ export class EmailIngestionService {
           .from('employees')
           .update({
             last_synced_at: new Date().toISOString(),
+            last_gmail_sync_at: new Date().toISOString(),
             gmail_status: 'CONNECTED',
           })
           .eq('id', employee.id)
@@ -649,14 +658,6 @@ export class EmailIngestionService {
         if (msg.sentAt < startAt) {
           skippedFiltered += 1;
           skippedBeforeTrackingWindow += 1;
-          await this.recordIngestionSkip(employee.id, msg.providerMessageId, {
-            skip_kind: 'before_tracking',
-            skip_reason: 'Sent before your tracking start time.',
-            subject: msg.subject,
-            from_email: msg.fromEmail,
-            sent_at: msg.sentAt,
-            provider_thread_id: msg.providerThreadId,
-          });
           continue;
         }
 
@@ -696,6 +697,9 @@ export class EmailIngestionService {
           await this.recordIngestionSkip(employee.id, msg.providerMessageId, {
             skip_kind: 'ai_irrelevant',
             skip_reason: reasonText,
+            skip_reason_code: this.skipReasonCodeForMessage(msg, decision.reason),
+            classification_status: 'skipped',
+            ai_confidence_score: decision.confidence,
             subject: msg.subject,
             from_email: msg.fromEmail,
             sent_at: msg.sentAt,
@@ -742,6 +746,8 @@ export class EmailIngestionService {
         .from('employees')
         .update({
           last_synced_at: new Date().toISOString(),
+          last_gmail_sync_at: new Date().toISOString(),
+          last_ai_analysis_at: new Date().toISOString(),
           gmail_status: 'CONNECTED',
         })
         .eq('id', employee.id)
@@ -781,6 +787,8 @@ export class EmailIngestionService {
       .from('employees')
       .update({
         last_synced_at: new Date().toISOString(),
+        last_gmail_sync_at: new Date().toISOString(),
+        last_ai_analysis_at: new Date().toISOString(),
         gmail_status: 'CONNECTED',
       })
       .eq('id', employee.id)
@@ -841,6 +849,7 @@ export class EmailIngestionService {
   private async callGeminiIngestRelevance(prompt: string, fromEmail: string): Promise<{
     relevant: boolean;
     reason: string | null;
+    confidence: number | null;
   } | null> {
     if (!this.relevanceModel) return null;
 
@@ -853,14 +862,18 @@ export class EmailIngestionService {
       try {
         const result = await this.relevanceModel.generateContent(prompt);
         const text = result.response.text().replace(/```json\s*/gi, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(text) as { relevant?: boolean; reason?: string };
+        const parsed = JSON.parse(text) as { relevant?: boolean; reason?: string; confidence?: number };
         if (typeof parsed.relevant === 'boolean') {
           const reason =
             typeof parsed.reason === 'string' && parsed.reason.trim()
               ? parsed.reason.trim().slice(0, 500)
               : null;
+          const confidence =
+            typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
+              ? Math.max(0, Math.min(1, parsed.confidence))
+              : null;
           this.logger.debug(`AI relevance for ${fromEmail}: ${parsed.relevant} — ${reason ?? ''}`);
-          return { relevant: parsed.relevant, reason };
+          return { relevant: parsed.relevant, reason, confidence };
         }
         this.logger.warn(`AI relevance JSON parse: missing relevant flag for ${fromEmail}`);
         return null;
@@ -912,11 +925,12 @@ export class EmailIngestionService {
     hasNoiseGmailLabel: boolean,
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
-  ): Promise<{ relevant: boolean; reason: string | null; inboundAiHardStop?: boolean }> {
+  ): Promise<{ relevant: boolean; reason: string | null; confidence: number | null; inboundAiHardStop?: boolean }> {
     if (target.direction === 'OUTBOUND') {
       return {
         relevant: true,
         reason: 'Outbound — your sent message (reply detection / SLA)',
+        confidence: 1,
       };
     }
     if (allowGeminiRelevance && this.relevanceModel) {
@@ -933,33 +947,50 @@ export class EmailIngestionService {
             relevant: true,
             reason:
               'Safety override: direct human mailbox message kept even though Inbox AI marked it not relevant.',
+            confidence: parsed.confidence,
           };
         }
-        return { relevant: parsed.relevant, reason: parsed.reason };
+        return { relevant: parsed.relevant, reason: parsed.reason, confidence: parsed.confidence };
       }
       if (ingestWithoutAiConfirmed) {
         return {
           relevant: true,
           reason: 'Unfiltered import — Inbox AI unavailable; CEO confirmed on My Email.',
+          confidence: null,
         };
       }
       const reason = this.monthlyQuotaExhausted
         ? 'Inbox AI unavailable: Gemini monthly quota or spend cap exceeded. Inbound ingestion is paused until billing is restored.'
         : 'Inbox AI unavailable: classification failed after retries. Inbound ingestion is paused until Inbox AI responds again.';
-      return { relevant: false, reason, inboundAiHardStop: true };
+      return { relevant: false, reason, confidence: null, inboundAiHardStop: true };
     }
 
     if (ingestWithoutAiConfirmed) {
       return {
         relevant: true,
         reason: 'Unfiltered import — Inbox AI unavailable; CEO confirmed on My Email.',
+        confidence: null,
       };
     }
     return {
       relevant: false,
       reason: 'Inbox AI is required but not available for this mailbox.',
+      confidence: null,
       inboundAiHardStop: true,
     };
+  }
+
+  private skipReasonCodeForMessage(message: EmailMessage, reason: string | null | undefined): SkipReasonCode {
+    const text = `${reason ?? ''} ${message.subject ?? ''} ${message.bodyText ?? ''}`.toLowerCase();
+    const body = (message.bodyText ?? '').trim();
+    if (!body) return 'empty_body';
+    if (/attach|attachment|file only|pdf|invoice attached/.test(text) && body.length < 240) {
+      return 'attachment_only';
+    }
+    if (/parse|json|malformed|failed|error/.test(text)) return 'parsing_failed';
+    if (/unsupported|calendar|invite|ics|format/.test(text)) return 'unsupported_format';
+    if (/context|thread|history|missing/.test(text)) return 'missing_thread_context';
+    return 'low_confidence';
   }
 
   /**
@@ -1052,6 +1083,9 @@ export class EmailIngestionService {
     meta?: {
       skip_kind: 'before_tracking' | 'ai_irrelevant' | 'legacy';
       skip_reason?: string | null;
+      skip_reason_code?: SkipReasonCode | null;
+      classification_status?: 'skipped' | 'classified' | 'pending' | 'failed' | null;
+      ai_confidence_score?: number | null;
       subject?: string;
       from_email?: string;
       sent_at?: Date | null;
@@ -1066,6 +1100,12 @@ export class EmailIngestionService {
     if (meta) {
       row.skip_kind = meta.skip_kind;
       row.skip_reason = meta.skip_reason?.trim() ? meta.skip_reason.trim().slice(0, 2000) : null;
+      row.skip_reason_code = meta.skip_reason_code ?? null;
+      row.classification_status = meta.classification_status ?? 'skipped';
+      row.ai_confidence_score =
+        typeof meta.ai_confidence_score === 'number' && Number.isFinite(meta.ai_confidence_score)
+          ? Math.max(0, Math.min(1, meta.ai_confidence_score))
+          : null;
       row.subject = meta.subject?.trim() ? meta.subject.trim().slice(0, 500) : null;
       row.from_email = meta.from_email?.trim() ? meta.from_email.trim().slice(0, 320) : null;
       row.sent_at = meta.sent_at ? meta.sent_at.toISOString() : null;
@@ -1074,6 +1114,7 @@ export class EmailIngestionService {
         : null;
     } else {
       row.skip_kind = 'legacy';
+      row.classification_status = 'skipped';
     }
     const { error } = await this.supabase.from('email_ingestion_skips').upsert(row, {
       onConflict: 'employee_id,provider_message_id',
@@ -1087,6 +1128,106 @@ export class EmailIngestionService {
   /** Remove skip ledger entry so the next Gmail sync can fetch and re-classify this message. */
   async clearIngestionSkipEntry(employeeId: string, providerMessageId: string): Promise<void> {
     await this.clearIngestionSkip(employeeId, providerMessageId);
+  }
+
+  async reanalyzeSkippedMessage(
+    companyId: string,
+    employeeId: string,
+    providerMessageId: string,
+  ): Promise<{ outcome: 'classified' | 'skipped' | 'already_in_portal'; reason: string | null; confidence: number | null; conversationsUpdated: number }> {
+    const employee = await this.employeesService.getById(companyId, employeeId);
+    if (!employee) {
+      throw new NotFoundException('Mailbox not found');
+    }
+    if (!(await this.oauthTokenService.hasToken(employeeId))) {
+      throw new BadRequestException('Gmail is not connected for this mailbox');
+    }
+    const tracking = await this.employeesService.getTrackingState(companyId, employeeId);
+    if (!tracking?.trackingStartAt?.trim()) {
+      throw new BadRequestException('Set a tracking start time before reanalyzing skipped mail');
+    }
+    if (await this.messageInDatabase(employeeId, providerMessageId)) {
+      await this.clearIngestionSkip(employeeId, providerMessageId);
+      return { outcome: 'already_in_portal', reason: null, confidence: 1, conversationsUpdated: 0 };
+    }
+
+    const msg = await this.gmailService.fetchFullMessage(employee.id, employee.email, providerMessageId);
+    const startAt = new Date(tracking.trackingStartAt);
+    if (msg.sentAt < startAt) {
+      await this.clearIngestionSkip(employeeId, providerMessageId);
+      throw new BadRequestException('This message is before your tracking start and is not eligible for analysis.');
+    }
+
+    const cycleSettings = await this.settingsService.getAll();
+    const companyAiOn = await this.companyPolicyService.isAiEnabledForCompany(companyId);
+    const allowGeminiRelevance =
+      Boolean(this.relevanceModel) &&
+      companyAiOn &&
+      cycleSettings.email_ai_relevance_enabled &&
+      employee.aiEnabled !== false;
+    const threadMetaCache = new Map<string, gmail_v1.Schema$Message[]>();
+    const threadSlice =
+      allowGeminiRelevance && this.relevanceModel
+        ? await this.gmailService.fetchLastMessagesInThreadForRelevance(
+            employee.id,
+            employee.email,
+            msg,
+            threadMetaCache,
+            3,
+          )
+        : [msg];
+    const decision = await this.classifyMessageForIngest(
+      msg,
+      threadSlice,
+      employee.email,
+      this.gmailService.isNoise(msg.labelIds),
+      allowGeminiRelevance,
+      cycleSettings.email_ingest_without_ai_confirmed,
+    );
+
+    if (decision.relevant) {
+      msg.relevanceReason = decision.reason ?? 'Reanalyzed and classified as follow-up eligible.';
+      await this.storeMessages(companyId, employeeId, [msg]);
+      await this.clearIngestionSkip(employeeId, providerMessageId);
+      const recompute = await this.conversationsService.recomputeForThreads([
+        { companyId, employeeId, threadId: msg.providerThreadId },
+      ]);
+      await this.supabase
+        .from('employees')
+        .update({
+          last_ai_analysis_at: new Date().toISOString(),
+          last_gmail_sync_at: new Date().toISOString(),
+          last_synced_at: new Date().toISOString(),
+          gmail_status: 'CONNECTED',
+        })
+        .eq('id', employee.id)
+        .eq('company_id', companyId);
+      return {
+        outcome: 'classified',
+        reason: decision.reason,
+        confidence: decision.confidence,
+        conversationsUpdated: recompute.threadsProcessed,
+      };
+    }
+
+    const reasonText = decision.reason?.trim() || 'AI could not confidently classify this thread.';
+    await this.recordIngestionSkip(employeeId, providerMessageId, {
+      skip_kind: 'ai_irrelevant',
+      skip_reason: reasonText,
+      skip_reason_code: this.skipReasonCodeForMessage(msg, decision.reason),
+      classification_status: decision.inboundAiHardStop ? 'failed' : 'skipped',
+      ai_confidence_score: decision.confidence,
+      subject: msg.subject,
+      from_email: msg.fromEmail,
+      sent_at: msg.sentAt,
+      provider_thread_id: msg.providerThreadId,
+    });
+    await this.supabase
+      .from('employees')
+      .update({ last_ai_analysis_at: new Date().toISOString() })
+      .eq('id', employee.id)
+      .eq('company_id', companyId);
+    return { outcome: 'skipped', reason: reasonText, confidence: decision.confidence, conversationsUpdated: 0 };
   }
 
   /**
@@ -1150,6 +1291,8 @@ export class EmailIngestionService {
       .from('employees')
       .update({
         last_synced_at: new Date().toISOString(),
+        last_gmail_sync_at: new Date().toISOString(),
+        last_ai_analysis_at: new Date().toISOString(),
         gmail_status: 'CONNECTED',
       })
       .eq('id', employee.id)
