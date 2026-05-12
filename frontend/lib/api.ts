@@ -36,6 +36,23 @@ function shouldUseLocalDevProxy(): boolean {
   }
 }
 
+function isNetworkFetchFailure(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg === 'Failed to fetch' || /network|fetch|load failed/i.test(msg);
+}
+
+function requestMethod(init?: RequestInit): string {
+  return (init?.method ?? 'GET').toUpperCase();
+}
+
+function shouldRetryNetworkFetch(init?: RequestInit): boolean {
+  return requestMethod(init) === 'GET';
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+}
+
 /** Resolved URL for API requests (absolute to Nest, or same-origin `/api-backend` in local dev). */
 export function apiUrl(path: string): string {
   const p = path.startsWith('/') ? path : `/${path}`;
@@ -140,21 +157,31 @@ export function apiBase(): string {
 export async function apiFetch(path: string, accessToken: string, init?: RequestInit): Promise<Response> {
   // Avoid 304 + stale JSON (e.g. old gemini_api_key_configured after adding GEMINI_API_KEY on the API).
   const cache = init?.cache ?? 'no-store';
+  const attempts = shouldRetryNetworkFetch(init) ? 2 : 1;
   try {
-    return await fetch(apiUrl(path), {
-      ...init,
-      cache,
-      headers: {
-        ...managerDepartmentHeader(),
-        ...actAsEmployeeHeader(),
-        ...init?.headers,
-        Authorization: `Bearer ${accessToken}`,
-        ...(init?.body && typeof init.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
-      },
-    });
+    let lastNetworkError: unknown = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        return await fetch(apiUrl(path), {
+          ...init,
+          cache,
+          headers: {
+            ...managerDepartmentHeader(),
+            ...actAsEmployeeHeader(),
+            ...init?.headers,
+            Authorization: `Bearer ${accessToken}`,
+            ...(init?.body && typeof init.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
+          },
+        });
+      } catch (err) {
+        if (!isNetworkFetchFailure(err) || attempt >= attempts) throw err;
+        lastNetworkError = err;
+        await delay(650);
+      }
+    }
+    throw lastNetworkError ?? new Error('Network request failed.');
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg === 'Failed to fetch' || /network|fetch|load failed/i.test(msg)) {
+    if (isNetworkFetchFailure(err)) {
       throw new Error(formatNetworkFetchFailureMessage());
     }
     throw err;
@@ -167,6 +194,7 @@ export function formatNetworkFetchFailureMessage(): string {
   const isLocal =
     typeof window !== 'undefined' &&
     (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  const isRemoteApi = /^https:\/\//i.test(base) && !/localhost|127\.0\.0\.1/i.test(base);
   const portClash =
     isLocal &&
     (base === 'http://localhost:3000' || base === 'http://127.0.0.1:3000') &&
@@ -181,6 +209,13 @@ export function formatNetworkFetchFailureMessage(): string {
   const portHint = portClash
     ? ' This app is on port 3000 but the API URL is also :3000 — Nest cannot share that port. Run Next on 3001 (`npm run dev` in frontend/ or `npm run dev` from repo root). '
     : '';
+  if (!isLocal && isRemoteApi) {
+    return (
+      `Could not reach the API (${base}). The backend may be restarting, sleeping, or temporarily unreachable from the browser. ` +
+      'Wait a few seconds and refresh. If it keeps happening, check the Railway deployment/logs and confirm Vercel has ' +
+      'NEXT_PUBLIC_API_URL set to the live HTTPS API origin.'
+    );
+  }
   return (
     `Could not reach the API (${base}). Start the backend (e.g. npm run start:dev in backend/ on port 3000).${monorepoHint}${portHint}${proxyHint}` +
     `Set NEXT_PUBLIC_API_URL in .env.local to your Nest URL (e.g. http://localhost:3000). If the app is https, the API must be https too (not http://localhost).`
