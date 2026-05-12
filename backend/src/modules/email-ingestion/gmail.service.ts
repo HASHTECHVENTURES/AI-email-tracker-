@@ -116,49 +116,6 @@ export class GmailService {
     }
   }
 
-  /**
-   * Lightweight timestamp lookup used to replay historical windows oldest-first.
-   * Gmail search results are newest-first, which feels backwards when a user selects
-   * a start date and watches progress.
-   */
-  async fetchMessageInternalDateMs(employeeId: string, messageId: string): Promise<number | null> {
-    const gmail = await this.getGmailClient(employeeId);
-    try {
-      const response = await retryWithBackoff(
-        () =>
-          gmail.users.messages.get({
-            userId: 'me',
-            id: messageId,
-            format: 'metadata',
-            metadataHeaders: ['Date'],
-          }),
-        {
-          operationName: `gmail.messageDate(${employeeId})`,
-          attempts: 3,
-          timeoutMs: 15_000,
-          onRetry: (attempt, err, delayMs) => {
-            this.logger.warn(
-              `Retrying gmail.users.messages.get(date) attempt ${attempt + 1} in ${delayMs}ms: ${(err as Error).message}`,
-            );
-          },
-        },
-      );
-      const internal = Number(response.data.internalDate ?? NaN);
-      if (Number.isFinite(internal)) return internal;
-      const dateHeader = response.data.payload?.headers?.find(
-        (h) => h.name?.toLowerCase() === 'date',
-      )?.value;
-      if (!dateHeader) return null;
-      const parsed = Date.parse(dateHeader);
-      return Number.isFinite(parsed) ? parsed : null;
-    } catch (err) {
-      this.logger.warn(
-        `Could not read Gmail internalDate for ${messageId}: ${(err as Error).message}`,
-      );
-      return null;
-    }
-  }
-
   async fetchNewMessageIds(
     employeeId: string,
     afterTimestamp: Date | null,

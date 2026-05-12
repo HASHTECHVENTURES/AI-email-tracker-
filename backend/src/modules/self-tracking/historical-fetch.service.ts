@@ -211,12 +211,10 @@ export class HistoricalFetchService {
       return empty;
     }
 
-    const orderedMessageIds = await this.orderMessageIdsOldestFirst(
-      employeeId,
-      messageIds,
-      startMs,
-      signal,
-    );
+    // Gmail search returns newest-first. Replay the selected window oldest-first
+    // so the progress card moves from the user's start date toward "now" without
+    // doing an expensive pre-scan before AI analysis starts.
+    const orderedMessageIds = [...messageIds].reverse();
 
     const companyAiOn = await this.companyPolicyService.isAiEnabledForCompany(ctx.companyId);
     const settings = await this.settingsService.getAll();
@@ -461,40 +459,6 @@ export class HistoricalFetchService {
     );
     onProgress?.({ phase: 'complete', result });
     return result;
-  }
-
-  private async orderMessageIdsOldestFirst(
-    employeeId: string,
-    messageIds: string[],
-    selectedStartMs: number,
-    signal?: AbortSignal,
-  ): Promise<string[]> {
-    const rows: Array<{ id: string; originalIndex: number; sentMs: number | null }> = [];
-    const chunkSize = 20;
-    for (let start = 0; start < messageIds.length; start += chunkSize) {
-      if (signal?.aborted) break;
-      const chunk = messageIds.slice(start, start + chunkSize);
-      const dated = await Promise.all(
-        chunk.map(async (id, offset) => ({
-          id,
-          originalIndex: start + offset,
-          sentMs: await this.gmailService.fetchMessageInternalDateMs(employeeId, id),
-        })),
-      );
-      rows.push(...dated);
-    }
-    if (rows.length !== messageIds.length) {
-      for (let i = rows.length; i < messageIds.length; i++) {
-        rows.push({ id: messageIds[i], originalIndex: i, sentMs: null });
-      }
-    }
-    return rows
-      .sort((a, b) => {
-        const at = a.sentMs ?? selectedStartMs + a.originalIndex;
-        const bt = b.sentMs ?? selectedStartMs + b.originalIndex;
-        return at - bt || a.originalIndex - b.originalIndex;
-      })
-      .map((row) => row.id);
   }
 
   private async finalizeHistoricalRun(

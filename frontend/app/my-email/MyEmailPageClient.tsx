@@ -512,6 +512,8 @@ type HistoricalBackfillUi = {
   error?: string;
   /** User clicked Stop — show calmer styling than a hard failure. */
   stoppedByUser?: boolean;
+  /** Network/proxy dropped the SSE stream; partial batches may already be saved. */
+  connectionInterrupted?: boolean;
 };
 
 function HistoricalBackfillProgressBlock({
@@ -552,15 +554,18 @@ function HistoricalBackfillProgressBlock({
   const rcc = ui.runningCcOnly ?? 0;
   if (ui.phase === 'error') {
     const userStop = ui.stoppedByUser === true;
+    const interrupted = ui.connectionInterrupted === true;
     return (
       <div
         className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
-          userStop
+          userStop || interrupted
             ? 'border-amber-200 bg-amber-50 text-amber-950'
             : 'border-red-200 bg-red-50 text-red-900'
         }`}
       >
-        <p className="font-semibold">{userStop ? 'Stopped' : 'Analysis stopped'}</p>
+        <p className="font-semibold">
+          {userStop ? 'Stopped' : interrupted ? 'Connection interrupted' : 'Analysis stopped'}
+        </p>
         <p className="mt-1">{ui.error ?? 'Something went wrong.'}</p>
       </div>
     );
@@ -1161,6 +1166,10 @@ function isAbortError(e: unknown): boolean {
   );
 }
 
+function isHistoricalStreamInterrupted(e: unknown): boolean {
+  return e instanceof Error && e.name === 'HistoricalStreamInterrupted';
+}
+
 /** CEO Live Mails: last sync + countdown + manual sync (always between toggle and KPIs). */
 function CeoLiveSyncStrip({
   mailboxes,
@@ -1426,6 +1435,7 @@ function MyEmailPageInner() {
   /** Same engine as Historical Search (SSE), then live `/email-ingestion/run`. */
   const [historicalBackfillUi, setHistoricalBackfillUi] = useState<HistoricalBackfillUi | null>(null);
   const historicalBackfillAbortRef = useRef<AbortController | null>(null);
+  const historicalBackfillRunRef = useRef<{ runId: string; employeeId: string } | null>(null);
 
   const runTrackingHistoricalWindowToNow = useCallback(
     async (
@@ -1461,12 +1471,17 @@ function MyEmailPageInner() {
       });
       historicalBackfillAbortRef.current?.abort();
       const ac = new AbortController();
+      const runId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       historicalBackfillAbortRef.current = ac;
+      historicalBackfillRunRef.current = { runId, employeeId };
       try {
         await apiPostSse(
           '/self-tracking/historical-fetch-stream',
           t,
-          { start: startIso, end: endIso, employee_id: employeeId },
+          { start: startIso, end: endIso, employee_id: employeeId, client_run_id: runId },
           (ev) => {
           const phase = String(ev.phase ?? '');
           if (phase === 'error') {
@@ -1621,15 +1636,29 @@ function MyEmailPageInner() {
             ? e.message
             : 'The live analysis connection dropped before the server sent completion.';
         const friendly =
-          'The live analysis connection dropped. Saved batches are kept, and you can run the same window again to continue/verify. ' +
-          message;
+          'The live analysis connection was interrupted. Saved batches are kept; refresh the page or press Sync now to continue/verify this same window.';
         setHistoricalBackfillUi((u) =>
-          u ? { ...u, phase: 'error', error: friendly } : u,
+          u
+            ? {
+                ...u,
+                phase: 'error',
+                connectionInterrupted: true,
+                error: friendly,
+              }
+            : u,
         );
-        throw new Error(friendly);
+        const err = new Error(friendly);
+        err.name = 'HistoricalStreamInterrupted';
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('Historical stream interrupted', message);
+        }
+        throw err;
       } finally {
         if (historicalBackfillAbortRef.current === ac) {
           historicalBackfillAbortRef.current = null;
+        }
+        if (historicalBackfillRunRef.current?.runId === runId) {
+          historicalBackfillRunRef.current = null;
         }
       }
       if (sseError) {
@@ -1640,8 +1669,20 @@ function MyEmailPageInner() {
   );
 
   const stopHistoricalBackfill = useCallback(() => {
+    const run = historicalBackfillRunRef.current;
+    if (token && run) {
+      void apiFetch('/self-tracking/historical-fetch-stop', token, {
+        method: 'POST',
+        body: JSON.stringify({
+          employee_id: run.employeeId,
+          client_run_id: run.runId,
+        }),
+      }).catch(() => {
+        // The local abort still detaches the UI; the server may already have finished.
+      });
+    }
     historicalBackfillAbortRef.current?.abort();
-  }, []);
+  }, [token]);
 
   /** Hide LOW-priority threads from primary tabs (still visible under Low / noise). */
   const [hideLowPriority, setHideLowPriority] = useState(true);
@@ -2106,6 +2147,12 @@ function MyEmailPageInner() {
       if (isAbortError(e)) {
         setPipeline(null);
         setSuccess('Inbox analysis stopped. Partial results are saved.');
+        return;
+      }
+      if (isHistoricalStreamInterrupted(e)) {
+        setPipeline(null);
+        setSuccess('Analysis connection interrupted. Partial results are saved; refresh or press Sync now to continue.');
+        await loadDashboard(token, mb.id);
         return;
       }
       setHistoricalBackfillUi(null);
@@ -3069,6 +3116,11 @@ function MyEmailPageInner() {
             setSuccess('Inbox analysis stopped. Partial results are saved.');
             return;
           }
+          if (isHistoricalStreamInterrupted(e)) {
+            setSuccess('Analysis connection interrupted. Partial results are saved; refresh or press Sync now to continue.');
+            await loadDashboard(token, syncEmployeeIdsParam || undefined);
+            return;
+          }
           setError(
             e instanceof Error
               ? e.message
@@ -3172,6 +3224,12 @@ function MyEmailPageInner() {
         if (isAbortError(e)) {
           setOnboardingBusy(false);
           setSuccess('Analysis stopped. You can set your tracking window again when you are ready.');
+          setTrackingOnboarding(null);
+          return;
+        }
+        if (isHistoricalStreamInterrupted(e)) {
+          setSuccess('Analysis connection interrupted. Partial results are saved; refresh or press Sync now to continue.');
+          await loadDashboard(token, syncEmployeeIdsParam || undefined);
           setTrackingOnboarding(null);
           return;
         }

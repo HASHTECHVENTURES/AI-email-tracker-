@@ -38,12 +38,28 @@ function assertCanMutateSelfMailbox(ctx: RequestContext): void {
 
 @Controller('self-tracking')
 export class SelfTrackingController {
+  private readonly activeHistoricalRuns = new Map<
+    string,
+    { employeeId: string; controller: AbortController }
+  >();
+
   constructor(
     private readonly selfTrackingService: SelfTrackingService,
     private readonly employeesService: EmployeesService,
     private readonly historicalFetchService: HistoricalFetchService,
     private readonly emailIngestionService: EmailIngestionService,
   ) {}
+
+  private historicalRunKey(
+    companyId: string,
+    userId: string,
+    employeeId: string,
+    clientRunId?: string,
+  ): string | null {
+    const runId = clientRunId?.trim();
+    if (!runId) return null;
+    return `${companyId}:${userId}:${employeeId}:${runId}`;
+  }
 
   @Get('mailboxes')
   async listMailboxes(@Req() req: Request) {
@@ -454,6 +470,7 @@ export class SelfTrackingController {
       start: string;
       end: string;
       employee_id: string;
+      client_run_id?: string;
     },
   ): Promise<void> {
     const user = req.user;
@@ -478,6 +495,8 @@ export class SelfTrackingController {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    res.write(': connected\n\n');
     const emit: HistoricalProgressFn = (e) => {
       try {
         if (!res.writableEnded) {
@@ -498,8 +517,18 @@ export class SelfTrackingController {
     }, 15_000);
 
     const ac = new AbortController();
-    const onClientClose = () => ac.abort();
-    req.on('close', onClientClose);
+    const runKey = this.historicalRunKey(
+      ctx.companyId,
+      user.id,
+      body.employee_id.trim(),
+      body.client_run_id,
+    );
+    if (runKey) {
+      this.activeHistoricalRuns.set(runKey, {
+        employeeId: body.employee_id.trim(),
+        controller: ac,
+      });
+    }
 
     try {
       await this.historicalFetchService.fetchHistorical(
@@ -518,9 +547,56 @@ export class SelfTrackingController {
       emit({ phase: 'error', message });
     } finally {
       clearInterval(heartbeat);
-      req.off('close', onClientClose);
+      if (runKey) {
+        this.activeHistoricalRuns.delete(runKey);
+      }
     }
-    res.end();
+    try {
+      if (!res.writableEnded) res.end();
+    } catch {
+      // Client may have closed the progress stream. The run is intentionally
+      // detached from that connection so work can finish in the background.
+    }
+  }
+
+  @Post('historical-fetch-stop')
+  async stopHistoricalFetchStream(
+    @Req() req: Request,
+    @Body()
+    body: {
+      employee_id?: string;
+      client_run_id?: string;
+    },
+  ) {
+    const user = req.user;
+    if (!user) throw new UnauthorizedException();
+    const ctx = getRequestContext(req);
+    assertSelfTrackingReader(ctx);
+    if (!body.employee_id?.trim() || !body.client_run_id?.trim()) {
+      throw new BadRequestException('employee_id and client_run_id are required');
+    }
+    const mailboxes = await this.selfTrackingService.getVisibleMailboxes(ctx, user.email);
+    const employeeId = body.employee_id.trim();
+    const allowed = new Set(mailboxes.map((m) => m.id));
+    if (!allowed.has(employeeId)) {
+      throw new ForbiddenException('Mailbox not in your scope');
+    }
+    const runKey = this.historicalRunKey(
+      ctx.companyId,
+      user.id,
+      employeeId,
+      body.client_run_id,
+    );
+    if (!runKey) {
+      return { stopped: false, reason: 'not_running' };
+    }
+    const active = this.activeHistoricalRuns.get(runKey);
+    if (!active) {
+      return { stopped: false, reason: 'not_running' };
+    }
+    active.controller.abort();
+    this.activeHistoricalRuns.delete(runKey);
+    return { stopped: true };
   }
 
   /**
