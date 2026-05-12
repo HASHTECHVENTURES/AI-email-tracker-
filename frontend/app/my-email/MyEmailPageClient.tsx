@@ -2677,14 +2677,28 @@ function MyEmailPageInner() {
     [hideLowPriority, scopedConversations],
   );
 
+  /**
+   * Same as hiding LOW, except MISSED SLA rows still surface in Need reply — otherwise
+   * automated-looking mail can be LOW + MISSED and show in Missed SLA (6) but Need reply (0).
+   */
+  const scopedExcludingLowUnlessMissed = useMemo(
+    () =>
+      hideLowPriority
+        ? scopedConversations.filter(
+            (c) => c.priority !== 'LOW' || c.follow_up_status === 'MISSED',
+          )
+        : scopedConversations,
+    [hideLowPriority, scopedConversations],
+  );
+
   const kpiNeedReplyCount = useMemo(
     () =>
-      withoutLowScoped.filter(
+      scopedExcludingLowUnlessMissed.filter(
         (c) =>
           needsMyReply(c) &&
           (!HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)),
       ).length,
-    [withoutLowScoped],
+    [scopedExcludingLowUnlessMissed],
   );
   const kpiWaitingCount = useMemo(
     () => withoutLowScoped.filter((c) => isWaitingOnThem(c)).length,
@@ -2722,7 +2736,7 @@ function MyEmailPageInner() {
       case 'noise':
         return scopedConversations.filter((c) => c.priority === 'LOW');
       case 'action':
-        return withoutLowScoped.filter(
+        return scopedExcludingLowUnlessMissed.filter(
           (c) =>
             needsMyReply(c) &&
             (!HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)),
@@ -2748,6 +2762,7 @@ function MyEmailPageInner() {
     mailTab,
     scopedConversations,
     withoutLowScoped,
+    scopedExcludingLowUnlessMissed,
     ccScopedRows,
     hideLowPriority,
     allTabStatus,
@@ -3718,6 +3733,8 @@ function MyEmailPageInner() {
                 label: 'Need your reply',
                 value: kpiNeedReplyCount,
                 color: 'text-red-600',
+                hint:
+                  'Threads where you owe a reply (or SLA is missed). Low / noise is hidden here except missed SLA. “Will track” counts messages Inbox AI accepted during backfill, not threads.',
               },
               {
                 label: 'Waiting on them',
