@@ -492,6 +492,7 @@ type HistoricalBackfillUi = {
   messageTotal: number;
   lastSubject: string;
   lastFrom: string;
+  lastSentAtIso?: string;
   lastRelevant?: boolean;
   lastReason?: string | null;
   savingCount?: number;
@@ -568,7 +569,7 @@ function HistoricalBackfillProgressBlock({
     <div className="mt-3 space-y-2 rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-3 text-left text-xs text-slate-700">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-          Historical-style backfill → now
+          Live tracking: selected date → now
         </p>
         {onStop && ui.phase !== 'complete' && ui.phase !== 'error' ? (
           <button
@@ -644,8 +645,8 @@ function HistoricalBackfillProgressBlock({
             </p>
           ) : ui.phase !== 'complete' ? (
             <p className="text-[10px] leading-snug text-slate-500">
-              Each message is scored by Inbox AI before anything is saved; category chips fill in after the batch
-              save.
+              Inbox AI now walks your selected window oldest-first, starting from the date/time you picked and moving
+              toward now.
             </p>
           ) : null}
         </div>
@@ -669,6 +670,16 @@ function HistoricalBackfillProgressBlock({
               {' '}
               <span className="text-slate-600">—</span> {clipStr(ui.lastSubject, 72)}
             </>
+          ) : null}
+          {ui.lastSentAtIso ? (
+            <span className="ml-1 text-[11px] text-slate-500">
+              ({new Date(ui.lastSentAtIso).toLocaleString(undefined, {
+                month: 'short',
+                day: 'numeric',
+                hour: 'numeric',
+                minute: '2-digit',
+              })})
+            </span>
           ) : null}
         </p>
       ) : null}
@@ -726,6 +737,10 @@ function HistoricalBackfillProgressBlock({
                 <strong className="font-medium">Missed SLA</strong> and <strong className="font-medium">Resolved</strong>{' '}
                 as well. AI-only skips are under <strong className="font-medium">Skipped</strong> ({ui.complete.skipped}{' '}
                 this run).
+              </p>
+              <p className="mt-1.5 text-[10px] text-emerald-900/85">
+                Live tracking stays ON after this catch-up pass. Use the mailbox ON/OFF switch when you want to stop
+                monitoring new mail.
               </p>
               {ui.complete.stored > 0 && rt > 0 && ui.complete.stored !== rt ? (
                 <p className="mt-1.5 text-[10px] text-emerald-900/85">
@@ -1462,6 +1477,7 @@ function MyEmailPageInner() {
         messageTotal: 0,
         lastSubject: '',
         lastFrom: '',
+        lastSentAtIso: undefined,
         runningTracked: 0,
         runningSkippedAi: 0,
         runningAlreadySynced: 0,
@@ -1515,6 +1531,10 @@ function MyEmailPageInner() {
                     messageTotal: Number(ev.total ?? u.messageTotal),
                     lastSubject: String(ev.subject ?? u.lastSubject ?? ''),
                     lastFrom: String(ev.from ?? u.lastFrom ?? ''),
+                    lastSentAtIso:
+                      ev.sent_at_iso === null || ev.sent_at_iso === undefined
+                        ? u.lastSentAtIso
+                        : String(ev.sent_at_iso),
                   }
                 : u,
             );
@@ -1557,6 +1577,10 @@ function MyEmailPageInner() {
                 messageTotal: Number(ev.total ?? u.messageTotal),
                 lastSubject: String(ev.subject ?? ''),
                 lastFrom: String(ev.from ?? ''),
+                lastSentAtIso:
+                  ev.sent_at_iso === null || ev.sent_at_iso === undefined
+                    ? u.lastSentAtIso
+                    : String(ev.sent_at_iso),
                 lastRelevant: relevant,
                 lastReason: reasonRaw.length > 0 ? reasonRaw : null,
                 runningTracked: nt,
@@ -2114,8 +2138,6 @@ function MyEmailPageInner() {
       setError(e instanceof Error ? e.message : 'Could not analyze your tracking window.');
       return;
     }
-    setHistoricalBackfillUi(null);
-
     const runRes = await apiFetch('/email-ingestion/run', token);
     const runBody = (await runRes.json().catch(() => ({}))) as {
       status?: string;
@@ -3080,7 +3102,6 @@ function MyEmailPageInner() {
           return;
         }
       }
-      setHistoricalBackfillUi(null);
       const runReq = apiFetch('/email-ingestion/run', token);
       const timed = await Promise.race([
         runReq.then((res) => ({ kind: 'response' as const, res })),
@@ -3182,7 +3203,6 @@ function MyEmailPageInner() {
         setError(e instanceof Error ? e.message : 'Could not analyze your tracking window.');
         return;
       }
-      setHistoricalBackfillUi(null);
       liveTrackSourceRef.current = `${trackingOnboarding.mailboxId}:${trackingIso}`;
       const parts = isoToLiveTrackingDateTime(trackingIso);
       setLiveTrackDate(parts.date);
