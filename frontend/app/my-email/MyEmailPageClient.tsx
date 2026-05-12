@@ -453,6 +453,20 @@ function liveTrackingDateTimeToIso(dateYmd: string, timeHm: string): string | nu
   return local.toISOString();
 }
 
+/** One-line preview of the chosen tracking instant in the user’s locale (reduces date-format confusion). */
+function trackingWindowPreviewLine(dateYmd: string, timeHm: string): string | null {
+  const iso = liveTrackingDateTimeToIso(dateYmd, timeHm);
+  if (!iso) return null;
+  return new Date(iso).toLocaleString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 /** Map a stored ISO window boundary to `input[type=date]` value in local time. */
 type AiSkippedMailItem = {
   employee_id: string;
@@ -898,6 +912,7 @@ function CeoLiveSyncStrip({
     nextIngestionAtIso && !Number.isNaN(parsedNext)
       ? Math.max(0, parsedNext - nowMs)
       : null;
+  const trackingWindowPreview = trackingWindowPreviewLine(liveTrackDate, liveTrackTime);
 
   if (!connected) {
     return (
@@ -912,111 +927,129 @@ function CeoLiveSyncStrip({
   }
 
   return (
-    <div className="rounded-2xl border-2 border-brand-200/90 bg-gradient-to-br from-brand-50/95 via-white to-violet-50/40 px-4 py-4 shadow-md shadow-brand-600/10 sm:px-5 sm:py-4">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
-          <div
-            className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-600 text-white shadow-sm"
-            aria-hidden
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-              <path
-                fillRule="evenodd"
-                d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25ZM12.75 6a.75.75 0 0 0-1.5 0v6c0 .414.336.75.75.75h4.5a.75.75 0 0 0 0-1.5h-3.75V6Z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </div>
-          <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-wide text-brand-800">Live mail · Gmail &amp; AI</p>
-            {latestIso ? (
-              <>
-                <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">
-                  Last sync{' '}
-                  <span className="text-brand-700">{formatLiveSyncRelative(latestIso, nowMs)}</span>
-                </p>
-                <p className="text-xs text-slate-600">{formatLiveSyncAbsolute(latestIso)}</p>
-              </>
-            ) : syncBusy ? (
-              <p className="mt-1 text-sm leading-relaxed text-slate-700">
-                <span className="font-semibold text-brand-800">Sync in progress.</span> Last sync time appears here when
-                this run finishes and the inbox updates.
-              </p>
-            ) : awaitingAfterRun ? (
-              <p className="mt-1 text-sm leading-relaxed text-slate-700">
-                <span className="font-semibold text-slate-800">Sync was triggered.</span> Last sync time fills in shortly
-                after the server finishes (often under a minute). Use Refresh in the header if the page doesn&apos;t
-                update.
-              </p>
-            ) : (
-              <p className="mt-1 text-sm leading-relaxed text-slate-600">
-                Last sync time appears after the first completed mailbox run. Use{' '}
-                <span className="font-medium text-slate-800">Run sync now</span> or wait for the next automatic sync
-                {scheduleReady && nextTickMs != null ? ' (timer on the right)' : ''}.
-              </p>
-            )}
-            <div className="mt-4 flex flex-col gap-2 rounded-xl border border-brand-100 bg-white/80 px-3 py-3 sm:flex-row sm:flex-wrap sm:items-end">
-              <p className="w-full text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                Track live mail from
-              </p>
-              <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-                Start date
-                <input
-                  type="date"
-                  value={liveTrackDate}
-                  onChange={(e) => onLiveTrackDateChange(e.target.value)}
-                  className="rounded-lg border border-slate-200 px-2 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-                Start time
-                <input
-                  type="time"
-                  value={liveTrackTime}
-                  onChange={(e) => onLiveTrackTimeChange(e.target.value)}
-                  className="rounded-lg border border-slate-200 px-2 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                />
-              </label>
-              <p className="w-full text-[11px] leading-snug text-slate-500">
-                Uses your device&apos;s timezone. Only mail <strong className="font-medium text-slate-700">on or after</strong>{' '}
-                this moment is evaluated for follow-up (through whenever sync runs). Older mail stays out unless you move
-                the start earlier.
-              </p>
-            </div>
-          </div>
+    <div className="rounded-2xl border-2 border-brand-200/90 bg-gradient-to-br from-brand-50/95 via-white to-violet-50/40 px-4 py-5 shadow-md shadow-brand-600/10 sm:px-6 sm:py-5">
+      <div className="flex flex-wrap items-start gap-3 border-b border-brand-100/90 pb-4">
+        <div
+          className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-600 text-white shadow-sm"
+          aria-hidden
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+            <path
+              fillRule="evenodd"
+              d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25ZM12.75 6a.75.75 0 0 0-1.5 0v6c0 .414.336.75.75.75h4.5a.75.75 0 0 0 0-1.5h-3.75V6Z"
+              clipRule="evenodd"
+            />
+          </svg>
         </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-bold uppercase tracking-wide text-brand-800">Live mail · Gmail &amp; AI</p>
+          {latestIso ? (
+            <>
+              <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">
+                Last sync <span className="text-brand-700">{formatLiveSyncRelative(latestIso, nowMs)}</span>
+              </p>
+              <p className="text-sm text-slate-600">{formatLiveSyncAbsolute(latestIso)}</p>
+            </>
+          ) : syncBusy ? (
+            <p className="mt-1 max-w-prose text-sm leading-relaxed text-slate-700">
+              <span className="font-semibold text-brand-800">Sync in progress.</span> Last sync time appears here when this
+              run finishes and the inbox updates.
+            </p>
+          ) : awaitingAfterRun ? (
+            <p className="mt-1 max-w-prose text-sm leading-relaxed text-slate-700">
+              <span className="font-semibold text-slate-800">Sync was triggered.</span> Last sync time fills in shortly after
+              the server finishes (often under a minute). Use Refresh in the header if the page doesn&apos;t update.
+            </p>
+          ) : (
+            <p className="mt-1 max-w-prose text-sm leading-relaxed text-slate-600">
+              Last sync time appears after the first completed mailbox run. Use{' '}
+              <span className="font-medium text-slate-800">Run sync now</span> below or wait for the next automatic crawl.
+            </p>
+          )}
+        </div>
+      </div>
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center lg:flex-col lg:items-stretch xl:flex-row xl:items-center">
-          <div className="rounded-xl border border-white/80 bg-white/90 px-4 py-3 text-center shadow-sm sm:min-w-[11rem]">
-            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Next automatic sync</p>
-            {!scheduleReady ? (
-              <>
-                <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-400">…</p>
-                <p className="mt-1 text-[10px] text-slate-500">Loading schedule…</p>
-              </>
-            ) : nextTickMs != null ? (
-              <>
-                <p className="mt-1 font-mono text-2xl font-bold tabular-nums text-slate-900">
-                  {formatCountdownMmSs(nextTickMs)}
-                </p>
-                {nextIngestionAtIso ? (
-                  <p className="mt-1 text-[10px] leading-snug text-slate-500">
-                    {formatNextCrawlLocal(nextIngestionAtIso)}
-                  </p>
-                ) : null}
-                <p className="mt-2 text-[10px] leading-snug text-slate-400">
-                  This clock is only <strong className="font-medium text-slate-500">when the next crawl runs</strong> — it
-                  is not your tracking start. Your mail window is the &quot;Track live mail from&quot; date and time on
-                  the left.
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="mt-1 text-lg font-semibold tabular-nums text-slate-500">—</p>
-                <p className="mt-1 text-[10px] leading-snug text-slate-500">Scheduled crawl off</p>
-              </>
-            )}
+      <div className="mt-4 grid gap-4 lg:grid-cols-2 lg:gap-6 lg:items-stretch">
+        <section
+          className="flex flex-col rounded-xl border border-slate-200/90 bg-white p-4 shadow-sm"
+          aria-labelledby="live-mail-tracking-heading"
+        >
+          <h2 id="live-mail-tracking-heading" className="text-sm font-semibold text-slate-900">
+            Your tracking window
+          </h2>
+          <p className="mt-1 text-sm leading-relaxed text-slate-600">
+            Mail <strong className="font-medium text-slate-800">on or after</strong> this date and time is eligible for
+            follow-up (through each sync). Older messages stay out unless you move the start earlier. Times use your
+            device timezone.
+          </p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <label className="flex flex-col gap-1.5 text-sm font-medium text-slate-700">
+              Start date
+              <input
+                type="date"
+                value={liveTrackDate}
+                onChange={(e) => onLiveTrackDateChange(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-base text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+              />
+            </label>
+            <label className="flex flex-col gap-1.5 text-sm font-medium text-slate-700">
+              Start time
+              <input
+                type="time"
+                value={liveTrackTime}
+                onChange={(e) => onLiveTrackTimeChange(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-base text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+              />
+            </label>
           </div>
+          {trackingWindowPreview ? (
+            <p
+              className="mt-4 rounded-lg border border-brand-100 bg-brand-50/60 px-3 py-2.5 text-sm font-medium text-slate-800"
+              role="status"
+            >
+              <span className="text-slate-600">Evaluating from: </span>
+              {trackingWindowPreview}
+            </p>
+          ) : (
+            <p className="mt-4 text-sm text-amber-800">Pick a valid date and time to set the window.</p>
+          )}
+        </section>
+
+        <div className="flex min-h-0 flex-col gap-4">
+          <section
+            className="flex flex-1 flex-col rounded-xl border border-slate-200/90 bg-white p-4 text-center shadow-sm sm:text-left"
+            aria-labelledby="live-mail-crawl-heading"
+          >
+            <h2 id="live-mail-crawl-heading" className="text-sm font-semibold text-slate-900">
+              Next automatic crawl
+            </h2>
+            <p className="mt-1 text-sm leading-relaxed text-slate-600">
+              Countdown until the server polls Gmail again. This is <strong className="font-medium text-slate-800">not</strong>{' '}
+              the same as your tracking window on the left.
+            </p>
+            <div className="mt-4 flex flex-col items-center gap-1 sm:items-start">
+              {!scheduleReady ? (
+                <>
+                  <p className="font-mono text-3xl font-bold tabular-nums text-slate-400">…</p>
+                  <p className="text-sm text-slate-500">Loading schedule…</p>
+                </>
+              ) : nextTickMs != null ? (
+                <>
+                  <p className="font-mono text-3xl font-bold tabular-nums text-slate-900">
+                    {formatCountdownMmSs(nextTickMs)}
+                  </p>
+                  {nextIngestionAtIso ? (
+                    <p className="text-sm text-slate-600">{formatNextCrawlLocal(nextIngestionAtIso)}</p>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <p className="text-2xl font-semibold tabular-nums text-slate-500">—</p>
+                  <p className="text-sm text-slate-500">Scheduled crawl off</p>
+                </>
+              )}
+            </div>
+          </section>
           <button
             type="button"
             disabled={syncBusy || !canManualSync}
@@ -1026,7 +1059,7 @@ function CeoLiveSyncStrip({
                 : undefined
             }
             onClick={onSyncNow}
-            className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-brand-600/25 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full shrink-0 rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-3.5 text-sm font-bold text-white shadow-lg shadow-brand-600/25 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60 lg:py-4"
           >
             {syncBusy ? 'Running sync…' : !canManualSync ? 'Scheduled sync' : 'Run sync now'}
           </button>
