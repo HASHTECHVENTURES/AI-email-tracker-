@@ -12,7 +12,7 @@ function normalizeApiOrigin(raw: string | undefined): string | undefined {
  * Optional same-origin proxy (`/api-backend` → Nest) for local dev.
  *
  * **Default is off:** the browser calls `NEXT_PUBLIC_API_URL` directly (e.g. http://localhost:3000). CORS on the API
- * allows any localhost port. Long requests (Historical Search, etc.) often **time out** when forced through
+ * allows any localhost port. Long-running requests often **time out** when forced through
  * Next.js rewrites, which surfaces as 502/504 and the generic "Server issue" banner.
  *
  * Set `NEXT_PUBLIC_USE_LOCAL_API_PROXY=1` only if you need the old same-origin behavior (e.g. a broken CORS setup).

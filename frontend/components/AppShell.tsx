@@ -203,7 +203,7 @@ export function AppShell({
   const mailboxMessagesNav = (mailboxNav || canActAsMailbox) && !(isHead && !actAsMailbox);
   /** Manager-only sidebar (hidden in mailbox view). */
   const managerNavVisible = isHead && !isPlatformAdmin && !actAsMailbox;
-  /** CEO (full My Email), department manager (HEAD), or Employee portal — Historical Search + scoped mailboxes. */
+  /** CEO (full My Email), department manager (HEAD), or Employee portal — scoped mailboxes and follow-ups. */
   const showMyEmail = (isCeo || isHead || isEmployee) && !isPlatformAdmin;
   const showMyEmailCeoHashNav = isCeo;
   const roleLabel = isPlatformAdmin
