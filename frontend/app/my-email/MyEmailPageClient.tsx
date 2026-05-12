@@ -1176,8 +1176,6 @@ function CeoLiveSyncStrip({
   recentManualSyncAtMs = null,
   showStopAnalysis = false,
   onStopAnalysis,
-  liveCountsPolling = false,
-  onLiveCountsPollingChange,
 }: {
   mailboxes: Mailbox[];
   liveTrackDate: string;
@@ -1197,8 +1195,6 @@ function CeoLiveSyncStrip({
   /** While the historical Inbox-AI pass is streaming, offer a hard stop (aborts the SSE request). */
   showStopAnalysis?: boolean;
   onStopAnalysis?: () => void;
-  liveCountsPolling?: boolean;
-  onLiveCountsPollingChange?: (v: boolean) => void;
 }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -1296,25 +1292,6 @@ function CeoLiveSyncStrip({
           </div>
         </div>
       </div>
-      {typeof onLiveCountsPollingChange === 'function' ? (
-        <div className="mt-4 border-t border-slate-100 pt-4">
-          <label className="flex cursor-pointer items-start gap-3 text-xs text-slate-700">
-            <input
-              type="checkbox"
-              checked={liveCountsPolling}
-              onChange={(e) => onLiveCountsPollingChange(e.target.checked)}
-              className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-            />
-            <span>
-              <span className="font-semibold text-slate-900">Live counts</span>
-              <span className="mt-0.5 block text-[11px] leading-snug text-slate-500">
-                Refresh the stat row and follow-up lists about every 30 seconds while this tab stays open. Turn off
-                when you are done watching.
-              </span>
-            </span>
-          </label>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -1398,8 +1375,6 @@ function MyEmailPageInner() {
   const [togglePauseLoadingId, setTogglePauseLoadingId] = useState<string | null>(null);
   /** CEO Live Mails: manual GET /email-ingestion/run */
   const [liveSyncBusy, setLiveSyncBusy] = useState(false);
-  /** CEO · My Email: periodic dashboard refresh while the tab is open (client-side only). */
-  const [ceoLiveCountsPolling, setCeoLiveCountsPolling] = useState(false);
   /** After a successful run, `last_synced_at` can lag — show a calmer line until it appears. */
   const [liveSyncAwaitingTimestamp, setLiveSyncAwaitingTimestamp] = useState<number | null>(null);
   /** CEO Live: next cron from GET /settings/runtime (null = not loaded yet). */
@@ -3327,30 +3302,6 @@ function MyEmailPageInner() {
     syncEmployeeIdsParam,
   ]);
 
-  /** CEO inbox tab: optional 30s dashboard poll so stat cards stay fresh between manual syncs. */
-  useEffect(() => {
-    if (!token || me?.role !== 'CEO' || myEmailTab !== 'ceo' || !ceoLiveCountsPolling) return;
-    const tick = () => {
-      void loadDashboard(token, syncEmployeeIdsParam || undefined);
-      void loadLiveIngestSchedule();
-    };
-    tick();
-    const id = window.setInterval(tick, 30_000);
-    return () => clearInterval(id);
-  }, [
-    token,
-    me?.role,
-    myEmailTab,
-    ceoLiveCountsPolling,
-    loadDashboard,
-    loadLiveIngestSchedule,
-    syncEmployeeIdsParam,
-  ]);
-
-  useEffect(() => {
-    if (myEmailTab !== 'ceo') setCeoLiveCountsPolling(false);
-  }, [myEmailTab]);
-
   useEffect(() => {
     setMailListPage(1);
   }, [
@@ -3949,8 +3900,6 @@ function MyEmailPageInner() {
                       recentManualSyncAtMs={liveSyncAwaitingTimestamp}
                       showStopAnalysis={showCeoHistoricalStop}
                       onStopAnalysis={stopHistoricalBackfill}
-                      liveCountsPolling={ceoLiveCountsPolling}
-                      onLiveCountsPollingChange={setCeoLiveCountsPolling}
                     />
               </>
             </div>
