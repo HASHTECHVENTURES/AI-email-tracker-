@@ -245,9 +245,32 @@ export class HistoricalFetchService {
     const affectedThreads = new Set<string>();
     let skippedIrrelevant = 0;
     let fetchedCount = 0;
+    let storedRelevantCount = 0;
+    let conversationsCreated = 0;
 
     const total = messageIds.length;
     let stoppedEarly = false;
+
+    const flushRelevantBatch = async (): Promise<void> => {
+      if (messages.length === 0) return;
+      const batch = [...messages];
+      const batchThreadIds = [...new Set(batch.map((m) => m.providerThreadId))];
+      onProgress?.({ phase: 'saving', messageCount: storedRelevantCount + batch.length });
+      await this.storeMessages(ctx.companyId, employeeId, batch);
+      messages.splice(0, batch.length);
+      storedRelevantCount += batch.length;
+
+      if (batchThreadIds.length > 0) {
+        onProgress?.({ phase: 'recomputing', threadCount: affectedThreads.size });
+        const threadKeys = batchThreadIds.map((threadId) => ({
+          companyId: ctx.companyId,
+          employeeId,
+          threadId,
+        }));
+        const rc = await this.conversationsService.recomputeForThreads(threadKeys);
+        conversationsCreated += rc.created + rc.updated;
+      }
+    };
 
     for (let idx = 0; idx < messageIds.length; idx++) {
       if (signal?.aborted) {
@@ -382,27 +405,15 @@ export class HistoricalFetchService {
         messages.push(msg);
         affectedThreads.add(msg.providerThreadId);
         threadMetaCache.delete(msg.providerThreadId);
+        // Make the CEO portal feel live: once AI accepts a message, write and recompute
+        // that thread right away so it can appear in Need reply / Waiting / CC'd / Done.
+        await flushRelevantBatch();
       } catch (err) {
         this.logger.warn(`Historical fetch: skip message ${msgId}: ${(err as Error).message}`);
       }
     }
 
-    if (messages.length > 0) {
-      onProgress?.({ phase: 'saving', messageCount: messages.length });
-      await this.storeMessages(ctx.companyId, employeeId, messages);
-    }
-
-    let conversationsCreated = 0;
-    if (affectedThreads.size > 0) {
-      onProgress?.({ phase: 'recomputing', threadCount: affectedThreads.size });
-      const threadKeys = [...affectedThreads].map((threadId) => ({
-        companyId: ctx.companyId,
-        employeeId,
-        threadId,
-      }));
-      const rc = await this.conversationsService.recomputeForThreads(threadKeys);
-      conversationsCreated = rc.created + rc.updated;
-    }
+    await flushRelevantBatch();
 
     const fromNewThreads = await this.loadNewConversations(
       ctx.companyId,
@@ -420,13 +431,13 @@ export class HistoricalFetchService {
     const conversations = this.mergeHistoricalConversationViews(fromNewThreads, inWindow);
 
     this.logger.log(
-      `Historical fetch done: ${fetchedCount} fetched, ${messages.length} stored, ${skippedIrrelevant} skipped, ${conversationsCreated} conversations`,
+      `Historical fetch done: ${fetchedCount} fetched, ${storedRelevantCount} stored, ${skippedIrrelevant} skipped, ${conversationsCreated} conversations`,
     );
 
     const wasStopped = stoppedEarly || Boolean(signal?.aborted);
     const resultBase: HistoricalFetchResult = {
       fetched_from_gmail: fetchedCount,
-      stored_relevant: messages.length,
+      stored_relevant: storedRelevantCount,
       skipped_irrelevant: skippedIrrelevant,
       conversations_created: conversationsCreated,
       conversations,

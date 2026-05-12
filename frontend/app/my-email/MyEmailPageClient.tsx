@@ -1386,11 +1386,12 @@ function MyEmailPageInner() {
         runningOutsideRange: 0,
         runningCcOnly: 0,
       });
-      await apiPostSse(
-        '/self-tracking/historical-fetch-stream',
-        t,
-        { start: startIso, end: endIso, employee_id: employeeId },
-        (ev) => {
+      try {
+        await apiPostSse(
+          '/self-tracking/historical-fetch-stream',
+          t,
+          { start: startIso, end: endIso, employee_id: employeeId },
+          (ev) => {
           const phase = String(ev.phase ?? '');
           if (phase === 'error') {
             sseError = String(ev.message ?? 'Inbox analysis failed.');
@@ -1513,8 +1514,21 @@ function MyEmailPageInner() {
                 : u,
             );
           }
-        },
-      );
+          },
+        );
+      } catch (e) {
+        const message =
+          e instanceof Error
+            ? e.message
+            : 'The live analysis connection dropped before the server sent completion.';
+        const friendly =
+          'The live analysis connection dropped. Saved batches are kept, and you can run the same window again to continue/verify. ' +
+          message;
+        setHistoricalBackfillUi((u) =>
+          u ? { ...u, phase: 'error', error: friendly } : u,
+        );
+        throw new Error(friendly);
+      }
       if (sseError) {
         throw new Error(sseError);
       }
@@ -2887,7 +2901,6 @@ function MyEmailPageInner() {
             mailboxTotal: targets.length,
           });
         } catch (e) {
-          setHistoricalBackfillUi(null);
           setError(
             e instanceof Error
               ? e.message
@@ -2989,7 +3002,6 @@ function MyEmailPageInner() {
           endIso,
         });
       } catch (e) {
-        setHistoricalBackfillUi(null);
         setError(e instanceof Error ? e.message : 'Could not analyze your tracking window.');
         return;
       }

@@ -487,6 +487,15 @@ export class SelfTrackingController {
         // Client may have closed the socket (e.g. Stop).
       }
     };
+    const heartbeat = setInterval(() => {
+      try {
+        if (!res.writableEnded) {
+          res.write(': keepalive\n\n');
+        }
+      } catch {
+        // Client may have closed the socket.
+      }
+    }, 15_000);
 
     const ac = new AbortController();
     const onClientClose = () => ac.abort();
@@ -508,6 +517,7 @@ export class SelfTrackingController {
           : (err as Error)?.message ?? 'Historical fetch failed';
       emit({ phase: 'error', message });
     } finally {
+      clearInterval(heartbeat);
       req.off('close', onClientClose);
     }
     res.end();
