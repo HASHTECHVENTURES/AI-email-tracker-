@@ -509,17 +509,22 @@ type HistoricalBackfillUi = {
     conversationsCreated: number;
   };
   error?: string;
+  /** User clicked Stop — show calmer styling than a hard failure. */
+  stoppedByUser?: boolean;
 };
 
 function HistoricalBackfillProgressBlock({
   ui,
   windowLine,
   ceoPortalDetail,
+  onStop,
 }: {
   ui: HistoricalBackfillUi | null;
   windowLine?: string | null;
   /** CEO · My Email (inbox tab): richer progress, running AI counts, and post-run spot-check hints. */
   ceoPortalDetail?: boolean;
+  /** Aborts the browser’s historical SSE request (partial server work may still finish briefly). */
+  onStop?: () => void;
 }): ReactNode {
   if (!ui) return null;
   const multi =
@@ -545,18 +550,36 @@ function HistoricalBackfillProgressBlock({
   const rout = ui.runningOutsideRange ?? 0;
   const rcc = ui.runningCcOnly ?? 0;
   if (ui.phase === 'error') {
+    const userStop = ui.stoppedByUser === true;
     return (
-      <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900">
-        <p className="font-semibold">Analysis stopped</p>
+      <div
+        className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
+          userStop
+            ? 'border-amber-200 bg-amber-50 text-amber-950'
+            : 'border-red-200 bg-red-50 text-red-900'
+        }`}
+      >
+        <p className="font-semibold">{userStop ? 'Stopped' : 'Analysis stopped'}</p>
         <p className="mt-1">{ui.error ?? 'Something went wrong.'}</p>
       </div>
     );
   }
   return (
     <div className="mt-3 space-y-2 rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-3 text-left text-xs text-slate-700">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-        Historical-style backfill → now
-      </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Historical-style backfill → now
+        </p>
+        {onStop && ui.phase !== 'complete' && ui.phase !== 'error' ? (
+          <button
+            type="button"
+            onClick={onStop}
+            className="shrink-0 rounded-lg border border-red-200 bg-white px-2.5 py-1 text-[11px] font-bold text-red-700 shadow-sm hover:bg-red-50"
+          >
+            Stop
+          </button>
+        ) : null}
+      </div>
       {windowLine ? (
         <p className="text-[11px] text-slate-600">
           Window: <span className="font-medium text-slate-900">{windowLine}</span> through{' '}
@@ -1116,6 +1139,13 @@ function formatCountdownMmSs(ms: number): string {
   return `${m}:${String(r).padStart(2, '0')}`;
 }
 
+function isAbortError(e: unknown): boolean {
+  return (
+    (e instanceof DOMException && e.name === 'AbortError') ||
+    (e instanceof Error && e.name === 'AbortError')
+  );
+}
+
 /** CEO Live Mails: last sync + countdown + manual sync (always between toggle and KPIs). */
 function CeoLiveSyncStrip({
   mailboxes,
@@ -1129,6 +1159,10 @@ function CeoLiveSyncStrip({
   scheduleReady,
   canManualSync = true,
   recentManualSyncAtMs = null,
+  showStopAnalysis = false,
+  onStopAnalysis,
+  liveCountsPolling = false,
+  onLiveCountsPollingChange,
 }: {
   mailboxes: Mailbox[];
   liveTrackDate: string;
@@ -1145,6 +1179,11 @@ function CeoLiveSyncStrip({
   canManualSync?: boolean;
   /** Set when Run sync now succeeded; cleared when `last_synced_at` appears on a mailbox. */
   recentManualSyncAtMs?: number | null;
+  /** While the historical Inbox-AI pass is streaming, offer a hard stop (aborts the SSE request). */
+  showStopAnalysis?: boolean;
+  onStopAnalysis?: () => void;
+  liveCountsPolling?: boolean;
+  onLiveCountsPollingChange?: (v: boolean) => void;
 }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -1221,16 +1260,46 @@ function CeoLiveSyncStrip({
               className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             />
           </label>
-          <button
-            type="button"
-            disabled={syncBusy || !canManualSync}
-            onClick={onSyncNow}
-            className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-brand-600/20 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {syncBusy ? 'Syncing…' : 'Sync now'}
-          </button>
+          <div className="flex flex-wrap items-end gap-2">
+            {showStopAnalysis && onStopAnalysis ? (
+              <button
+                type="button"
+                onClick={onStopAnalysis}
+                className="rounded-xl border-2 border-red-200 bg-white px-4 py-2.5 text-sm font-bold text-red-700 shadow-sm transition hover:bg-red-50"
+              >
+                Stop analysis
+              </button>
+            ) : null}
+            <button
+              type="button"
+              disabled={syncBusy || !canManualSync}
+              onClick={onSyncNow}
+              className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-brand-600/20 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {syncBusy ? 'Syncing…' : 'Sync now'}
+            </button>
+          </div>
         </div>
       </div>
+      {typeof onLiveCountsPollingChange === 'function' ? (
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <label className="flex cursor-pointer items-start gap-3 text-xs text-slate-700">
+            <input
+              type="checkbox"
+              checked={liveCountsPolling}
+              onChange={(e) => onLiveCountsPollingChange(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+            />
+            <span>
+              <span className="font-semibold text-slate-900">Live counts</span>
+              <span className="mt-0.5 block text-[11px] leading-snug text-slate-500">
+                Refresh the stat row and follow-up lists about every 30 seconds while this tab stays open. Turn off
+                when you are done watching.
+              </span>
+            </span>
+          </label>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1314,6 +1383,8 @@ function MyEmailPageInner() {
   const [togglePauseLoadingId, setTogglePauseLoadingId] = useState<string | null>(null);
   /** CEO Live Mails: manual GET /email-ingestion/run */
   const [liveSyncBusy, setLiveSyncBusy] = useState(false);
+  /** CEO · My Email: periodic dashboard refresh while the tab is open (client-side only). */
+  const [ceoLiveCountsPolling, setCeoLiveCountsPolling] = useState(false);
   /** After a successful run, `last_synced_at` can lag — show a calmer line until it appears. */
   const [liveSyncAwaitingTimestamp, setLiveSyncAwaitingTimestamp] = useState<number | null>(null);
   /** CEO Live: next cron from GET /settings/runtime (null = not loaded yet). */
@@ -1364,6 +1435,7 @@ function MyEmailPageInner() {
 
   /** Same engine as Historical Search (SSE), then live `/email-ingestion/run`. */
   const [historicalBackfillUi, setHistoricalBackfillUi] = useState<HistoricalBackfillUi | null>(null);
+  const historicalBackfillAbortRef = useRef<AbortController | null>(null);
 
   const runTrackingHistoricalWindowToNow = useCallback(
     async (
@@ -1396,6 +1468,9 @@ function MyEmailPageInner() {
         runningOutsideRange: 0,
         runningCcOnly: 0,
       });
+      historicalBackfillAbortRef.current?.abort();
+      const ac = new AbortController();
+      historicalBackfillAbortRef.current = ac;
       try {
         await apiPostSse(
           '/self-tracking/historical-fetch-stream',
@@ -1525,8 +1600,23 @@ function MyEmailPageInner() {
             );
           }
           },
+          ac.signal,
         );
       } catch (e) {
+        if (isAbortError(e)) {
+          setHistoricalBackfillUi((u) =>
+            u
+              ? {
+                  ...u,
+                  phase: 'error',
+                  stoppedByUser: true,
+                  error:
+                    'You stopped this run. Mail already analyzed stays saved — use Sync now to continue or refresh counts.',
+                }
+              : u,
+          );
+          throw e;
+        }
         const message =
           e instanceof Error
             ? e.message
@@ -1538,6 +1628,10 @@ function MyEmailPageInner() {
           u ? { ...u, phase: 'error', error: friendly } : u,
         );
         throw new Error(friendly);
+      } finally {
+        if (historicalBackfillAbortRef.current === ac) {
+          historicalBackfillAbortRef.current = null;
+        }
       }
       if (sseError) {
         throw new Error(sseError);
@@ -1545,6 +1639,10 @@ function MyEmailPageInner() {
     },
     [],
   );
+
+  const stopHistoricalBackfill = useCallback(() => {
+    historicalBackfillAbortRef.current?.abort();
+  }, []);
 
   /** Hide LOW-priority threads from primary tabs (still visible under Low / noise). */
   const [hideLowPriority, setHideLowPriority] = useState(true);
@@ -2006,6 +2104,11 @@ function MyEmailPageInner() {
         endIso: new Date().toISOString(),
       });
     } catch (e) {
+      if (isAbortError(e)) {
+        setPipeline(null);
+        setSuccess('Inbox analysis stopped. Partial results are saved.');
+        return;
+      }
       setHistoricalBackfillUi(null);
       setPipeline(null);
       setError(e instanceof Error ? e.message : 'Could not analyze your tracking window.');
@@ -2735,6 +2838,53 @@ function MyEmailPageInner() {
     [hideLowPriority, scopedConversations],
   );
 
+  /** CEO · My Email: explain Need reply vs server follow-up flags (filters can hide rows). */
+  const ceoNeedReplyDebugLine = useMemo(() => {
+    if (me?.role !== 'CEO' || myEmailTab !== 'ceo' || loading || !showFullInboxChrome) return null;
+    const totalThreads = scopedConversations.length;
+    const flagged = scopedConversations.filter((c) => c.follow_up_required === true);
+    const shownIds = new Set(
+      scopedExcludingLowUnlessMissed.filter((c) => passesNeedReplyVisibility(c)).map((c) => c.conversation_id),
+    );
+    let nLowHidden = 0;
+    let nStaleHidden = 0;
+    let nOther = 0;
+    for (const c of flagged) {
+      if (shownIds.has(c.conversation_id)) continue;
+      const allowedByLow =
+        !hideLowPriority || c.priority !== 'LOW' || c.follow_up_status === 'MISSED';
+      if (!allowedByLow) {
+        nLowHidden += 1;
+        continue;
+      }
+      if (
+        c.follow_up_status !== 'MISSED' &&
+        HIDE_STALE_NEED_REPLY &&
+        isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)
+      ) {
+        nStaleHidden += 1;
+        continue;
+      }
+      nOther += 1;
+    }
+    return {
+      totalThreads,
+      flagged: flagged.length,
+      shown: shownIds.size,
+      nLowHidden,
+      nStaleHidden,
+      nOther,
+    };
+  }, [
+    me?.role,
+    myEmailTab,
+    loading,
+    showFullInboxChrome,
+    scopedConversations,
+    scopedExcludingLowUnlessMissed,
+    hideLowPriority,
+  ]);
+
   const tabSourceRows = useMemo(() => {
     switch (mailTab) {
       case 'skipped':
@@ -2918,6 +3068,10 @@ function MyEmailPageInner() {
             mailboxTotal: targets.length,
           });
         } catch (e) {
+          if (isAbortError(e)) {
+            setSuccess('Inbox analysis stopped. Partial results are saved.');
+            return;
+          }
           setError(
             e instanceof Error
               ? e.message
@@ -3019,6 +3173,12 @@ function MyEmailPageInner() {
           endIso,
         });
       } catch (e) {
+        if (isAbortError(e)) {
+          setOnboardingBusy(false);
+          setSuccess('Analysis stopped. You can set your tracking window again when you are ready.');
+          setTrackingOnboarding(null);
+          return;
+        }
         setError(e instanceof Error ? e.message : 'Could not analyze your tracking window.');
         return;
       }
@@ -3146,6 +3306,30 @@ function MyEmailPageInner() {
     loadDashboard,
     syncEmployeeIdsParam,
   ]);
+
+  /** CEO inbox tab: optional 30s dashboard poll so stat cards stay fresh between manual syncs. */
+  useEffect(() => {
+    if (!token || me?.role !== 'CEO' || myEmailTab !== 'ceo' || !ceoLiveCountsPolling) return;
+    const tick = () => {
+      void loadDashboard(token, syncEmployeeIdsParam || undefined);
+      void loadLiveIngestSchedule();
+    };
+    tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => clearInterval(id);
+  }, [
+    token,
+    me?.role,
+    myEmailTab,
+    ceoLiveCountsPolling,
+    loadDashboard,
+    loadLiveIngestSchedule,
+    syncEmployeeIdsParam,
+  ]);
+
+  useEffect(() => {
+    if (myEmailTab !== 'ceo') setCeoLiveCountsPolling(false);
+  }, [myEmailTab]);
 
   useEffect(() => {
     setMailListPage(1);
@@ -3305,6 +3489,10 @@ function MyEmailPageInner() {
 
   /** CEO · My Email (default inbox tab): extra AI progress + live category refresh — not manager/team views. */
   const ceoMyEmailAiPortalDetail = me.role === 'CEO' && myEmailTab === 'ceo';
+  const showCeoHistoricalStop =
+    historicalBackfillUi != null &&
+    historicalBackfillUi.phase !== 'complete' &&
+    historicalBackfillUi.phase !== 'error';
 
   function livePipelineBelowCard(mbId: string): ReactNode {
     if (!pipeline || pipeline.mailboxId !== mbId) return null;
@@ -3323,6 +3511,7 @@ function MyEmailPageInner() {
               pipeline.trackingStartAt ? absoluteTime(pipeline.trackingStartAt) : null
             }
             ceoPortalDetail={ceoMyEmailAiPortalDetail}
+            onStop={stopHistoricalBackfill}
           />
         ) : null}
         {serverSyncPhase ? (
@@ -3541,6 +3730,7 @@ function MyEmailPageInner() {
                   ui={historicalBackfillUi}
                   windowLine={trackingWindowPreviewLine(onboardingDate, onboardingTime)}
                   ceoPortalDetail={ceoMyEmailAiPortalDetail}
+                  onStop={stopHistoricalBackfill}
                 />
                 {!historicalBackfillUi ? (
                   <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-slate-100">
@@ -3578,26 +3768,39 @@ function MyEmailPageInner() {
                 Uses your device&apos;s timezone. You can change this later from the dashboard header.
               </p>
             ) : null}
-            <div className="mt-5 flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  trackingOnboardingDismissedRef.current.add(trackingOnboarding.mailboxId);
-                  setTrackingOnboarding(null);
-                }}
-                disabled={onboardingBusy}
-                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
-              >
-                Later
-              </button>
-              <button
-                type="button"
-                onClick={() => void submitTrackingOnboarding()}
-                disabled={onboardingBusy}
-                className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-md hover:opacity-95 disabled:opacity-50"
-              >
-                {onboardingBusy ? 'Analyzing…' : 'Start Tracking'}
-              </button>
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-2">
+                {onboardingBusy && showCeoHistoricalStop ? (
+                  <button
+                    type="button"
+                    onClick={stopHistoricalBackfill}
+                    className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-bold text-red-700 shadow-sm hover:bg-red-50"
+                  >
+                    Stop analysis
+                  </button>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    trackingOnboardingDismissedRef.current.add(trackingOnboarding.mailboxId);
+                    setTrackingOnboarding(null);
+                  }}
+                  disabled={onboardingBusy}
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Later
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void submitTrackingOnboarding()}
+                  disabled={onboardingBusy}
+                  className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-md hover:opacity-95 disabled:opacity-50"
+                >
+                  {onboardingBusy ? 'Analyzing…' : 'Start Tracking'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -3674,7 +3877,18 @@ function MyEmailPageInner() {
           className="mb-4 rounded-xl border border-violet-200 bg-violet-50/70 px-4 py-3 text-sm text-violet-950 shadow-sm"
           aria-live="polite"
         >
-          <p className="font-semibold text-violet-950">Backfilling your tracking window</p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-semibold text-violet-950">Backfilling your tracking window</p>
+            {showCeoHistoricalStop ? (
+              <button
+                type="button"
+                onClick={stopHistoricalBackfill}
+                className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-bold text-red-700 shadow-sm hover:bg-red-50"
+              >
+                Stop
+              </button>
+            ) : null}
+          </div>
           <HistoricalBackfillProgressBlock
             ui={historicalBackfillUi}
             windowLine={
@@ -3684,6 +3898,7 @@ function MyEmailPageInner() {
               })()
             }
             ceoPortalDetail={ceoMyEmailAiPortalDetail}
+            onStop={stopHistoricalBackfill}
           />
         </div>
       ) : null}
@@ -3712,6 +3927,10 @@ function MyEmailPageInner() {
                       scheduleReady={liveIngestSchedule != null}
                       canManualSync={canRunMyMailboxSync}
                       recentManualSyncAtMs={liveSyncAwaitingTimestamp}
+                      showStopAnalysis={showCeoHistoricalStop}
+                      onStopAnalysis={stopHistoricalBackfill}
+                      liveCountsPolling={ceoLiveCountsPolling}
+                      onLiveCountsPollingChange={setCeoLiveCountsPolling}
                     />
               </>
             </div>
@@ -3774,6 +3993,23 @@ function MyEmailPageInner() {
               </div>
             ))}
           </div>
+
+          {ceoNeedReplyDebugLine ? (
+            <p className="mt-2 text-[11px] leading-snug text-slate-500">
+              Need reply: <span className="tabular-nums">{ceoNeedReplyDebugLine.shown}</span> shown of{' '}
+              <span className="tabular-nums">{ceoNeedReplyDebugLine.flagged}</span> threads with{' '}
+              <span className="font-mono text-[10px] text-slate-600">follow_up_required</span> (
+              <span className="tabular-nums">{ceoNeedReplyDebugLine.totalThreads}</span> in scope). Hidden:{' '}
+              <span className="tabular-nums">{ceoNeedReplyDebugLine.nLowHidden}</span> low/noise,{' '}
+              <span className="tabular-nums">{ceoNeedReplyDebugLine.nStaleHidden}</span> stale
+              {ceoNeedReplyDebugLine.nOther > 0 ? (
+                <>
+                  , <span className="tabular-nums">{ceoNeedReplyDebugLine.nOther}</span> other
+                </>
+              ) : null}
+              .
+            </p>
+          ) : null}
 
           <div className="mt-8 flex flex-col gap-8">
           {/* ── Mailboxes: CEO / Manager / Team are separate views (sidebar hash), not one scroll ── */}
