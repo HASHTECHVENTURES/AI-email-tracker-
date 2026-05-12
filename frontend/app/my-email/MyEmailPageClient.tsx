@@ -188,9 +188,12 @@ function inboxGeminiWillClassify(s: IngestAiSettings, mb: Mailbox): boolean {
   return getInboxAiBlockers(s, mb).length === 0;
 }
 
-/** CEO owes a reply: client last spoke or SLA missed. */
+/** CEO owes a reply — prefer server `follow_up_required` when present (matches Nest follow-up engine). */
 function needsMyReply(c: ConversationRow): boolean {
   if (c.follow_up_status === 'DONE') return false;
+  if (typeof c.follow_up_required === 'boolean') {
+    return c.follow_up_required;
+  }
   if (c.follow_up_status === 'MISSED') return true;
   const lc = c.last_client_msg_at ? new Date(c.last_client_msg_at).getTime() : 0;
   const lr = c.last_employee_reply_at ? new Date(c.last_employee_reply_at).getTime() : 0;
@@ -210,6 +213,13 @@ function isStaleNeedReplyByClientMessage(c: ConversationRow, staleDays: number):
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return false;
   return Date.now() - t > staleDays * 86_400_000;
+}
+
+/** Need reply KPI/tab: hide stale *pending* threads, but never hide MISSED SLA rows (they were invisible before). */
+function passesNeedReplyVisibility(c: ConversationRow): boolean {
+  if (!needsMyReply(c)) return false;
+  if (c.follow_up_status === 'MISSED') return true;
+  return !HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS);
 }
 
 /** Ball in their court: we replied at or after their last message. */
@@ -2693,11 +2703,7 @@ function MyEmailPageInner() {
 
   const kpiNeedReplyCount = useMemo(
     () =>
-      scopedExcludingLowUnlessMissed.filter(
-        (c) =>
-          needsMyReply(c) &&
-          (!HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)),
-      ).length,
+      scopedExcludingLowUnlessMissed.filter((c) => passesNeedReplyVisibility(c)).length,
     [scopedExcludingLowUnlessMissed],
   );
   const kpiWaitingCount = useMemo(
@@ -2736,11 +2742,7 @@ function MyEmailPageInner() {
       case 'noise':
         return scopedConversations.filter((c) => c.priority === 'LOW');
       case 'action':
-        return scopedExcludingLowUnlessMissed.filter(
-          (c) =>
-            needsMyReply(c) &&
-            (!HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS)),
-        );
+        return scopedExcludingLowUnlessMissed.filter((c) => passesNeedReplyVisibility(c));
       case 'waiting':
         return withoutLowScoped.filter((c) => isWaitingOnThem(c));
       case 'cc':
@@ -3734,7 +3736,7 @@ function MyEmailPageInner() {
                 value: kpiNeedReplyCount,
                 color: 'text-red-600',
                 hint:
-                  'Threads where you owe a reply (or SLA is missed). Low / noise is hidden here except missed SLA. “Will track” counts messages Inbox AI accepted during backfill, not threads.',
+                  'Threads the app says still need follow-up (`follow_up_required`). Missed SLA always lists here even if old. Low / noise is hidden except missed SLA. “Will track” counts Inbox AI–accepted messages during backfill, not threads.',
               },
               {
                 label: 'Waiting on them',
@@ -4282,7 +4284,7 @@ function MyEmailPageInner() {
                 ) : null}{' '}
                 Try another tab
                 {mailTab === 'action'
-                  ? ` — older “need reply” threads (last client message over ${STALE_NEED_REPLY_DAYS} days ago) appear under All threads.`
+                  ? ` — older pending “need reply” threads (last client message over ${STALE_NEED_REPLY_DAYS} days ago) are hidden here; open All threads to find them. Missed SLA threads still appear in Need reply.`
                   : ''}
                 {mailTab === 'action' && hideLowPriority
                   ? ' LOW priority appears under Low / noise.'
