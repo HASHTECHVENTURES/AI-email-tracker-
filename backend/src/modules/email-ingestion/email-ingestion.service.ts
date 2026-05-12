@@ -153,7 +153,7 @@ export class EmailIngestionService {
     if (pre.email_ai_relevance_enabled && !this.relevanceModel) {
       this.logger.warn(
         'Inbox AI relevance is enabled in Settings but no Gemini API key is configured on the server. ' +
-          'Set GEMINI_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY). Until then, new mail is not stored unless the CEO confirms “import without Inbox AI” on My Email.',
+          'Set GEMINI_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY). Until then, live inbound sync is skipped unless the CEO confirms “import without Inbox AI” on My Email.',
       );
     }
 
@@ -436,6 +436,42 @@ export class EmailIngestionService {
       };
     }
 
+    const companyAiOn = await this.companyPolicyService.isAiEnabledForCompany(companyId);
+    const allowGeminiRelevance =
+      Boolean(this.relevanceModel) &&
+      companyAiOn &&
+      cycleSettings.email_ai_relevance_enabled &&
+      employee.aiEnabled !== false;
+    const ingestWithoutAiConfirmed = cycleSettings.email_ingest_without_ai_confirmed;
+    const inboundAiRequired = !ingestWithoutAiConfirmed;
+    if (inboundAiRequired && !allowGeminiRelevance) {
+      const reasons: string[] = [];
+      if (!this.relevanceModel) {
+        reasons.push('Inbox AI is not configured on the server (missing Gemini API key).');
+      }
+      if (!companyAiOn) {
+        reasons.push('Company AI is disabled.');
+      }
+      if (!cycleSettings.email_ai_relevance_enabled) {
+        reasons.push('Inbox AI relevance is turned off in Settings.');
+      }
+      if (employee.aiEnabled === false) {
+        reasons.push('Mailbox AI is turned off for this inbox.');
+      }
+      const detail = reasons.join(' ') || 'Inbox AI is required but not available.';
+      this.logger.warn(`[ingest] skipped Gmail list for ${employee.email}: ${detail}`);
+      return {
+        companyId,
+        employeeId: employee.id,
+        employeeName: employee.name,
+        newMessages: 0,
+        skippedFiltered: 0,
+        affectedThreads: 0,
+        conversationsUpdated: 0,
+        error: `${detail} Turn AI back on, enable Inbox relevance, or confirm “import without Inbox AI” on My Email if you accept storing every message in your tracking window.`,
+      };
+    }
+
     const syncState = await this.getSyncState(employee.id);
     const resumeToken = syncState?.gmail_list_page_token ?? null;
     const resumeEpoch = syncState?.gmail_list_query_after_epoch ?? null;
@@ -561,15 +597,6 @@ export class EmailIngestionService {
       }
     }
 
-    const companyAiOn = await this.companyPolicyService.isAiEnabledForCompany(companyId);
-    const allowGeminiRelevance =
-      Boolean(this.relevanceModel) &&
-      companyAiOn &&
-      cycleSettings.email_ai_relevance_enabled &&
-      employee.aiEnabled !== false;
-
-    const ingestWithoutAiConfirmed = cycleSettings.email_ingest_without_ai_confirmed;
-
     /** Cache Gmail `threads.get` metadata per thread for one employee batch (sibling fetches). */
     const threadMetaCache = new Map<string, gmail_v1.Schema$Message[]>();
 
@@ -583,6 +610,7 @@ export class EmailIngestionService {
     let skippedBeforeTrackingWindow = 0;
     let skippedByAiDecision = 0;
     let batchLatestSent: Date | null = null;
+    let abortedInboundAi: string | null = null;
 
     for (const msgId of messageIds) {
       if (await this.messageInDatabase(employee.id, msgId)) continue;
@@ -651,6 +679,12 @@ export class EmailIngestionService {
           allowGeminiRelevance,
           ingestWithoutAiConfirmed,
         );
+        if (decision.inboundAiHardStop) {
+          abortedInboundAi =
+            decision.reason?.trim() ??
+            'Inbox AI is unavailable — inbound ingestion was stopped for this run (no new skip rows).';
+          break;
+        }
         if (!decision.relevant) {
           skippedFiltered += 1;
           skippedByAiDecision += 1;
@@ -698,6 +732,30 @@ export class EmailIngestionService {
       }));
       const recomputeResult = await this.conversationsService.recomputeForThreads(threadKeys);
       conversationsUpdated = recomputeResult.threadsProcessed;
+    }
+
+    if (abortedInboundAi) {
+      this.logger.warn(
+        `[ingest] ${employee.email}: aborted before advancing Gmail cursor — ${abortedInboundAi}`,
+      );
+      await this.supabase
+        .from('employees')
+        .update({
+          last_synced_at: new Date().toISOString(),
+          gmail_status: 'CONNECTED',
+        })
+        .eq('id', employee.id)
+        .eq('company_id', companyId);
+      return {
+        companyId,
+        employeeId: employee.id,
+        employeeName: employee.name,
+        newMessages: messages.length,
+        skippedFiltered,
+        affectedThreads: affectedThreads.size,
+        conversationsUpdated,
+        error: abortedInboundAi,
+      };
     }
 
     const listEpochSec = Math.floor(listAfterDate.getTime() / 1000);
@@ -854,7 +912,7 @@ export class EmailIngestionService {
     hasNoiseGmailLabel: boolean,
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
-  ): Promise<{ relevant: boolean; reason: string | null }> {
+  ): Promise<{ relevant: boolean; reason: string | null; inboundAiHardStop?: boolean }> {
     if (target.direction === 'OUTBOUND') {
       return {
         relevant: true,
@@ -879,14 +937,16 @@ export class EmailIngestionService {
         }
         return { relevant: parsed.relevant, reason: parsed.reason };
       }
-      if (this.monthlyQuotaExhausted && !ingestWithoutAiConfirmed) {
+      if (ingestWithoutAiConfirmed) {
         return {
-          relevant: false,
-          reason:
-            'Inbox AI unavailable: Gemini monthly quota or spend cap exceeded. Inbound messages are not ingested until billing is restored.',
+          relevant: true,
+          reason: 'Unfiltered import — Inbox AI unavailable; CEO confirmed on My Email.',
         };
       }
-      return { relevant: ingestWithoutAiConfirmed, reason: null };
+      const reason = this.monthlyQuotaExhausted
+        ? 'Inbox AI unavailable: Gemini monthly quota or spend cap exceeded. Inbound ingestion is paused until billing is restored.'
+        : 'Inbox AI unavailable: classification failed after retries. Inbound ingestion is paused until Inbox AI responds again.';
+      return { relevant: false, reason, inboundAiHardStop: true };
     }
 
     if (ingestWithoutAiConfirmed) {
@@ -895,7 +955,11 @@ export class EmailIngestionService {
         reason: 'Unfiltered import — Inbox AI unavailable; CEO confirmed on My Email.',
       };
     }
-    return { relevant: false, reason: null };
+    return {
+      relevant: false,
+      reason: 'Inbox AI is required but not available for this mailbox.',
+      inboundAiHardStop: true,
+    };
   }
 
   /**

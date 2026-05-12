@@ -440,9 +440,17 @@ function liveTrackingDateTimeToIso(dateYmd: string, timeHm: string): string | nu
   const dStr = dateYmd.trim();
   const tStr = timeHm.trim();
   if (!dStr || !tStr) return null;
-  const d = new Date(`${dStr}T${tStr}`);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
+  const ymd = dStr.split('-').map((p) => Number(p));
+  if (ymd.length !== 3 || ymd.some((n) => !Number.isFinite(n))) return null;
+  const [y, mo, da] = ymd;
+  const timeParts = tStr.split(':');
+  const hh = Number(timeParts[0]);
+  const mi = Number(timeParts[1] ?? '0');
+  const ss = timeParts[2] != null ? Number(timeParts[2]) : 0;
+  if (![hh, mi, ss].every((n) => Number.isFinite(n))) return null;
+  const local = new Date(y, mo - 1, da, hh, mi, ss, 0);
+  if (Number.isNaN(local.getTime())) return null;
+  return local.toISOString();
 }
 
 /** Map a stored ISO window boundary to `input[type=date]` value in local time. */
@@ -969,6 +977,11 @@ function CeoLiveSyncStrip({
                   className="rounded-lg border border-slate-200 px-2 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
                 />
               </label>
+              <p className="w-full text-[11px] leading-snug text-slate-500">
+                Uses your device&apos;s timezone. Only mail <strong className="font-medium text-slate-700">on or after</strong>{' '}
+                this moment is evaluated for follow-up (through whenever sync runs). Older mail stays out unless you move
+                the start earlier.
+              </p>
             </div>
           </div>
         </div>
