@@ -1013,7 +1013,13 @@ export class EmailIngestionService {
       return 'attachment_only';
     }
     if (/parse|json|malformed|failed|error/.test(text)) return 'parsing_failed';
-    if (/unsupported|calendar|invite|ics|format/.test(text)) return 'unsupported_format';
+    // Word-boundary checks: bare /format/ matched inside "information", "transformation", etc.;
+    // bare /ics/ matched inside "physics", "comics", etc. — mislabeling many ai_irrelevant skips.
+    if (
+      /\bunsupported\b|\bcalendar\b|\binvite\b|\.ics\b|\bics\b|\bformat\b/i.test(text)
+    ) {
+      return 'unsupported_format';
+    }
     if (/context|thread|history|missing/.test(text)) return 'missing_thread_context';
     return 'low_confidence';
   }

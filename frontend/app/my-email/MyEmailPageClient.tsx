@@ -742,13 +742,24 @@ function skipReasonBadgeLabel(row: AiSkippedMailItem): string {
     empty_body: 'Empty body',
     parsing_failed: 'Parsing failed',
   };
-  if (labels[code]) return labels[code];
+  if (code && labels[code]) {
+    if (code === 'unsupported_format') {
+      const r = (row.skip_reason ?? '').toLowerCase();
+      const looksLikeRealFormatIssue =
+        /\bunsupported\b|\bformat\b|mime|content-type|\.ics\b|\bics\b|\bcalendar\b|\binvite\b|text\/calendar/.test(
+          r,
+        );
+      if (!looksLikeRealFormatIssue) return labels.low_confidence;
+    }
+    return labels[code];
+  }
   const reason = (row.skip_reason ?? '').toLowerCase();
   if (reason.includes('attachment')) return labels.attachment_only;
   if (reason.includes('empty')) return labels.empty_body;
   if (reason.includes('parse') || reason.includes('failed')) return labels.parsing_failed;
   if (reason.includes('context') || reason.includes('thread')) return labels.missing_thread_context;
-  if (reason.includes('format') || reason.includes('unsupported')) return labels.unsupported_format;
+  // Avoid substring "format" inside "information", "transformation", etc. (mirrors backend skipReasonCodeForMessage).
+  if (/\bunsupported\b|\bformat\b/i.test(reason)) return labels.unsupported_format;
   return labels.low_confidence;
 }
 
