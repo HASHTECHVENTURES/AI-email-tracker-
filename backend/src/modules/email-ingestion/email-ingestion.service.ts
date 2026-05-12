@@ -26,6 +26,11 @@ import {
 import { buildSharedIngestRelevancePrompt } from './relevance-prompt.builder';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { getGeminiApiKeyFromEnv } from '../common/env';
+import {
+  isMigration026ColumnError,
+  stripEmailIngestionSkips026Fields,
+  stripEmployees026Fields,
+} from '../common/migration-026-compat';
 
 interface IngestionResult {
   companyId?: string;
@@ -145,6 +150,37 @@ export class EmailIngestionService {
         responseMimeType: 'application/json',
       },
     });
+  }
+
+  /** Employees.last_gmail_sync_at / last_ai_analysis_at require migration 026 — degrade if not applied. */
+  private async updateEmployeePartial(
+    employeeId: string,
+    companyId: string,
+    patch: Record<string, unknown>,
+  ): Promise<void> {
+    let { error } = await this.supabase
+      .from('employees')
+      .update(patch)
+      .eq('id', employeeId)
+      .eq('company_id', companyId);
+    if (error && isMigration026ColumnError(error)) {
+      const stripped = stripEmployees026Fields(patch);
+      if (Object.keys(stripped).length === 0) {
+        this.logger.warn(
+          `updateEmployeePartial: no legacy fields to update (026 not applied) employee=${employeeId}`,
+        );
+        return;
+      }
+      ({ error } = await this.supabase
+        .from('employees')
+        .update(stripped)
+        .eq('id', employeeId)
+        .eq('company_id', companyId));
+    }
+    if (error) {
+      this.logger.error(`updateEmployeePartial ${employeeId}: ${error.message}`);
+      throw error;
+    }
   }
 
   /**
@@ -585,15 +621,11 @@ export class EmailIngestionService {
           clearListProgress: true,
         });
         /** Same as a full batch: run completed — record per-mailbox sync time (was missing; UI showed a false “no sync” warning). */
-        await this.supabase
-          .from('employees')
-          .update({
-            last_synced_at: new Date().toISOString(),
-            last_gmail_sync_at: new Date().toISOString(),
-            gmail_status: 'CONNECTED',
-          })
-          .eq('id', employee.id)
-          .eq('company_id', companyId);
+        await this.updateEmployeePartial(employee.id, companyId, {
+          last_synced_at: new Date().toISOString(),
+          last_gmail_sync_at: new Date().toISOString(),
+          gmail_status: 'CONNECTED',
+        });
         return {
           companyId,
           employeeId: employee.id,
@@ -742,16 +774,12 @@ export class EmailIngestionService {
       this.logger.warn(
         `[ingest] ${employee.email}: aborted before advancing Gmail cursor — ${abortedInboundAi}`,
       );
-      await this.supabase
-        .from('employees')
-        .update({
-          last_synced_at: new Date().toISOString(),
-          last_gmail_sync_at: new Date().toISOString(),
-          last_ai_analysis_at: new Date().toISOString(),
-          gmail_status: 'CONNECTED',
-        })
-        .eq('id', employee.id)
-        .eq('company_id', companyId);
+      await this.updateEmployeePartial(employee.id, companyId, {
+        last_synced_at: new Date().toISOString(),
+        last_gmail_sync_at: new Date().toISOString(),
+        last_ai_analysis_at: new Date().toISOString(),
+        gmail_status: 'CONNECTED',
+      });
       return {
         companyId,
         employeeId: employee.id,
@@ -783,16 +811,12 @@ export class EmailIngestionService {
         clearListProgress: true,
       });
     }
-    await this.supabase
-      .from('employees')
-      .update({
-        last_synced_at: new Date().toISOString(),
-        last_gmail_sync_at: new Date().toISOString(),
-        last_ai_analysis_at: new Date().toISOString(),
-        gmail_status: 'CONNECTED',
-      })
-      .eq('id', employee.id)
-      .eq('company_id', companyId);
+    await this.updateEmployeePartial(employee.id, companyId, {
+      last_synced_at: new Date().toISOString(),
+      last_gmail_sync_at: new Date().toISOString(),
+      last_ai_analysis_at: new Date().toISOString(),
+      gmail_status: 'CONNECTED',
+    });
 
     this.logger.log(
       `Stored ${messages.length} portal messages, ${skippedFiltered} skipped (window/relevance; gemini=${allowGeminiRelevance}; unfiltered_ok=${ingestWithoutAiConfirmed}) for ${employee.name}`,
@@ -1116,9 +1140,20 @@ export class EmailIngestionService {
       row.skip_kind = 'legacy';
       row.classification_status = 'skipped';
     }
-    const { error } = await this.supabase.from('email_ingestion_skips').upsert(row, {
+    let { error } = await this.supabase.from('email_ingestion_skips').upsert(row, {
       onConflict: 'employee_id,provider_message_id',
     });
+    if (error && isMigration026ColumnError(error)) {
+      const legacy = stripEmailIngestionSkips026Fields(row);
+      ({ error } = await this.supabase.from('email_ingestion_skips').upsert(legacy, {
+        onConflict: 'employee_id,provider_message_id',
+      }));
+      if (!error) {
+        this.logger.warn(
+          `recordIngestionSkip ${providerMessageId}: retried without migration 026 columns (apply 026 for skip_reason_code / confidence).`,
+        );
+      }
+    }
     if (error) {
       this.logger.error(`recordIngestionSkip ${providerMessageId}: ${error.message}`);
       throw error;
@@ -1192,16 +1227,12 @@ export class EmailIngestionService {
       const recompute = await this.conversationsService.recomputeForThreads([
         { companyId, employeeId, threadId: msg.providerThreadId },
       ]);
-      await this.supabase
-        .from('employees')
-        .update({
-          last_ai_analysis_at: new Date().toISOString(),
-          last_gmail_sync_at: new Date().toISOString(),
-          last_synced_at: new Date().toISOString(),
-          gmail_status: 'CONNECTED',
-        })
-        .eq('id', employee.id)
-        .eq('company_id', companyId);
+      await this.updateEmployeePartial(employee.id, companyId, {
+        last_ai_analysis_at: new Date().toISOString(),
+        last_gmail_sync_at: new Date().toISOString(),
+        last_synced_at: new Date().toISOString(),
+        gmail_status: 'CONNECTED',
+      });
       return {
         outcome: 'classified',
         reason: decision.reason,
@@ -1222,11 +1253,9 @@ export class EmailIngestionService {
       sent_at: msg.sentAt,
       provider_thread_id: msg.providerThreadId,
     });
-    await this.supabase
-      .from('employees')
-      .update({ last_ai_analysis_at: new Date().toISOString() })
-      .eq('id', employee.id)
-      .eq('company_id', companyId);
+    await this.updateEmployeePartial(employee.id, companyId, {
+      last_ai_analysis_at: new Date().toISOString(),
+    });
     return { outcome: 'skipped', reason: reasonText, confidence: decision.confidence, conversationsUpdated: 0 };
   }
 
@@ -1287,16 +1316,12 @@ export class EmailIngestionService {
       { companyId, employeeId, threadId: msg.providerThreadId },
     ]);
 
-    await this.supabase
-      .from('employees')
-      .update({
-        last_synced_at: new Date().toISOString(),
-        last_gmail_sync_at: new Date().toISOString(),
-        last_ai_analysis_at: new Date().toISOString(),
-        gmail_status: 'CONNECTED',
-      })
-      .eq('id', employee.id)
-      .eq('company_id', companyId);
+    await this.updateEmployeePartial(employee.id, companyId, {
+      last_synced_at: new Date().toISOString(),
+      last_gmail_sync_at: new Date().toISOString(),
+      last_ai_analysis_at: new Date().toISOString(),
+      gmail_status: 'CONNECTED',
+    });
 
     this.logger.log(
       `forceImportSkippedMessage: imported ${providerMessageId} for ${employee.email} (override), threads=${recompute.threadsProcessed}`,

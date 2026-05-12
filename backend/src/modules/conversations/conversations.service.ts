@@ -9,6 +9,7 @@ import { AlertsService } from '../alerts/alerts.service';
 import { SettingsService } from '../settings/settings.service';
 import { EmailService } from '../email/email.service';
 import { CompanyPolicyService } from '../company-policy/company-policy.service';
+import { isMigration026ColumnError, stripConversations026Fields } from '../common/migration-026-compat';
 
 interface ThreadKey {
   companyId?: string;
@@ -470,9 +471,23 @@ export class ConversationsService {
       .from('conversations')
       .upsert(row, { onConflict: 'conversation_id' });
 
-    if (upsertError) {
-      this.logger.error(`Failed to upsert conversation ${conversationId}`, upsertError.message);
-      throw upsertError;
+    let upsertFinal = upsertError;
+    if (upsertError && isMigration026ColumnError(upsertError)) {
+      const legacy = stripConversations026Fields(row);
+      const { error: retryErr } = await this.supabase
+        .from('conversations')
+        .upsert(legacy, { onConflict: 'conversation_id' });
+      upsertFinal = retryErr;
+      if (!retryErr) {
+        this.logger.warn(
+          `Upsert ${conversationId}: retried without migration 026 columns (apply 026 for classification_status / ai_confidence_score).`,
+        );
+      }
+    }
+
+    if (upsertFinal) {
+      this.logger.error(`Failed to upsert conversation ${conversationId}`, upsertFinal.message);
+      throw upsertFinal;
     }
 
     const oldFollowUpStatus = (existing?.follow_up_status as FollowUpStatus | undefined) ?? null;

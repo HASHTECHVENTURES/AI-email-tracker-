@@ -11,6 +11,7 @@ import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { ConversationsService } from '../conversations/conversations.service';
 import { EmployeesService, MailArchiveItem, OrgEmployeeDto } from '../employees/employees.service';
 import { RequestContext } from '../common/request-context';
+import { isMigration026ColumnError } from '../common/migration-026-compat';
 import type { ConversationListItem } from '../dashboard/dashboard.service';
 
 const CEO_SYNCED_MAIL_PAGE_LIMIT = 200;
@@ -889,28 +890,30 @@ export class SelfTrackingService {
     const lim = Math.min(Math.max(1, limit), 100);
     const off = Math.max(0, offset);
 
-    const mapRow = (r: {
+    type SkipRow = {
       employee_id: string;
       provider_message_id: string;
       skipped_at: string;
       skip_kind: string | null;
       skip_reason: string | null;
-      skip_reason_code: string | null;
-      classification_status: string | null;
-      ai_confidence_score: number | null;
+      skip_reason_code?: string | null;
+      classification_status?: string | null;
+      ai_confidence_score?: number | null;
       subject: string | null;
       from_email: string | null;
       sent_at: string | null;
       provider_thread_id: string | null;
-    }): AiSkippedMailItem => ({
+    };
+
+    const mapRow = (r: SkipRow): AiSkippedMailItem => ({
       employee_id: r.employee_id,
       provider_message_id: r.provider_message_id,
       skipped_at: r.skipped_at,
       skip_kind: r.skip_kind ?? 'legacy',
       skip_reason: r.skip_reason,
-      skip_reason_code: r.skip_reason_code,
-      classification_status: r.classification_status,
-      ai_confidence_score: r.ai_confidence_score,
+      skip_reason_code: r.skip_reason_code ?? null,
+      classification_status: r.classification_status ?? null,
+      ai_confidence_score: r.ai_confidence_score ?? null,
       subject: r.subject,
       from_email: r.from_email,
       sent_at: r.sent_at,
@@ -936,30 +939,45 @@ export class SelfTrackingService {
      */
     {
       const MAX_FETCH = 8000;
-      const sel =
+      const selExtended =
         'employee_id, provider_message_id, skipped_at, skip_kind, skip_reason, skip_reason_code, classification_status, ai_confidence_score, subject, from_email, sent_at, provider_thread_id';
+      const selLegacy =
+        'employee_id, provider_message_id, skipped_at, skip_kind, skip_reason, subject, from_email, sent_at, provider_thread_id';
 
-      const { data: withSent, error: e1 } = await this.supabase
-        .from('email_ingestion_skips')
-        .select(sel)
-        .eq('employee_id', id)
-        .neq('skip_kind', 'before_tracking')
-        .not('sent_at', 'is', null)
-        .gte('sent_at', win.start)
-        .lte('sent_at', win.end)
-        .order('skipped_at', { ascending: false })
-        .limit(MAX_FETCH);
+      const fetchWindow = async (sel: string) =>
+        Promise.all([
+          this.supabase
+            .from('email_ingestion_skips')
+            .select(sel)
+            .eq('employee_id', id)
+            .neq('skip_kind', 'before_tracking')
+            .not('sent_at', 'is', null)
+            .gte('sent_at', win.start)
+            .lte('sent_at', win.end)
+            .order('skipped_at', { ascending: false })
+            .limit(MAX_FETCH),
+          this.supabase
+            .from('email_ingestion_skips')
+            .select(sel)
+            .eq('employee_id', id)
+            .neq('skip_kind', 'before_tracking')
+            .is('sent_at', null)
+            .gte('skipped_at', win.start)
+            .lte('skipped_at', win.end)
+            .order('skipped_at', { ascending: false })
+            .limit(MAX_FETCH),
+        ]);
 
-      const { data: noSent, error: e2 } = await this.supabase
-        .from('email_ingestion_skips')
-        .select(sel)
-        .eq('employee_id', id)
-        .neq('skip_kind', 'before_tracking')
-        .is('sent_at', null)
-        .gte('skipped_at', win.start)
-        .lte('skipped_at', win.end)
-        .order('skipped_at', { ascending: false })
-        .limit(MAX_FETCH);
+      let [{ data: withSent, error: e1 }, { data: noSent, error: e2 }] = await fetchWindow(selExtended);
+      if (
+        (e1 && isMigration026ColumnError(e1)) ||
+        (e2 && isMigration026ColumnError(e2))
+      ) {
+        this.logger.warn(
+          'listAiSkippedMails: migration 026 columns missing on DB; retrying with legacy select (run 026 for reason codes / confidence).',
+        );
+        [{ data: withSent, error: e1 }, { data: noSent, error: e2 }] = await fetchWindow(selLegacy);
+      }
 
       if (e1) {
         this.logger.warn(`listAiSkippedMails (window sent_at): ${e1.message}`);
@@ -970,9 +988,8 @@ export class SelfTrackingService {
         throw new InternalServerErrorException(e2.message);
       }
 
-      type Row = Parameters<typeof mapRow>[0];
-      const byMsg = new Map<string, Row>();
-      for (const r of [...(withSent ?? []), ...(noSent ?? [])] as Row[]) {
+      const byMsg = new Map<string, SkipRow>();
+      for (const r of [...(withSent ?? []), ...(noSent ?? [])] as unknown as SkipRow[]) {
         byMsg.set(r.provider_message_id, r);
       }
       const merged = [...byMsg.values()].sort(
