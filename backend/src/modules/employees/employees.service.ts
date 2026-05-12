@@ -948,7 +948,7 @@ export class EmployeesService {
     }
   }
 
-  /** Call after Gmail OAuth succeeds so ingestion has a cursor. */
+  /** Call after Gmail OAuth succeeds: mark connected + SLA default. Mail sync + tracking start are set only after the user picks a window (My Email onboarding). */
   async ensureMailSyncAfterOAuth(employeeId: string): Promise<void> {
     const { data: emp } = await this.supabase
       .from('employees')
@@ -962,57 +962,49 @@ export class EmployeesService {
       .eq('employee_id', employeeId)
       .maybeSingle();
 
-    const nowIso = new Date().toISOString();
-    const empRow = emp as { tracking_start_at: string | null } | null;
-    const startIso =
-      empRow?.tracking_start_at && empRow.tracking_start_at.trim()
-        ? new Date(empRow.tracking_start_at.trim()).toISOString()
-        : nowIso;
+    const empRow = emp as { tracking_start_at: string | null; sla_hours_default?: number | null } | null;
+    const hasTracking = Boolean(empRow?.tracking_start_at?.trim());
 
-    const ex = existing as {
-      last_processed_at: string | null;
-      last_gmail_history_id: string | null;
-    } | null;
+    if (hasTracking) {
+      const startIso = new Date(empRow!.tracking_start_at!.trim()).toISOString();
+      const ex = existing as {
+        last_processed_at: string | null;
+        last_gmail_history_id: string | null;
+      } | null;
 
-    let lastProcessed: string | null = ex?.last_processed_at ?? null;
-    if (lastProcessed) {
-      const lp = new Date(lastProcessed);
-      const sd = new Date(startIso);
-      if (lp < sd) lastProcessed = null;
+      let lastProcessed: string | null = ex?.last_processed_at ?? null;
+      if (lastProcessed) {
+        const lp = new Date(lastProcessed);
+        const sd = new Date(startIso);
+        if (lp < sd) lastProcessed = null;
+      }
+
+      const { error } = await this.supabase.from('mail_sync_state').upsert(
+        {
+          employee_id: employeeId,
+          start_date: startIso,
+          last_processed_at: lastProcessed,
+          last_gmail_history_id: ex?.last_gmail_history_id ?? null,
+          gmail_list_page_token: null,
+          gmail_list_query_after_epoch: null,
+          backfill_max_sent_at: null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'employee_id' },
+      );
+      if (error) {
+        this.logger.warn(`ensureMailSyncAfterOAuth: ${error.message}`);
+      }
     }
 
-    const { error } = await this.supabase.from('mail_sync_state').upsert(
-      {
-        employee_id: employeeId,
-        start_date: startIso,
-        last_processed_at: lastProcessed,
-        last_gmail_history_id: ex?.last_gmail_history_id ?? null,
-        gmail_list_page_token: null,
-        gmail_list_query_after_epoch: null,
-        backfill_max_sent_at: null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'employee_id' },
-    );
-    if (error) {
-      this.logger.warn(`ensureMailSyncAfterOAuth: ${error.message}`);
-    }
-
-    const empGate = emp as { tracking_start_at: string | null; sla_hours_default?: number | null } | null;
     const updateFields: Record<string, unknown> = {
       gmail_status: 'CONNECTED',
       tracking_paused: false,
     };
-    if (!empGate?.tracking_start_at) {
-      updateFields.tracking_start_at = nowIso;
-    }
-    if (!empGate?.sla_hours_default || empGate.sla_hours_default <= 0) {
+    if (!empRow?.sla_hours_default || empRow.sla_hours_default <= 0) {
       updateFields.sla_hours_default = 24;
     }
-    await this.supabase
-      .from('employees')
-      .update(updateFields)
-      .eq('id', employeeId);
+    await this.supabase.from('employees').update(updateFields).eq('id', employeeId);
   }
 
   private async ensureMailSyncState(employeeId: string, startIso: string): Promise<void> {

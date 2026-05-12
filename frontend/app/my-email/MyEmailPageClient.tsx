@@ -1126,6 +1126,8 @@ function MyEmailPageInner() {
   const [liveTrackDate, setLiveTrackDate] = useState('');
   const [liveTrackTime, setLiveTrackTime] = useState('');
   const liveTrackSourceRef = useRef<string>('');
+  /** User dismissed the tracking-start dialog — don’t auto-reopen for that mailbox until they reconnect. */
+  const trackingOnboardingDismissedRef = useRef<Set<string>>(new Set());
   const [operationStartingId, setOperationStartingId] = useState<string | null>(null);
   const [pipeline, setPipeline] = useState<{
     mailboxId: string;
@@ -1151,6 +1153,16 @@ function MyEmailPageInner() {
     blockers: string[];
   } | null>(null);
   const [ingestConfirmLoading, setIngestConfirmLoading] = useState(false);
+
+  /** Gmail connected but no tracking window — pick date/time first (then first sync + ongoing live mail). */
+  const [trackingOnboarding, setTrackingOnboarding] = useState<{
+    mailboxId: string;
+    name: string;
+    email: string;
+  } | null>(null);
+  const [onboardingDate, setOnboardingDate] = useState('');
+  const [onboardingTime, setOnboardingTime] = useState('');
+  const [onboardingBusy, setOnboardingBusy] = useState(false);
 
   /** Hide LOW-priority threads from primary tabs (still visible under Low / noise). */
   const [hideLowPriority, setHideLowPriority] = useState(true);
@@ -1898,6 +1910,26 @@ function MyEmailPageInner() {
   const canRunMyMailboxSync =
     me?.role === 'CEO' || isDepartmentManagerRole(me?.role) || me?.role === 'EMPLOYEE';
 
+  /** After Gmail connects: require a tracking start (date + time) before any analysis/sync — same mental model as Historical “pick a window”. */
+  useEffect(() => {
+    if (!showFullInboxChrome || !dash?.mailboxes || authLoading) return;
+    if (trackingOnboarding != null) return;
+    if (onboardingBusy) return;
+    const candidate = ownMailboxes.find(
+      (m) => isMailboxGmailConnected(m) && !m.tracking_start_at?.trim(),
+    );
+    if (!candidate) return;
+    if (trackingOnboardingDismissedRef.current.has(candidate.id)) return;
+    setTrackingOnboarding({
+      mailboxId: candidate.id,
+      name: candidate.name,
+      email: candidate.email,
+    });
+    const now = new Date();
+    setOnboardingDate(formatLocalYmd(now));
+    setOnboardingTime(formatLocalHm(now));
+  }, [showFullInboxChrome, dash?.mailboxes, authLoading, ownMailboxes, trackingOnboarding, onboardingBusy]);
+
   useEffect(() => {
     if (!showFullInboxChrome) return;
     const primary = ownMailboxes.find((m) => isMailboxGmailConnected(m)) ?? ownMailboxes[0];
@@ -2533,6 +2565,94 @@ function MyEmailPageInner() {
     ownMailboxes,
   ]);
 
+  const submitTrackingOnboarding = useCallback(async () => {
+    if (!token || !trackingOnboarding) return;
+    const trackingIso = liveTrackingDateTimeToIso(onboardingDate, onboardingTime);
+    if (!trackingIso) {
+      setError('Choose a valid date and time for live tracking to begin.');
+      return;
+    }
+    setOnboardingBusy(true);
+    setError(null);
+    try {
+      const patchRes = await apiFetch(
+        `/employees/${encodeURIComponent(trackingOnboarding.mailboxId)}/tracking-start`,
+        token,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ tracking_start_at: trackingIso }),
+        },
+      );
+      if (!patchRes.ok) {
+        setError(await readApiErrorMessage(patchRes, 'Could not save your tracking window.'));
+        return;
+      }
+      liveTrackSourceRef.current = `${trackingOnboarding.mailboxId}:${trackingIso}`;
+      const parts = isoToLiveTrackingDateTime(trackingIso);
+      setLiveTrackDate(parts.date);
+      setLiveTrackTime(parts.time);
+      setTrackingOnboarding(null);
+      const runReq = apiFetch('/email-ingestion/run', token);
+      const timed = await Promise.race([
+        runReq.then((res) => ({ kind: 'response' as const, res })),
+        new Promise<{ kind: 'timeout' }>((resolve) =>
+          window.setTimeout(() => resolve({ kind: 'timeout' }), 5000),
+        ),
+      ]);
+      if (timed.kind === 'timeout') {
+        setLiveSyncAwaitingTimestamp(Date.now());
+        setSuccess('Tracking window saved. Sync is running in the background — your inbox will fill in shortly.');
+        await loadDashboard(token, syncEmployeeIdsParam || undefined);
+        void loadLiveIngestSchedule();
+        window.setTimeout(() => {
+          void loadDashboard(token, syncEmployeeIdsParam || undefined);
+          void loadLiveIngestSchedule();
+        }, 2500);
+        return;
+      }
+      const res = timed.res;
+      const j = (await res.json().catch(() => ({}))) as {
+        status?: string;
+        message?: string;
+      };
+      if (!res.ok) {
+        setError(j.message ?? 'Tracking saved, but sync could not start. Use Run sync now below.');
+        await loadDashboard(token, syncEmployeeIdsParam || undefined);
+        return;
+      }
+      if (j.status === 'skipped') {
+        setError(
+          j.message ??
+            'Tracking saved. Turn on mailbox crawl in Settings, then use Run sync now.',
+        );
+        await loadDashboard(token, syncEmployeeIdsParam || undefined);
+        return;
+      }
+      setLiveSyncAwaitingTimestamp(Date.now());
+      if (j.status === 'running') {
+        setSuccess('Tracking window saved. A sync is already running — wait a moment, then refresh.');
+      } else {
+        setSuccess('Tracking window saved. First sync finished — refreshing your inbox…');
+      }
+      await loadDashboard(token, syncEmployeeIdsParam || undefined);
+      void loadLiveIngestSchedule();
+      window.setTimeout(() => {
+        void loadDashboard(token, syncEmployeeIdsParam || undefined);
+        void loadLiveIngestSchedule();
+      }, 2500);
+    } finally {
+      setOnboardingBusy(false);
+    }
+  }, [
+    token,
+    trackingOnboarding,
+    onboardingDate,
+    onboardingTime,
+    loadDashboard,
+    loadLiveIngestSchedule,
+    syncEmployeeIdsParam,
+  ]);
+
   const pipelineStep2Done =
     pipeline != null && (!pipeline.running || pipeline.status !== 'running');
   const pipelineStep3Done = pipeline != null && pipeline.status === 'success';
@@ -2919,6 +3039,70 @@ function MyEmailPageInner() {
                 className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
               >
                 {ingestConfirmLoading ? 'Saving…' : 'Confirm and start sync'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {trackingOnboarding && (
+        <div
+          className="fixed inset-0 z-[202] flex items-center justify-center bg-slate-950/55 px-4 backdrop-blur-[2px]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="tracking-onboarding-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-brand-200 bg-white p-6 shadow-2xl">
+            <h2 id="tracking-onboarding-title" className="text-lg font-semibold text-slate-900">
+              When should live tracking start?
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-600">
+              Gmail is connected for <strong className="font-medium text-slate-800">{trackingOnboarding.name}</strong>{' '}
+              ({trackingOnboarding.email}). Choose the earliest date and time to analyze mail from — like a historical
+              window, but live: we pull mail from that moment forward, then keep syncing new mail automatically.
+            </p>
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+              <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                Start date
+                <input
+                  type="date"
+                  value={onboardingDate}
+                  onChange={(e) => setOnboardingDate(e.target.value)}
+                  className="rounded-lg border border-slate-200 px-2 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                Start time
+                <input
+                  type="time"
+                  value={onboardingTime}
+                  onChange={(e) => setOnboardingTime(e.target.value)}
+                  className="rounded-lg border border-slate-200 px-2 py-2 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                />
+              </label>
+            </div>
+            <p className="mt-2 text-[11px] leading-snug text-slate-500">
+              Uses your device&apos;s timezone. You can change this anytime under <strong className="font-medium">Live mail</strong>{' '}
+              and Run sync now.
+            </p>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  trackingOnboardingDismissedRef.current.add(trackingOnboarding.mailboxId);
+                  setTrackingOnboarding(null);
+                }}
+                disabled={onboardingBusy}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Later — I&apos;ll use Live mail below
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitTrackingOnboarding()}
+                disabled={onboardingBusy}
+                className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-md hover:opacity-95 disabled:opacity-50"
+              >
+                {onboardingBusy ? 'Saving…' : 'Save window & start sync'}
               </button>
             </div>
           </div>
