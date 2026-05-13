@@ -480,7 +480,7 @@ function trackingWindowPreviewLine(dateYmd: string, timeHm: string): string | nu
   });
 }
 
-/** Live progress for POST /self-tracking/historical-fetch-stream (same engine as Historical Search). */
+/** Live progress for POST /self-tracking/historical-fetch-stream (SSE inbox pull for the chosen window). */
 type HistoricalBackfillUi = {
   employeeId: string;
   mailboxEmail: string;
@@ -542,8 +542,8 @@ function HistoricalBackfillProgressBlock({
   const capNote =
     ui.totalIds >= 500 ? (
       <p className="mt-2 text-[10px] leading-snug text-amber-800">
-        Same cap as Historical Search: up to <strong className="font-medium">500</strong> messages analyzed
-        in this pass. Narrow the window or run again later if you need more depth.
+        Up to <strong className="font-medium">500</strong> messages in this run. Run Sync again later if you need more
+        depth in the same window.
       </p>
     ) : null;
   const detail = Boolean(ceoPortalDetail);
@@ -588,7 +588,7 @@ function HistoricalBackfillProgressBlock({
     <div className="mt-3 space-y-2 rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-3 text-left text-xs text-slate-700">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-          Live tracking: selected date → now
+          From your start date → today (this run)
         </p>
         {onStop && ui.phase !== 'complete' && ui.phase !== 'error' ? (
           <button
@@ -602,8 +602,8 @@ function HistoricalBackfillProgressBlock({
       </div>
       {windowLine ? (
         <p className="text-[11px] text-slate-600">
-          Window: <span className="font-medium text-slate-900">{windowLine}</span> through{' '}
-          <span className="font-medium text-slate-900">now</span>
+          From <span className="font-medium text-slate-900">{windowLine}</span> through{' '}
+          <span className="font-medium text-slate-900">when you started this run</span>
         </p>
       ) : null}
       <p className="text-[11px] text-slate-600">{multi}</p>
@@ -664,14 +664,13 @@ function HistoricalBackfillProgressBlock({
             </p>
           ) : ui.phase !== 'complete' ? (
             <p className="text-[10px] leading-snug text-slate-500">
-              Inbox AI now walks your selected window oldest-first, starting from the date/time you picked and moving
-              toward now.
+              Oldest mail first so the list lines up with your start date, then moves forward to today for this run.
             </p>
           ) : null}
         </div>
       ) : null}
       {ui.phase === 'connecting' ? (
-        <p className="text-sm text-slate-600">Connecting to Gmail and listing messages in your window…</p>
+        <p className="text-sm text-slate-600">Connecting to Gmail and listing messages from your start date…</p>
       ) : null}
       {ui.phase === 'listed' ? (
         <p className="text-sm text-slate-800">
@@ -737,7 +736,7 @@ function HistoricalBackfillProgressBlock({
       {ui.phase === 'complete' && ui.complete ? (
         <>
           <p className="text-[11px] leading-relaxed text-slate-700">
-            Backfill complete:{' '}
+            This run finished:{' '}
             <strong className="tabular-nums">{ui.complete.fetched}</strong> fetched,{' '}
             <strong className="tabular-nums">{ui.complete.stored}</strong> stored,{' '}
             <strong className="tabular-nums">{ui.complete.skipped}</strong> skipped by AI,{' '}
@@ -745,21 +744,20 @@ function HistoricalBackfillProgressBlock({
           </p>
           {detail ? (
             <div className="rounded-md border border-emerald-200/80 bg-emerald-50/60 px-2.5 py-2 text-[11px] leading-relaxed text-emerald-950">
-              <p className="font-semibold text-emerald-900">Check categories</p>
+              <p className="font-semibold text-emerald-900">What happens next (same flow)</p>
               <p className="mt-1">
-                <strong className="tabular-nums">{ui.complete.stored}</strong> relevant messages were saved; threads
-                were split into <strong className="tabular-nums">{ui.complete.conversationsCreated}</strong> created or
-                updated rows. Open <strong className="font-medium">Need reply</strong>,{' '}
-                <strong className="font-medium">Waiting on them</strong>, <strong className="font-medium">CC&apos;d</strong>,{' '}
-                <strong className="font-medium">Done</strong>, and <strong className="font-medium">Low priority</strong>{' '}
-                to confirm everything landed where you expect. Compare the stat row for{' '}
-                <strong className="font-medium">Missed SLA</strong> and <strong className="font-medium">Resolved</strong>{' '}
-                as well. AI-only skips are under <strong className="font-medium">Skipped</strong> ({ui.complete.skipped}{' '}
-                this run).
+                <strong className="tabular-nums">{ui.complete.stored}</strong> messages were saved into{' '}
+                <strong className="tabular-nums">{ui.complete.conversationsCreated}</strong> thread rows. Spot-check{' '}
+                <strong className="font-medium">Need reply</strong>, <strong className="font-medium">Waiting on them</strong>,{' '}
+                <strong className="font-medium">CC&apos;d</strong>, <strong className="font-medium">Done</strong>,{' '}
+                <strong className="font-medium">Low priority</strong>, <strong className="font-medium">Missed SLA</strong>,{' '}
+                <strong className="font-medium">Resolved</strong>, and <strong className="font-medium">Skipped</strong> (
+                {ui.complete.skipped} this run).
               </p>
               <p className="mt-1.5 text-[10px] text-emerald-900/85">
-                Live tracking stays ON after this catch-up pass. Use the mailbox ON/OFF switch when you want to stop
-                monitoring new mail.
+                Mail from your start date keeps updating: leave your inbox <strong className="font-medium">ON</strong>{' '}
+                and use <strong className="font-medium">Sync now</strong> whenever you want a fresh pull. Turn your
+                inbox <strong className="font-medium">OFF</strong> on the inbox card when you want to stop completely.
               </p>
               {ui.complete.stored > 0 && rt > 0 && ui.complete.stored !== rt ? (
                 <p className="mt-1.5 text-[10px] text-emerald-900/85">
@@ -1244,10 +1242,11 @@ function CeoLiveSyncStrip({
   if (!connected) {
     return (
       <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/90 px-4 py-4 sm:px-5">
-        <p className="text-sm font-semibold text-slate-800">Gmail &amp; AI sync</p>
+        <p className="text-sm font-semibold text-slate-800">Connect Gmail</p>
         <p className="mt-1 text-xs leading-relaxed text-slate-600">
-          Connect Gmail from the <strong className="font-medium text-slate-800">Your inbox</strong> card on this page
-          (under the stats row). Then you&apos;ll see last sync time and can run a sync manually.
+          After you connect, pick when tracking starts below. One flow: mail from that date forward—use{' '}
+          <strong className="font-medium text-slate-800">Sync now</strong> to pull through today, and keep your inbox{' '}
+          <strong className="font-medium text-slate-800">ON</strong> so new mail keeps flowing until you turn it off.
         </p>
       </div>
     );
@@ -1301,7 +1300,7 @@ function CeoLiveSyncStrip({
                 onClick={onStopAnalysis}
                 className="rounded-xl border-2 border-red-200 bg-white px-4 py-2.5 text-sm font-bold text-red-700 shadow-sm transition hover:bg-red-50"
               >
-                Stop analysis
+                Stop this run
               </button>
             ) : null}
             <button
@@ -1315,6 +1314,14 @@ function CeoLiveSyncStrip({
           </div>
         </div>
       </div>
+      <p className="mt-3 border-t border-slate-100 pt-3 text-[11px] leading-snug text-slate-500">
+        <strong className="font-medium text-slate-700">One flow:</strong> everything from your start date forward.
+        <strong className="font-medium text-slate-700"> Sync now</strong> pulls older mail through today for this pass.
+        Keep your inbox <strong className="font-medium text-slate-700">ON</strong> so new mail keeps arriving; use{' '}
+        <strong className="font-medium text-slate-700">Stop this run</strong> only while the purple progress card is
+        running. Turn the inbox <strong className="font-medium text-slate-700">OFF</strong> on your inbox card when you
+        want to stop completely.
+      </p>
     </div>
   );
 }
@@ -1446,7 +1453,7 @@ function MyEmailPageInner() {
   const [onboardingTime, setOnboardingTime] = useState('');
   const [onboardingBusy, setOnboardingBusy] = useState(false);
 
-  /** Same engine as Historical Search (SSE), then live `/email-ingestion/run`. */
+  /** Window pull via SSE, then live `/email-ingestion/run` for ongoing mail. */
   const [historicalBackfillUi, setHistoricalBackfillUi] = useState<HistoricalBackfillUi | null>(null);
   const historicalBackfillAbortRef = useRef<AbortController | null>(null);
   const historicalBackfillRunRef = useRef<{ runId: string; employeeId: string } | null>(null);
@@ -2148,7 +2155,7 @@ function MyEmailPageInner() {
     });
     setOperationStartingId(null);
     setSuccess(
-      'Backfilling your tracking window (Historical Search engine), then company sync — see the progress card below.',
+      'Pulling mail from your start date through today, then company sync — watch the purple progress card below.',
     );
 
     try {
@@ -3358,7 +3365,7 @@ function MyEmailPageInner() {
     return () => clearTimeout(id);
   }, [token, me, filterMailbox, loadDashboard, syncEmployeeIdsParam, myEmailTab]);
 
-  /** CEO inbox tab: while historical backfill writes threads, refresh dashboard so stat cards and tab counts catch up. */
+  /** CEO inbox tab: while the window pull writes threads, refresh dashboard so stat cards and tab counts catch up. */
   useEffect(() => {
     if (!token || me?.role !== 'CEO' || myEmailTab !== 'ceo') return;
     const phase = historicalBackfillUi?.phase;
@@ -3777,16 +3784,17 @@ function MyEmailPageInner() {
           <div className="w-full max-w-md rounded-2xl border border-brand-200 bg-white p-6 shadow-2xl">
             <h2 id="tracking-onboarding-title" className="text-lg font-semibold text-slate-900">
               {onboardingBusy
-                ? 'Analyzing your inbox (same engine as Historical Search)'
+                ? 'Syncing your inbox from your start date'
                 : 'Start tracking your emails'}
             </h2>
             {onboardingBusy ? (
               <>
                 <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                  We pull Gmail from your chosen start through{' '}
-                  <strong className="font-medium text-slate-900">right now</strong>, run Inbox AI on each
-                  message (identical flow to Historical Search), store follow-ups, then hand off to{' '}
-                  <strong className="font-medium text-slate-900">live</strong> sync for new mail only.
+                  One flow: we pull Gmail from your start date through when you started this run, run Inbox AI on each
+                  message, store follow-ups, then keep going the same way—use{' '}
+                  <strong className="font-medium text-slate-900">Sync now</strong> anytime to pull more history and
+                  leave your inbox <strong className="font-medium text-slate-900">ON</strong> so new mail keeps
+                  arriving.
                 </p>
                 <HistoricalBackfillProgressBlock
                   ui={historicalBackfillUi}
@@ -3839,7 +3847,7 @@ function MyEmailPageInner() {
                     onClick={stopHistoricalBackfill}
                     className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-bold text-red-700 shadow-sm hover:bg-red-50"
                   >
-                    Stop analysis
+                    Stop this run
                   </button>
                 ) : null}
               </div>
@@ -3941,7 +3949,7 @@ function MyEmailPageInner() {
           aria-live="polite"
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="font-semibold text-violet-950">Backfilling your tracking window</p>
+            <p className="font-semibold text-violet-950">Tracking your inbox</p>
             {showCeoHistoricalStop ? (
               <button
                 type="button"
@@ -4017,7 +4025,7 @@ function MyEmailPageInner() {
                 value: kpiNeedReplyCount,
                 color: 'text-red-600',
                 hint:
-                  'Threads the app says still need follow-up (`follow_up_required`). Missed SLA always lists here even if old. Low / noise is hidden except missed SLA. “Will track” counts Inbox AI–accepted messages during backfill, not threads.',
+                  'Threads the app says still need follow-up (`follow_up_required`). Missed SLA always lists here even if old. Low / noise is hidden except missed SLA. “Will track” counts Inbox AI–accepted messages while that inbox pull is running, not threads.',
               },
               {
                 label: 'Waiting on them',
