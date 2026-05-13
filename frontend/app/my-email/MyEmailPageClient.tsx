@@ -517,7 +517,24 @@ type HistoricalBackfillUi = {
   connectionInterrupted?: boolean;
   /** When `connectionInterrupted` was set — used to hide stale banners after a newer Gmail sync. */
   connectionInterruptedAtMs?: number;
+  /** Shown after `phase === 'complete'`: automatic POST /email-ingestion/run handoff. */
+  liveIngestHandoff?: {
+    status: 'starting' | 'pending' | 'skipped' | 'error' | 'done' | 'running';
+    message?: string;
+  };
 };
+
+/** Result of optional live ingestion after a successful historical window (for pipeline / success copy). */
+type LiveIngestAfterHistoricalResult =
+  | { ran: false }
+  | {
+      ran: true;
+      timedOut: boolean;
+      /** Set when fetch threw before a response (network). */
+      fetchError?: string;
+      response: Response | null;
+      body: { status?: string; message?: string };
+    };
 
 function HistoricalBackfillProgressBlock({
   ui,
@@ -774,6 +791,20 @@ function HistoricalBackfillProgressBlock({
             </div>
           ) : null}
         </>
+      ) : null}
+      {ui.phase === 'complete' && ui.liveIngestHandoff ? (
+        <div
+          className={`mt-2 rounded-md border px-2.5 py-2 text-[11px] leading-relaxed ${
+            ui.liveIngestHandoff.status === 'error' || ui.liveIngestHandoff.status === 'skipped'
+              ? 'border-amber-200 bg-amber-50/90 text-amber-950'
+              : ui.liveIngestHandoff.status === 'starting' || ui.liveIngestHandoff.status === 'pending'
+                ? 'border-violet-200 bg-violet-50/80 text-violet-950'
+                : 'border-emerald-200/80 bg-emerald-50/50 text-emerald-950'
+          }`}
+        >
+          <p className="font-semibold text-slate-900">Live inbox sync</p>
+          <p className="mt-1 text-slate-800">{ui.liveIngestHandoff.message ?? '—'}</p>
+        </div>
       ) : null}
       {capNote}
     </div>
@@ -1572,8 +1603,14 @@ function MyEmailPageInner() {
         endIso: string;
         mailboxIndex?: number;
         mailboxTotal?: number;
+        /**
+         * When true (default), after a successful historical run POST `/email-ingestion/run` once
+         * and show status in the purple card. Set false when the caller runs ingestion once after
+         * multiple historical passes (e.g. multi-mailbox Sync now).
+         */
+        chainLiveIngestion?: boolean;
       },
-    ): Promise<void> => {
+    ): Promise<LiveIngestAfterHistoricalResult> => {
       const { employeeId, mailboxEmail, startIso, endIso, mailboxIndex, mailboxTotal } = opts;
       let sseError: string | null = null;
       const terminal = { current: false };
@@ -1873,6 +1910,139 @@ function MyEmailPageInner() {
         debugHistoricalFetch('throwing_server_error_phase', { message: sseError });
         throw new Error(sseError);
       }
+
+      const chain = opts.chainLiveIngestion !== false;
+      if (!chain) {
+        return { ran: false };
+      }
+
+      let ingestResult: LiveIngestAfterHistoricalResult = {
+        ran: true,
+        timedOut: false,
+        response: null,
+        body: {},
+      };
+
+      setHistoricalBackfillUi((u) =>
+        u?.phase === 'complete'
+          ? {
+              ...u,
+              liveIngestHandoff: {
+                status: 'starting',
+                message: 'Starting live inbox sync for current mail…',
+              },
+            }
+          : u,
+      );
+
+      try {
+        const runReq = apiFetch('/email-ingestion/run', t);
+        const timed = await Promise.race([
+          runReq.then((res) => ({ kind: 'response' as const, res })),
+          new Promise<{ kind: 'timeout' }>((resolve) =>
+            window.setTimeout(() => resolve({ kind: 'timeout' }), 5000),
+          ),
+        ]);
+        if (timed.kind === 'timeout') {
+          setHistoricalBackfillUi((u) =>
+            u
+              ? {
+                  ...u,
+                  liveIngestHandoff: {
+                    status: 'pending',
+                    message:
+                      'Live sync is still running on the server. Stat cards and thread lists will refresh in a few seconds.',
+                  },
+                }
+              : u,
+          );
+          ingestResult = { ran: true, timedOut: true, response: null, body: {} };
+          debugHistoricalFetch('live_ingest_timeout');
+        } else {
+          const res = timed.res;
+          const body = (await res.json().catch(() => ({}))) as {
+            status?: string;
+            message?: string;
+          };
+          if (!res.ok) {
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    liveIngestHandoff: {
+                      status: 'error',
+                      message:
+                        body.message ?? 'Live sync could not start. Use Sync now below when you are ready.',
+                    },
+                  }
+                : u,
+            );
+            ingestResult = { ran: true, timedOut: false, response: res, body };
+          } else if (body.status === 'skipped') {
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    liveIngestHandoff: {
+                      status: 'skipped',
+                      message:
+                        body.message ??
+                        'Email syncing is off in Settings. Turn it on, then use Sync now.',
+                    },
+                  }
+                : u,
+            );
+            ingestResult = { ran: true, timedOut: false, response: res, body };
+          } else if (body.status === 'running') {
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    liveIngestHandoff: {
+                      status: 'running',
+                      message:
+                        'Another live sync was already in progress — this page will update when it finishes.',
+                    },
+                  }
+                : u,
+            );
+            ingestResult = { ran: true, timedOut: false, response: res, body };
+          } else {
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    liveIngestHandoff: {
+                      status: 'done',
+                      message:
+                        body.status === 'completed'
+                          ? 'Live sync finished. Your inbox list continues to update as threads are processed.'
+                          : 'Live sync started successfully.',
+                    },
+                  }
+                : u,
+            );
+            ingestResult = { ran: true, timedOut: false, response: res, body };
+          }
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setHistoricalBackfillUi((u) =>
+          u
+            ? {
+                ...u,
+                liveIngestHandoff: {
+                  status: 'error',
+                  message: msg || 'Could not reach the server for live sync.',
+                },
+              }
+            : u,
+        );
+        ingestResult = { ran: true, timedOut: false, fetchError: msg, response: null, body: {} };
+        debugHistoricalFetch('live_ingest_fetch_error', { message: msg });
+      }
+
+      return ingestResult;
     },
     [],
   );
@@ -2345,8 +2515,9 @@ function MyEmailPageInner() {
       'Pulling mail from your start date through today, then company sync — watch the purple progress card below.',
     );
 
+    let ingestMeta: LiveIngestAfterHistoricalResult = { ran: false };
     try {
-      await runTrackingHistoricalWindowToNow(token, {
+      ingestMeta = await runTrackingHistoricalWindowToNow(token, {
         employeeId: mb.id,
         mailboxEmail: mb.email,
         startIso: selectedTrackingIso,
@@ -2370,12 +2541,41 @@ function MyEmailPageInner() {
       setError(e instanceof Error ? e.message : 'Could not analyze your tracking window.');
       return;
     }
-    const runRes = await apiFetch('/email-ingestion/run', token);
-    const runBody = (await runRes.json().catch(() => ({}))) as {
-      status?: string;
-      message?: string;
-      reason?: string;
-    };
+
+    if (ingestMeta.ran && ingestMeta.timedOut) {
+      setPipeline({
+        ...basePipeline,
+        running: false,
+        status: 'success',
+        finishedAt: new Date().toISOString(),
+      });
+      setSuccess(
+        'Historical analysis finished. Live sync is running in the background — your inbox will refresh shortly.',
+      );
+      await loadDashboard(token, mb.id);
+      return;
+    }
+
+    if (ingestMeta.ran && ingestMeta.fetchError) {
+      setPipeline(null);
+      setError(ingestMeta.fetchError ?? 'Could not start live inbox sync.');
+      await loadDashboard(token, mb.id);
+      return;
+    }
+
+    let runRes: Response;
+    let runBody: { status?: string; message?: string; reason?: string };
+    if (ingestMeta.ran && ingestMeta.response) {
+      runRes = ingestMeta.response;
+      runBody = ingestMeta.body as { status?: string; message?: string; reason?: string };
+    } else {
+      runRes = await apiFetch('/email-ingestion/run', token);
+      runBody = (await runRes.json().catch(() => ({}))) as {
+        status?: string;
+        message?: string;
+        reason?: string;
+      };
+    }
 
     if (!runRes.ok) {
       setPipeline(null);
@@ -3320,6 +3520,7 @@ function MyEmailPageInner() {
             endIso,
             mailboxIndex: i + 1,
             mailboxTotal: targets.length,
+            chainLiveIngestion: false,
           });
         } catch (e) {
           if (isAbortError(e)) {
@@ -3424,8 +3625,9 @@ function MyEmailPageInner() {
         return;
       }
       const endIso = new Date().toISOString();
+      let ingestMeta: LiveIngestAfterHistoricalResult = { ran: false };
       try {
-        await runTrackingHistoricalWindowToNow(token, {
+        ingestMeta = await runTrackingHistoricalWindowToNow(token, {
           employeeId: trackingOnboarding.mailboxId,
           mailboxEmail: trackingOnboarding.email,
           startIso: trackingIso,
@@ -3452,14 +3654,8 @@ function MyEmailPageInner() {
       const parts = isoToLiveTrackingDateTime(trackingIso);
       setLiveTrackDate(parts.date);
       setLiveTrackTime(parts.time);
-      const runReq = apiFetch('/email-ingestion/run', token);
-      const timed = await Promise.race([
-        runReq.then((res) => ({ kind: 'response' as const, res })),
-        new Promise<{ kind: 'timeout' }>((resolve) =>
-          window.setTimeout(() => resolve({ kind: 'timeout' }), 5000),
-        ),
-      ]);
-      if (timed.kind === 'timeout') {
+
+      if (ingestMeta.ran && ingestMeta.timedOut) {
         setLiveSyncAwaitingTimestamp(Date.now());
         setSuccess('Tracking window saved. Sync is running in the background — your inbox will fill in shortly.');
         await loadDashboard(token, syncEmployeeIdsParam || undefined);
@@ -3471,18 +3667,28 @@ function MyEmailPageInner() {
         }, 2500);
         return;
       }
-      const res = timed.res;
-      const j = (await res.json().catch(() => ({}))) as {
-        status?: string;
-        message?: string;
-      };
-      if (!res.ok) {
-        setError(j.message ?? 'Tracking saved, but sync could not start. Use Run sync now below.');
+
+      if (ingestMeta.ran && ingestMeta.fetchError) {
+        setError(
+          ingestMeta.fetchError ??
+            'Tracking saved, but live sync could not start. Use Sync now below.',
+        );
         await loadDashboard(token, syncEmployeeIdsParam || undefined);
         setTrackingOnboarding(null);
         return;
       }
-      if (j.status === 'skipped') {
+
+      if (ingestMeta.ran && ingestMeta.response && !ingestMeta.response.ok) {
+        setError(
+          ingestMeta.body.message ?? 'Tracking saved, but sync could not start. Use Run sync now below.',
+        );
+        await loadDashboard(token, syncEmployeeIdsParam || undefined);
+        setTrackingOnboarding(null);
+        return;
+      }
+
+      const j = ingestMeta.ran ? ingestMeta.body : {};
+      if (ingestMeta.ran && j.status === 'skipped') {
         setError(
           j.message ??
             'Tracking saved. Turn on email syncing in Settings, then use Sync now.',
@@ -3491,11 +3697,12 @@ function MyEmailPageInner() {
         setTrackingOnboarding(null);
         return;
       }
+
       setLiveSyncAwaitingTimestamp(Date.now());
-      if (j.status === 'running') {
+      if (ingestMeta.ran && j.status === 'running') {
         setSuccess('Tracking window saved. A sync is already running — wait a moment, then refresh.');
       } else {
-        setSuccess('Tracking window saved. First sync finished — refreshing your inbox…');
+        setSuccess('Tracking window saved. Historical catch-up and live sync finished — refreshing your inbox…');
       }
       await loadDashboard(token, syncEmployeeIdsParam || undefined);
       void loadLiveIngestSchedule();
