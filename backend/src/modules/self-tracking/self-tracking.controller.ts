@@ -493,8 +493,10 @@ export class SelfTrackingController {
     res.status(200);
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
+    // NOTE: Do NOT set 'Connection: keep-alive' — that is HTTP/1.1 only and
+    // causes Railway's HTTP/2 load balancer to drop or mishandle the stream.
     res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Transfer-Encoding', 'chunked');
     res.flushHeaders?.();
     res.write(': connected\n\n');
     const emit: HistoricalProgressFn = (e) => {
@@ -506,6 +508,8 @@ export class SelfTrackingController {
         // Client may have closed the socket (e.g. Stop).
       }
     };
+    // 8s heartbeat — aggressive enough that Railway's HTTP/2 proxy (which kills
+    // streams idle for ~30s) never sees this connection as inactive.
     const heartbeat = setInterval(() => {
       try {
         if (!res.writableEnded) {
@@ -514,7 +518,7 @@ export class SelfTrackingController {
       } catch {
         // Client may have closed the socket.
       }
-    }, 15_000);
+    }, 8_000);
 
     const ac = new AbortController();
     const runKey = this.historicalRunKey(
