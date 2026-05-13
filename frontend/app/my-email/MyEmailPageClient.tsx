@@ -514,6 +514,8 @@ type HistoricalBackfillUi = {
   stoppedByUser?: boolean;
   /** Network/proxy dropped the SSE stream; partial batches may already be saved. */
   connectionInterrupted?: boolean;
+  /** When `connectionInterrupted` was set — used to hide stale banners after a newer Gmail sync. */
+  connectionInterruptedAtMs?: number;
 };
 
 function HistoricalBackfillProgressBlock({
@@ -521,6 +523,7 @@ function HistoricalBackfillProgressBlock({
   windowLine,
   ceoPortalDetail,
   onStop,
+  onDismissInterrupted,
 }: {
   ui: HistoricalBackfillUi | null;
   windowLine?: string | null;
@@ -528,6 +531,8 @@ function HistoricalBackfillProgressBlock({
   ceoPortalDetail?: boolean;
   /** Aborts the browser’s historical SSE request (partial server work may still finish briefly). */
   onStop?: () => void;
+  /** Clears the amber “Connection interrupted” card when it is outdated (e.g. inbox already synced). */
+  onDismissInterrupted?: () => void;
 }): ReactNode {
   if (!ui) return null;
   const multi =
@@ -567,6 +572,15 @@ function HistoricalBackfillProgressBlock({
           {userStop ? 'Stopped' : interrupted ? 'Connection interrupted' : 'Analysis stopped'}
         </p>
         <p className="mt-1">{ui.error ?? 'Something went wrong.'}</p>
+        {interrupted && onDismissInterrupted ? (
+          <button
+            type="button"
+            onClick={onDismissInterrupted}
+            className="mt-2 text-[11px] font-semibold text-amber-900 underline decoration-amber-700/60 hover:decoration-amber-900"
+          >
+            Dismiss
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -1643,6 +1657,7 @@ function MyEmailPageInner() {
                 ...u,
                 phase: 'error',
                 connectionInterrupted: true,
+                connectionInterruptedAtMs: Date.now(),
                 error: friendly,
               }
             : u,
@@ -2153,6 +2168,7 @@ function MyEmailPageInner() {
         setPipeline(null);
         setSuccess('Analysis connection interrupted. Partial results are saved; refresh or press Sync now to continue.');
         await loadDashboard(token, mb.id);
+        setHistoricalBackfillUi(null);
         return;
       }
       setHistoricalBackfillUi(null);
@@ -3119,6 +3135,7 @@ function MyEmailPageInner() {
           if (isHistoricalStreamInterrupted(e)) {
             setSuccess('Analysis connection interrupted. Partial results are saved; refresh or press Sync now to continue.');
             await loadDashboard(token, syncEmployeeIdsParam || undefined);
+            setHistoricalBackfillUi(null);
             return;
           }
           setError(
@@ -3231,6 +3248,7 @@ function MyEmailPageInner() {
           setSuccess('Analysis connection interrupted. Partial results are saved; refresh or press Sync now to continue.');
           await loadDashboard(token, syncEmployeeIdsParam || undefined);
           setTrackingOnboarding(null);
+          setHistoricalBackfillUi(null);
           return;
         }
         setError(e instanceof Error ? e.message : 'Could not analyze your tracking window.');
@@ -3359,6 +3377,20 @@ function MyEmailPageInner() {
     loadDashboard,
     syncEmployeeIdsParam,
   ]);
+
+  /** Hide stale “Connection interrupted” once the mailbox shows a Gmail sync newer than the interrupt moment. */
+  useEffect(() => {
+    const ui = historicalBackfillUi;
+    if (!ui?.connectionInterrupted || ui.phase !== 'error') return;
+    const at = ui.connectionInterruptedAtMs;
+    if (!at || !Number.isFinite(at)) return;
+    const mb = ownMailboxes.find((m) => m.id === ui.employeeId);
+    const raw = mb?.last_gmail_sync_at ?? mb?.last_synced_at;
+    if (!raw) return;
+    const syncMs = Date.parse(raw);
+    if (!Number.isFinite(syncMs) || syncMs <= at) return;
+    setHistoricalBackfillUi(null);
+  }, [historicalBackfillUi, ownMailboxes]);
 
   useEffect(() => {
     setMailListPage(1);
@@ -3541,6 +3573,7 @@ function MyEmailPageInner() {
             }
             ceoPortalDetail={ceoMyEmailAiPortalDetail}
             onStop={stopHistoricalBackfill}
+            onDismissInterrupted={() => setHistoricalBackfillUi(null)}
           />
         ) : null}
         {serverSyncPhase ? (
@@ -3760,6 +3793,7 @@ function MyEmailPageInner() {
                   windowLine={trackingWindowPreviewLine(onboardingDate, onboardingTime)}
                   ceoPortalDetail={ceoMyEmailAiPortalDetail}
                   onStop={stopHistoricalBackfill}
+                  onDismissInterrupted={() => setHistoricalBackfillUi(null)}
                 />
                 {!historicalBackfillUi ? (
                   <div className="mt-5 h-2.5 overflow-hidden rounded-full bg-slate-100">
@@ -3928,6 +3962,7 @@ function MyEmailPageInner() {
             }
             ceoPortalDetail={ceoMyEmailAiPortalDetail}
             onStop={stopHistoricalBackfill}
+            onDismissInterrupted={() => setHistoricalBackfillUi(null)}
           />
         </div>
       ) : null}
