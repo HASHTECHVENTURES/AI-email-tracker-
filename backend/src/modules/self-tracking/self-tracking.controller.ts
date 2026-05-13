@@ -43,6 +43,16 @@ export class SelfTrackingController {
     { employeeId: string; controller: AbortController }
   >();
 
+  /**
+   * In-memory progress store for polling-based historical fetch.
+   * Key = runKey, Value = latest progress event from the background job.
+   * Entries are cleaned up 5 minutes after completion.
+   */
+  private readonly historicalProgress = new Map<
+    string,
+    { events: Record<string, unknown>[]; lastEvent: Record<string, unknown> | null; updatedAt: number }
+  >();
+
   constructor(
     private readonly selfTrackingService: SelfTrackingService,
     private readonly employeesService: EmployeesService,
@@ -59,6 +69,28 @@ export class SelfTrackingController {
     const runId = clientRunId?.trim();
     if (!runId) return null;
     return `${companyId}:${userId}:${employeeId}:${runId}`;
+  }
+
+  /** Poll progress for a background historical fetch run. */
+  @Get('historical-fetch-progress/:runId')
+  async pollHistoricalProgress(
+    @Req() req: Request,
+    @Param('runId') runId: string,
+  ) {
+    const user = req.user;
+    if (!user) throw new UnauthorizedException();
+    const ctx = getRequestContext(req);
+    assertSelfTrackingReader(ctx);
+    // Try all possible keys for this user+runId combo
+    const mailboxes = await this.selfTrackingService.getVisibleMailboxes(ctx, user.email);
+    for (const mb of mailboxes) {
+      const key = this.historicalRunKey(ctx.companyId, user.id, mb.id, runId);
+      if (key && this.historicalProgress.has(key)) {
+        const entry = this.historicalProgress.get(key)!;
+        return { found: true, lastEvent: entry.lastEvent };
+      }
+    }
+    return { found: false, lastEvent: null };
   }
 
   @Get('mailboxes')
@@ -499,15 +531,6 @@ export class SelfTrackingController {
     res.setHeader('Transfer-Encoding', 'chunked');
     res.flushHeaders?.();
     res.write(': connected\n\n');
-    const emit: HistoricalProgressFn = (e) => {
-      try {
-        if (!res.writableEnded) {
-          res.write(`data: ${JSON.stringify(e)}\n\n`);
-        }
-      } catch {
-        // Client may have closed the socket (e.g. Stop).
-      }
-    };
     // 8s heartbeat — aggressive enough that Railway's HTTP/2 proxy (which kills
     // streams idle for ~30s) never sees this connection as inactive.
     const heartbeat = setInterval(() => {
@@ -532,7 +555,28 @@ export class SelfTrackingController {
         employeeId: body.employee_id.trim(),
         controller: ac,
       });
+      // Initialize progress entry
+      this.historicalProgress.set(runKey, { events: [], lastEvent: null, updatedAt: Date.now() });
     }
+
+    const emit: HistoricalProgressFn = (e) => {
+      // 1. Send to SSE if still open
+      try {
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify(e)}\n\n`);
+        }
+      } catch {
+        // SSE closed
+      }
+      // 2. Also save to memory for polling
+      if (runKey) {
+        const entry = this.historicalProgress.get(runKey);
+        if (entry) {
+          entry.lastEvent = e as unknown as Record<string, unknown>;
+          entry.updatedAt = Date.now();
+        }
+      }
+    };
 
     try {
       await this.historicalFetchService.fetchHistorical(
@@ -553,6 +597,10 @@ export class SelfTrackingController {
       clearInterval(heartbeat);
       if (runKey) {
         this.activeHistoricalRuns.delete(runKey);
+        // Keep progress around for 5 mins after completion so UI can see "complete"
+        setTimeout(() => {
+          this.historicalProgress.delete(runKey);
+        }, 300_000);
       }
     }
     try {

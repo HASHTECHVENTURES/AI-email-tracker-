@@ -289,6 +289,28 @@ export async function apiPostSse(
   }
 }
 
+/** Response from GET /self-tracking/historical-fetch-progress/:runId (polling fallback when SSE drops). */
+export type HistoricalFetchProgressPayload = {
+  found: boolean;
+  lastEvent: Record<string, unknown> | null;
+};
+
+export async function apiGetHistoricalFetchProgress(
+  runId: string,
+  accessToken: string,
+  signal?: AbortSignal,
+): Promise<HistoricalFetchProgressPayload> {
+  const res = await apiFetch(
+    `/self-tracking/historical-fetch-progress/${encodeURIComponent(runId)}`,
+    accessToken,
+    { cache: 'no-store', signal },
+  );
+  if (!res.ok) {
+    throw new Error(await readApiErrorMessage(res, 'Could not read sync progress.'));
+  }
+  return (await res.json()) as HistoricalFetchProgressPayload;
+}
+
 type ApiJsonError = { message?: unknown; error?: unknown; code?: unknown };
 
 export async function readApiErrorMessage(

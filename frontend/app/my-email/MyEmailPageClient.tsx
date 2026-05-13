@@ -15,6 +15,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import {
   apiFetch,
+  apiGetHistoricalFetchProgress,
   apiPostSse,
   formatNetworkFetchFailureMessage,
   oauthErrorMessage,
@@ -672,6 +673,11 @@ function HistoricalBackfillProgressBlock({
       {ui.phase === 'connecting' ? (
         <p className="text-sm text-slate-600">Connecting to Gmail and listing messages from your start date…</p>
       ) : null}
+      {ui.phase === 'polling' ? (
+        <p className="text-sm text-amber-900/95">
+          Live stream paused (common behind some HTTP/2 proxies). Checking server progress so your sync can finish…
+        </p>
+      ) : null}
       {ui.phase === 'listed' ? (
         <p className="text-sm text-slate-800">
           Listed <strong className="tabular-nums">{ui.totalIds}</strong> message
@@ -1182,6 +1188,104 @@ function isHistoricalStreamInterrupted(e: unknown): boolean {
   return e instanceof Error && e.name === 'HistoricalStreamInterrupted';
 }
 
+/** Dev-only: filter console with `[ai-et historical-fetch]`. No-op in production builds. */
+function debugHistoricalFetch(step: string, detail?: Record<string, unknown>): void {
+  if (process.env.NODE_ENV === 'production') return;
+  if (detail === undefined) {
+    console.debug('[ai-et historical-fetch]', step);
+  } else {
+    console.debug('[ai-et historical-fetch]', step, detail);
+  }
+}
+
+/**
+ * When SSE is cut (e.g. HTTP/2 proxy on Railway), the Nest job keeps running and updates
+ * `lastEvent` — poll until we see `complete` / `error`, the user aborts, or we time out.
+ */
+async function pollHistoricalFetchProgressUntilDone(
+  runId: string,
+  token: string,
+  applyEvent: (ev: Record<string, unknown>) => void,
+  isTerminal: () => boolean,
+  signal: AbortSignal,
+): Promise<'terminal' | 'aborted' | 'timeout' | 'not_found'> {
+  const maxMs = 20 * 60 * 1000;
+  const intervalMs = 2500;
+  const maxNotFoundMs = 120_000;
+  let notFoundSince: number | null = null;
+  const t0 = Date.now();
+  let pollTick = 0;
+
+  debugHistoricalFetch('poll_loop_start', {
+    runId: `${runId.slice(0, 8)}…`,
+    maxMinutes: maxMs / 60_000,
+    intervalSec: intervalMs / 1000,
+  });
+
+  while (!signal.aborted && Date.now() - t0 < maxMs) {
+    pollTick += 1;
+    try {
+      const body = await apiGetHistoricalFetchProgress(runId, token, signal);
+      if (!body.found) {
+        if (notFoundSince == null) notFoundSince = Date.now();
+        else if (Date.now() - notFoundSince > maxNotFoundMs) {
+          debugHistoricalFetch('poll_not_found_timeout', {
+            runId: `${runId.slice(0, 8)}…`,
+            polls: pollTick,
+            elapsedSec: Math.round((Date.now() - t0) / 1000),
+          });
+          return 'not_found';
+        }
+        debugHistoricalFetch('poll_progress_not_in_store_yet', {
+          tick: pollTick,
+          elapsedSec: Math.round((Date.now() - t0) / 1000),
+        });
+        await new Promise((r) => setTimeout(r, intervalMs));
+        continue;
+      }
+      notFoundSince = null;
+      const lastPhase =
+        body.lastEvent && typeof body.lastEvent.phase === 'string'
+          ? body.lastEvent.phase
+          : body.lastEvent
+            ? '(no phase)'
+            : null;
+      debugHistoricalFetch('poll_tick', {
+        tick: pollTick,
+        found: true,
+        lastEventPhase: lastPhase,
+        terminal: isTerminal(),
+        elapsedSec: Math.round((Date.now() - t0) / 1000),
+      });
+      if (body.lastEvent) applyEvent(body.lastEvent);
+      if (isTerminal()) {
+        debugHistoricalFetch('poll_terminal_reached', {
+          tick: pollTick,
+          elapsedSec: Math.round((Date.now() - t0) / 1000),
+        });
+        return 'terminal';
+      }
+    } catch (e) {
+      if (isAbortError(e)) {
+        debugHistoricalFetch('poll_aborted', { tick: pollTick });
+        return 'aborted';
+      }
+      debugHistoricalFetch('poll_request_retry', {
+        tick: pollTick,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      // Transient network / 5xx — keep polling until timeout.
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  if (signal.aborted) {
+    debugHistoricalFetch('poll_loop_end_aborted', { tick: pollTick, elapsedSec: Math.round((Date.now() - t0) / 1000) });
+    return 'aborted';
+  }
+  debugHistoricalFetch('poll_loop_timeout', { tick: pollTick, elapsedSec: Math.round((Date.now() - t0) / 1000) });
+  return 'timeout';
+}
+
 /** CEO Live Mails: last sync + countdown + manual sync (always between toggle and KPIs). */
 function CeoLiveSyncStrip({
   mailboxes,
@@ -1472,6 +1576,165 @@ function MyEmailPageInner() {
     ): Promise<void> => {
       const { employeeId, mailboxEmail, startIso, endIso, mailboxIndex, mailboxTotal } = opts;
       let sseError: string | null = null;
+      const terminal = { current: false };
+
+      const throwHistoricalInterrupted = (logDetail: string) => {
+        const friendly =
+          'The live analysis connection was interrupted. Saved batches are kept; refresh the page or press Sync now to continue/verify this same window.';
+        setHistoricalBackfillUi((u) =>
+          u
+            ? {
+                ...u,
+                phase: 'error',
+                connectionInterrupted: true,
+                connectionInterruptedAtMs: Date.now(),
+                error: friendly,
+              }
+            : u,
+        );
+        const err = new Error(friendly);
+        err.name = 'HistoricalStreamInterrupted';
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('Historical stream interrupted', logDetail);
+        }
+        throw err;
+      };
+
+      const applyHistoricalEvent = (ev: Record<string, unknown>) => {
+        const phase = String(ev.phase ?? '');
+        if (phase === 'error') {
+          sseError = String(ev.message ?? 'Inbox analysis failed.');
+          terminal.current = true;
+          setHistoricalBackfillUi((u) =>
+            u ? { ...u, phase: 'error', error: sseError ?? u.error } : u,
+          );
+          return;
+        }
+        if (phase === 'listed') {
+          const total = Number(ev.totalIds ?? 0);
+          setHistoricalBackfillUi((u) =>
+            u
+              ? {
+                  ...u,
+                  phase: 'listed',
+                  totalIds: total,
+                  messageTotal: total,
+                  messageIndex: 0,
+                  runningTracked: 0,
+                  runningSkippedAi: 0,
+                  runningAlreadySynced: 0,
+                  runningOutsideRange: 0,
+                  runningCcOnly: 0,
+                }
+              : u,
+          );
+          return;
+        }
+        if (phase === 'message') {
+          setHistoricalBackfillUi((u) =>
+            u
+              ? {
+                  ...u,
+                  phase: 'message',
+                  messageIndex: Number(ev.index ?? 0),
+                  messageTotal: Number(ev.total ?? u.messageTotal),
+                  lastSubject: String(ev.subject ?? u.lastSubject ?? ''),
+                  lastFrom: String(ev.from ?? u.lastFrom ?? ''),
+                  lastSentAtIso:
+                    ev.sent_at_iso === null || ev.sent_at_iso === undefined
+                      ? u.lastSentAtIso
+                      : String(ev.sent_at_iso),
+                }
+              : u,
+          );
+          return;
+        }
+        if (phase === 'ai_decision') {
+          const relevant = Boolean(ev.relevant);
+          const reasonRaw =
+            ev.reason === null || ev.reason === undefined ? '' : String(ev.reason).trim();
+          const ccOnly = ev.user_cc_only === true;
+          setHistoricalBackfillUi((u) => {
+            if (!u) return u;
+            const tracked = u.runningTracked ?? 0;
+            const skipAi = u.runningSkippedAi ?? 0;
+            const already = u.runningAlreadySynced ?? 0;
+            const outside = u.runningOutsideRange ?? 0;
+            const cc = u.runningCcOnly ?? 0;
+            let nt = tracked;
+            let ns = skipAi;
+            let na = already;
+            let no = outside;
+            let nc = cc;
+            if (relevant) {
+              nt += 1;
+              if (ccOnly) nc += 1;
+            } else if (reasonRaw === 'Already synced' || reasonRaw.includes('Already synced')) {
+              na += 1;
+            } else if (
+              reasonRaw === 'Outside selected date range' ||
+              reasonRaw.includes('Outside selected')
+            ) {
+              no += 1;
+            } else {
+              ns += 1;
+            }
+            return {
+              ...u,
+              phase: 'ai_decision',
+              messageIndex: Number(ev.index ?? 0),
+              messageTotal: Number(ev.total ?? u.messageTotal),
+              lastSubject: String(ev.subject ?? ''),
+              lastFrom: String(ev.from ?? ''),
+              lastSentAtIso:
+                ev.sent_at_iso === null || ev.sent_at_iso === undefined
+                  ? u.lastSentAtIso
+                  : String(ev.sent_at_iso),
+              lastRelevant: relevant,
+              lastReason: reasonRaw.length > 0 ? reasonRaw : null,
+              runningTracked: nt,
+              runningSkippedAi: ns,
+              runningAlreadySynced: na,
+              runningOutsideRange: no,
+              runningCcOnly: nc,
+            };
+          });
+          return;
+        }
+        if (phase === 'saving') {
+          setHistoricalBackfillUi((u) =>
+            u ? { ...u, phase: 'saving', savingCount: Number(ev.messageCount ?? 0) } : u,
+          );
+          return;
+        }
+        if (phase === 'recomputing') {
+          setHistoricalBackfillUi((u) =>
+            u
+              ? { ...u, phase: 'recomputing', recomputingThreads: Number(ev.threadCount ?? 0) }
+              : u,
+          );
+          return;
+        }
+        if (phase === 'complete') {
+          const r = ev.result as Record<string, unknown> | undefined;
+          terminal.current = true;
+          setHistoricalBackfillUi((u) =>
+            u
+              ? {
+                  ...u,
+                  phase: 'complete',
+                  complete: {
+                    fetched: Number(r?.fetched_from_gmail ?? 0),
+                    stored: Number(r?.stored_relevant ?? 0),
+                    skipped: Number(r?.skipped_irrelevant ?? 0),
+                    conversationsCreated: Number(r?.conversations_created ?? 0),
+                  },
+                }
+              : u,
+          );
+        }
+      };
+
       setHistoricalBackfillUi({
         employeeId,
         mailboxEmail,
@@ -1498,183 +1761,106 @@ function MyEmailPageInner() {
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       historicalBackfillAbortRef.current = ac;
       historicalBackfillRunRef.current = { runId, employeeId };
+      debugHistoricalFetch('sse_start', {
+        runId: `${runId.slice(0, 8)}…`,
+        employeeId: `${employeeId.slice(0, 8)}…`,
+        mailboxEmail,
+      });
       try {
-        await apiPostSse(
-          '/self-tracking/historical-fetch-stream',
-          t,
-          { start: startIso, end: endIso, employee_id: employeeId, client_run_id: runId },
-          (ev) => {
-          const phase = String(ev.phase ?? '');
-          if (phase === 'error') {
-            sseError = String(ev.message ?? 'Inbox analysis failed.');
-            setHistoricalBackfillUi((u) =>
-              u ? { ...u, phase: 'error', error: sseError ?? u.error } : u,
-            );
-            return;
-          }
-          if (phase === 'listed') {
-            const total = Number(ev.totalIds ?? 0);
-            setHistoricalBackfillUi((u) =>
-              u
-                ? {
-                    ...u,
-                    phase: 'listed',
-                    totalIds: total,
-                    messageTotal: total,
-                    messageIndex: 0,
-                    runningTracked: 0,
-                    runningSkippedAi: 0,
-                    runningAlreadySynced: 0,
-                    runningOutsideRange: 0,
-                    runningCcOnly: 0,
-                  }
-                : u,
-            );
-            return;
-          }
-          if (phase === 'message') {
-            setHistoricalBackfillUi((u) =>
-              u
-                ? {
-                    ...u,
-                    phase: 'message',
-                    messageIndex: Number(ev.index ?? 0),
-                    messageTotal: Number(ev.total ?? u.messageTotal),
-                    lastSubject: String(ev.subject ?? u.lastSubject ?? ''),
-                    lastFrom: String(ev.from ?? u.lastFrom ?? ''),
-                    lastSentAtIso:
-                      ev.sent_at_iso === null || ev.sent_at_iso === undefined
-                        ? u.lastSentAtIso
-                        : String(ev.sent_at_iso),
-                  }
-                : u,
-            );
-            return;
-          }
-          if (phase === 'ai_decision') {
-            const relevant = Boolean(ev.relevant);
-            const reasonRaw =
-              ev.reason === null || ev.reason === undefined ? '' : String(ev.reason).trim();
-            const ccOnly = ev.user_cc_only === true;
-            setHistoricalBackfillUi((u) => {
-              if (!u) return u;
-              const tracked = u.runningTracked ?? 0;
-              const skipAi = u.runningSkippedAi ?? 0;
-              const already = u.runningAlreadySynced ?? 0;
-              const outside = u.runningOutsideRange ?? 0;
-              const cc = u.runningCcOnly ?? 0;
-              let nt = tracked;
-              let ns = skipAi;
-              let na = already;
-              let no = outside;
-              let nc = cc;
-              if (relevant) {
-                nt += 1;
-                if (ccOnly) nc += 1;
-              } else if (reasonRaw === 'Already synced' || reasonRaw.includes('Already synced')) {
-                na += 1;
-              } else if (
-                reasonRaw === 'Outside selected date range' ||
-                reasonRaw.includes('Outside selected')
-              ) {
-                no += 1;
-              } else {
-                ns += 1;
-              }
-              return {
-                ...u,
-                phase: 'ai_decision',
-                messageIndex: Number(ev.index ?? 0),
-                messageTotal: Number(ev.total ?? u.messageTotal),
-                lastSubject: String(ev.subject ?? ''),
-                lastFrom: String(ev.from ?? ''),
-                lastSentAtIso:
-                  ev.sent_at_iso === null || ev.sent_at_iso === undefined
-                    ? u.lastSentAtIso
-                    : String(ev.sent_at_iso),
-                lastRelevant: relevant,
-                lastReason: reasonRaw.length > 0 ? reasonRaw : null,
-                runningTracked: nt,
-                runningSkippedAi: ns,
-                runningAlreadySynced: na,
-                runningOutsideRange: no,
-                runningCcOnly: nc,
-              };
-            });
-            return;
-          }
-          if (phase === 'saving') {
-            setHistoricalBackfillUi((u) =>
-              u ? { ...u, phase: 'saving', savingCount: Number(ev.messageCount ?? 0) } : u,
-            );
-            return;
-          }
-          if (phase === 'recomputing') {
-            setHistoricalBackfillUi((u) =>
-              u
-                ? { ...u, phase: 'recomputing', recomputingThreads: Number(ev.threadCount ?? 0) }
-                : u,
-            );
-            return;
-          }
-          if (phase === 'complete') {
-            const r = ev.result as Record<string, unknown> | undefined;
-            setHistoricalBackfillUi((u) =>
-              u
-                ? {
-                    ...u,
-                    phase: 'complete',
-                    complete: {
-                      fetched: Number(r?.fetched_from_gmail ?? 0),
-                      stored: Number(r?.stored_relevant ?? 0),
-                      skipped: Number(r?.skipped_irrelevant ?? 0),
-                      conversationsCreated: Number(r?.conversations_created ?? 0),
-                    },
-                  }
-                : u,
-            );
-          }
-          },
-          ac.signal,
-        );
-      } catch (e) {
-        if (isAbortError(e)) {
-          setHistoricalBackfillUi((u) =>
-            u
-              ? {
-                  ...u,
-                  phase: 'error',
-                  stoppedByUser: true,
-                  error:
-                    'You stopped this run. Mail already analyzed stays saved — use Sync now to continue or refresh counts.',
-                }
-              : u,
+        let sseDropped = false;
+        try {
+          await apiPostSse(
+            '/self-tracking/historical-fetch-stream',
+            t,
+            { start: startIso, end: endIso, employee_id: employeeId, client_run_id: runId },
+            applyHistoricalEvent,
+            ac.signal,
           );
-          throw e;
+        } catch (e) {
+          if (isAbortError(e)) {
+            debugHistoricalFetch('sse_user_abort');
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    phase: 'error',
+                    stoppedByUser: true,
+                    error:
+                      'You stopped this run. Mail already analyzed stays saved — use Sync now to continue or refresh counts.',
+                  }
+                : u,
+            );
+            throw e;
+          }
+          sseDropped = true;
+          debugHistoricalFetch('sse_error_switching_to_poll', {
+            error: e instanceof Error ? e.message : String(e),
+            terminalBeforePoll: terminal.current,
+          });
         }
-        const message =
-          e instanceof Error
-            ? e.message
-            : 'The live analysis connection dropped before the server sent completion.';
-        const friendly =
-          'The live analysis connection was interrupted. Saved batches are kept; refresh the page or press Sync now to continue/verify this same window.';
-        setHistoricalBackfillUi((u) =>
-          u
-            ? {
-                ...u,
-                phase: 'error',
-                connectionInterrupted: true,
-                connectionInterruptedAtMs: Date.now(),
-                error: friendly,
-              }
-            : u,
-        );
-        const err = new Error(friendly);
-        err.name = 'HistoricalStreamInterrupted';
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn('Historical stream interrupted', message);
+
+        const streamIncomplete = !terminal.current && !ac.signal.aborted;
+        debugHistoricalFetch('sse_post_status', {
+          sseDropped,
+          streamIncomplete,
+          terminal: terminal.current,
+          aborted: ac.signal.aborted,
+        });
+        if ((sseDropped || streamIncomplete) && !ac.signal.aborted) {
+          debugHistoricalFetch('entering_poll_fallback');
+          setHistoricalBackfillUi((u) => (u ? { ...u, phase: 'polling' } : u));
+          const pollOutcome = await pollHistoricalFetchProgressUntilDone(
+            runId,
+            t,
+            applyHistoricalEvent,
+            () => terminal.current,
+            ac.signal,
+          );
+          debugHistoricalFetch('poll_finished', { outcome: pollOutcome, terminal: terminal.current });
+          if (pollOutcome === 'aborted') {
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    phase: 'error',
+                    stoppedByUser: true,
+                    error:
+                      'You stopped this run. Mail already analyzed stays saved — use Sync now to continue or refresh counts.',
+                  }
+                : u,
+            );
+            const aborted = new Error('Aborted');
+            aborted.name = 'AbortError';
+            throw aborted;
+          }
+          if (pollOutcome !== 'terminal') {
+            throwHistoricalInterrupted(
+              pollOutcome === 'not_found'
+                ? 'no_progress_record'
+                : 'poll_timeout',
+            );
+          }
         }
-        throw err;
+        if (!terminal.current) {
+          if (ac.signal.aborted) {
+            setHistoricalBackfillUi((u) =>
+              u
+                ? {
+                    ...u,
+                    phase: 'error',
+                    stoppedByUser: true,
+                    error:
+                      'You stopped this run. Mail already analyzed stays saved — use Sync now to continue or refresh counts.',
+                  }
+                : u,
+            );
+            const abortedEdge = new Error('Aborted');
+            abortedEdge.name = 'AbortError';
+            throw abortedEdge;
+          }
+          throwHistoricalInterrupted('stream_ended_before_terminal');
+        }
+        debugHistoricalFetch('run_finished_ok', { terminal: terminal.current, sseError: sseError != null });
       } finally {
         if (historicalBackfillAbortRef.current === ac) {
           historicalBackfillAbortRef.current = null;
@@ -1684,6 +1870,7 @@ function MyEmailPageInner() {
         }
       }
       if (sseError) {
+        debugHistoricalFetch('throwing_server_error_phase', { message: sseError });
         throw new Error(sseError);
       }
     },
