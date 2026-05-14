@@ -834,6 +834,22 @@ function skipKindShortLabel(kind: string): string {
   return kind;
 }
 
+/** True when the server stored a Gemini 429 / monthly quota / spend-cap style skip (not normal low-confidence). */
+function skipReasonIsGeminiQuotaExhausted(reason: string | null | undefined): boolean {
+  const r = (reason ?? '').toLowerCase();
+  if (!r) return false;
+  if (!r.includes('gemini') && !r.includes('quota') && !r.includes('spend')) return false;
+  return (
+    r.includes('monthly quota') ||
+    r.includes('spend cap') ||
+    r.includes('spending cap') ||
+    r.includes('quota or spend') ||
+    r.includes('resource_exhausted') ||
+    r.includes('429') ||
+    r.includes('billing is restored')
+  );
+}
+
 function skipReasonBadgeLabel(row: AiSkippedMailItem): string {
   const code = row.skip_reason_code ?? '';
   const labels: Record<string, string> = {
@@ -900,6 +916,7 @@ function SkippedMailsTabTable({
   onClearSkip,
   aiSkippedClearingId,
   unfilteredPageCount,
+  geminiQuotaExhaustedOnLoadedPage,
   selectedIds,
   onToggleSelect,
   onSelectAllVisible,
@@ -910,6 +927,8 @@ function SkippedMailsTabTable({
   rows: AiSkippedMailItem[];
   /** Rows on this API page before client search filter (for empty-state copy). */
   unfilteredPageCount: number;
+  /** At least one loaded skip row mentions Gemini monthly quota / spend cap (Google AI billing, not Supabase). */
+  geminiQuotaExhaustedOnLoadedPage: boolean;
   aiSkippedMailboxId: string;
   onMailboxChange: (id: string) => void;
   onRefresh: () => void;
@@ -930,6 +949,8 @@ function SkippedMailsTabTable({
     rows.length > 0 && rows.every((r) => selectedIds.has(r.provider_message_id));
   const someVisibleSelected = rows.some((r) => selectedIds.has(r.provider_message_id));
   const selectedOnPageCount = rows.filter((r) => selectedIds.has(r.provider_message_id)).length;
+  const geminiQuotaBanner =
+    geminiQuotaExhaustedOnLoadedPage || rows.some((r) => skipReasonIsGeminiQuotaExhausted(r.skip_reason));
 
   useEffect(() => {
     const el = selectAllRef.current;
@@ -978,6 +999,27 @@ function SkippedMailsTabTable({
       <p className="rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
         These conversations could not be confidently categorized by AI.
       </p>
+      {geminiQuotaBanner ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <p className="font-semibold">Inbox AI is paused by Google Gemini limits (not Supabase)</p>
+          <p className="mt-2 leading-relaxed">
+            Several skips mention <strong>Gemini monthly quota or spend cap</strong>. Upgrading <strong>Supabase</strong>{' '}
+            does not change that — the API key on your <strong>Railway</strong> backend (
+            <code className="rounded bg-amber-100/80 px-1">GEMINI_API_KEY</code>) talks to{' '}
+            <strong>Google</strong>. Raise the limit or enable billing in{' '}
+            <a
+              href="https://aistudio.google.com/apikey"
+              className="font-medium text-amber-900 underline decoration-amber-700/60 underline-offset-2 hover:text-amber-950"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Google AI Studio
+            </a>{' '}
+            / Google Cloud for that project, then use <strong>Reanalyze</strong> or run sync again. Optional: CEO can
+            confirm <strong>import without Inbox AI</strong> in settings to store mail without Gemini classification.
+          </p>
+        </div>
+      ) : null}
       {rows.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -3406,6 +3448,11 @@ function MyEmailPageInner() {
     });
   }, [aiSkippedRows, threadSearch]);
 
+  const skippedLoadedPageHasGeminiQuota = useMemo(
+    () => aiSkippedRows.some((r) => skipReasonIsGeminiQuotaExhausted(r.skip_reason)),
+    [aiSkippedRows],
+  );
+
   const toggleSelectAllSkippedFiltered = useCallback(() => {
     const ids = searchFilteredSkippedRows.map((r) => r.provider_message_id);
     setSkippedSelectedIds((prev) => {
@@ -4944,6 +4991,7 @@ function MyEmailPageInner() {
                     mailboxes={skippedMailboxCandidates}
                     rows={searchFilteredSkippedRows}
                     unfilteredPageCount={aiSkippedRows.length}
+                    geminiQuotaExhaustedOnLoadedPage={skippedLoadedPageHasGeminiQuota}
                     aiSkippedMailboxId={aiSkippedMailboxId}
                     onMailboxChange={setAiSkippedMailboxId}
                     onRefresh={() => void loadAiSkippedMails()}
