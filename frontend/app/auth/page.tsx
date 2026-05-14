@@ -57,6 +57,10 @@ function isTransientSupabaseAuthFailure(err: Pick<AuthError, 'status' | 'message
     m.includes('gateway timeout') ||
     m.includes('bad gateway') ||
     m.includes('service unavailable') ||
+    m.includes('authretryablefetcherror') ||
+    m.includes('timed out') ||
+    m.includes('timeout') ||
+    m.includes('aborted') ||
     /\b50[234]\b/.test(m)
   );
 }
@@ -467,17 +471,20 @@ function AuthPageInner() {
         return;
       }
       let signErr: AuthError | null = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const { error } = await supabase.auth.signInWithPassword({
+      let session: Session | null = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const { data, error } = await supabase.auth.signInWithPassword({
           email: trimmedEmail,
           password,
         });
         if (!error) {
           signErr = null;
+          session = data.session ?? null;
           break;
         }
         signErr = error;
-        if (!isTransientSupabaseAuthFailure(error) || attempt === 3) break;
+        if (!isTransientSupabaseAuthFailure(error) || attempt === 2) break;
+        setInfo('Supabase sign-in timed out. Retrying once…');
         await new Promise<void>((r) => {
           window.setTimeout(r, 700 * attempt);
         });
@@ -490,9 +497,6 @@ function AuthPageInner() {
         );
         return;
       }
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
       if (!session) {
         setInfo('Could not start session. Try again.');
         return;
