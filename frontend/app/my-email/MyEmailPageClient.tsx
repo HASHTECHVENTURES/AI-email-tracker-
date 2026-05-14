@@ -1510,7 +1510,7 @@ function CeoLiveSyncStrip({
                 (that tab is follow-ups only). Use <strong className="font-medium text-slate-700">All threads</strong>{' '}
                 for any tracked thread, and <strong className="font-medium text-slate-700">AI skipped</strong> if Inbox
                 AI did not store the message. While you keep this page open, your thread list also{' '}
-                <strong className="font-medium text-slate-700">refreshes automatically</strong> about every 40 seconds
+                <strong className="font-medium text-slate-700">refreshes automatically</strong> about every 25 seconds
                 so new mail from the server can appear without pressing Sync.
               </p>
             </div>
@@ -1658,6 +1658,12 @@ function MyEmailPageInner() {
   const [liveTrackDate, setLiveTrackDate] = useState('');
   const [liveTrackTime, setLiveTrackTime] = useState('');
   const liveTrackSourceRef = useRef<string>('');
+  /** Latest values for background poll / focus refresh — avoids resetting intervals when `ownMailboxes` identity changes every fetch. */
+  const ownMailboxesRef = useRef<Mailbox[]>([]);
+  const tokenRef = useRef<string | null>(null);
+  const syncEmployeeIdsParamRef = useRef<string>('');
+  const loadDashboardRef = useRef<(t: string, syncEmployeeIds?: string) => Promise<void>>(async () => {});
+  const loadLiveIngestScheduleRef = useRef<() => Promise<void>>(async () => {});
   /** User dismissed the tracking-start dialog — don’t auto-reopen for that mailbox until they reconnect. */
   const trackingOnboardingDismissedRef = useRef<Set<string>>(new Set());
   const [operationStartingId, setOperationStartingId] = useState<string | null>(null);
@@ -2939,6 +2945,8 @@ function MyEmailPageInner() {
     return mailboxes.filter((mb) => mb.email.trim().toLowerCase() === ceoEmailNorm);
   }, [mailboxes, ceoEmailNorm, me?.linked_employee_id, me?.role]);
 
+  ownMailboxesRef.current = ownMailboxes;
+
   useEffect(() => {
     if (pickLatestMailboxSyncIso(ownMailboxes)) {
       setLiveSyncAwaitingTimestamp(null);
@@ -3597,6 +3605,11 @@ function MyEmailPageInner() {
     return [...scopeMailboxIds].sort().join(',');
   }, [filterMailbox, scopeMailboxIds]);
 
+  tokenRef.current = token;
+  syncEmployeeIdsParamRef.current = syncEmployeeIdsParam;
+  loadDashboardRef.current = loadDashboard;
+  loadLiveIngestScheduleRef.current = loadLiveIngestSchedule;
+
   const runLiveIngestionNow = useCallback(async () => {
     if (!token) return;
     if (!canRunMyMailboxSync) return;
@@ -3898,10 +3911,15 @@ function MyEmailPageInner() {
     return () => clearTimeout(id);
   }, [token, me, filterMailbox, loadDashboard, syncEmployeeIdsParam, myEmailTab]);
 
+  const historicalBlockingDashboardPoll = Boolean(
+    historicalBackfillUi &&
+      historicalBackfillUi.phase !== 'complete' &&
+      historicalBackfillUi.phase !== 'error',
+  );
+
   /**
-   * Background refresh so “live” mail appears without manual Sync / refresh. Server cron (~2m) can
-   * ingest new threads while this page is open; we previously only refetched on tab/filter change
-   * or during historical sync, which made live tracking look broken after the May 1 backfill.
+   * Background refresh — stable deps so `ownMailboxes` refetch does not reset the timer every poll.
+   * Slightly faster than server cron so new threads usually appear within one client cycle.
    */
   useEffect(() => {
     if (!token || !showFullInboxChrome || !me) return;
@@ -3912,22 +3930,20 @@ function MyEmailPageInner() {
     ) {
       return;
     }
-    if (!ownMailboxes.some((m) => isMailboxGmailConnected(m))) return;
+    if (historicalBlockingDashboardPoll) return;
     if (pipeline?.running) return;
-    if (
-      historicalBackfillUi &&
-      historicalBackfillUi.phase !== 'complete' &&
-      historicalBackfillUi.phase !== 'error'
-    ) {
-      return;
-    }
-    const POLL_MS = 40_000;
+
+    const POLL_MS = 25_000;
     const tick = () => {
       if (typeof document !== 'undefined' && document.hidden) return;
-      void loadDashboard(token, syncEmployeeIdsParam || undefined);
-      void loadLiveIngestSchedule();
+      const t = tokenRef.current;
+      if (!t) return;
+      if (!ownMailboxesRef.current.some((m) => isMailboxGmailConnected(m))) return;
+      const p = syncEmployeeIdsParamRef.current;
+      void loadDashboardRef.current(t, p || undefined);
+      void loadLiveIngestScheduleRef.current();
     };
-    const first = window.setTimeout(tick, 12_000);
+    const first = window.setTimeout(tick, 8000);
     const id = window.setInterval(tick, POLL_MS);
     return () => {
       clearTimeout(first);
@@ -3935,15 +3951,39 @@ function MyEmailPageInner() {
     };
   }, [
     token,
-    me,
     showFullInboxChrome,
-    ownMailboxes,
+    me?.id,
+    me?.role,
     pipeline?.running,
-    historicalBackfillUi,
-    loadDashboard,
-    loadLiveIngestSchedule,
-    syncEmployeeIdsParam,
+    historicalBlockingDashboardPoll,
   ]);
+
+  /** When returning from Gmail / another tab, pull fresh threads immediately (no wait for interval). */
+  useEffect(() => {
+    if (!token || !showFullInboxChrome || !me) return;
+    if (
+      me.role !== 'CEO' &&
+      !isDepartmentManagerRole(me.role) &&
+      me.role !== 'EMPLOYEE'
+    ) {
+      return;
+    }
+    const onVisible = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      const t = tokenRef.current;
+      if (!t) return;
+      if (!ownMailboxesRef.current.some((m) => isMailboxGmailConnected(m))) return;
+      const p = syncEmployeeIdsParamRef.current;
+      void loadDashboardRef.current(t, p || undefined);
+      void loadLiveIngestScheduleRef.current();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [token, showFullInboxChrome, me?.id, me?.role]);
 
   /** While the historical window pull writes threads, refresh dashboard so stat cards and tab counts catch up. */
   useEffect(() => {
