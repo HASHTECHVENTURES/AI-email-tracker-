@@ -1509,7 +1509,9 @@ function CeoLiveSyncStrip({
                 every message becomes a row on <strong className="font-medium text-slate-700">Need your reply</strong>{' '}
                 (that tab is follow-ups only). Use <strong className="font-medium text-slate-700">All threads</strong>{' '}
                 for any tracked thread, and <strong className="font-medium text-slate-700">AI skipped</strong> if Inbox
-                AI did not store the message.
+                AI did not store the message. While you keep this page open, your thread list also{' '}
+                <strong className="font-medium text-slate-700">refreshes automatically</strong> about every 40 seconds
+                so new mail from the server can appear without pressing Sync.
               </p>
             </div>
           ) : null}
@@ -3895,6 +3897,53 @@ function MyEmailPageInner() {
     }, 180);
     return () => clearTimeout(id);
   }, [token, me, filterMailbox, loadDashboard, syncEmployeeIdsParam, myEmailTab]);
+
+  /**
+   * Background refresh so “live” mail appears without manual Sync / refresh. Server cron (~2m) can
+   * ingest new threads while this page is open; we previously only refetched on tab/filter change
+   * or during historical sync, which made live tracking look broken after the May 1 backfill.
+   */
+  useEffect(() => {
+    if (!token || !showFullInboxChrome || !me) return;
+    if (
+      me.role !== 'CEO' &&
+      !isDepartmentManagerRole(me.role) &&
+      me.role !== 'EMPLOYEE'
+    ) {
+      return;
+    }
+    if (!ownMailboxes.some((m) => isMailboxGmailConnected(m))) return;
+    if (pipeline?.running) return;
+    if (
+      historicalBackfillUi &&
+      historicalBackfillUi.phase !== 'complete' &&
+      historicalBackfillUi.phase !== 'error'
+    ) {
+      return;
+    }
+    const POLL_MS = 40_000;
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void loadDashboard(token, syncEmployeeIdsParam || undefined);
+      void loadLiveIngestSchedule();
+    };
+    const first = window.setTimeout(tick, 12_000);
+    const id = window.setInterval(tick, POLL_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(id);
+    };
+  }, [
+    token,
+    me,
+    showFullInboxChrome,
+    ownMailboxes,
+    pipeline?.running,
+    historicalBackfillUi,
+    loadDashboard,
+    loadLiveIngestSchedule,
+    syncEmployeeIdsParam,
+  ]);
 
   /** While the historical window pull writes threads, refresh dashboard so stat cards and tab counts catch up. */
   useEffect(() => {
