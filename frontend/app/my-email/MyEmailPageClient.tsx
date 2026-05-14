@@ -1236,6 +1236,58 @@ function formatLiveSyncAbsolute(iso: string): string {
   return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+type IngestionRunResultRow = {
+  employeeId: string;
+  employeeName?: string;
+  newMessages?: number;
+  skippedFiltered?: number;
+  error?: string;
+};
+
+/**
+ * When tracking start matches what is already saved and Gmail has synced at least once, skip the
+ * heavy historical SSE re-walk — incremental `/email-ingestion/run` is enough for new mail.
+ */
+function mailboxReadyForQuickLiveSync(mb: Mailbox, trackingIso: string): boolean {
+  const saved = mb.tracking_start_at?.trim();
+  if (!saved) return false;
+  const a = Date.parse(saved);
+  const b = Date.parse(trackingIso);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  if (Math.abs(a - b) > 120_000) return false;
+  const last = mb.last_gmail_sync_at ?? mb.last_synced_at;
+  if (!last?.trim()) return false;
+  return Number.isFinite(Date.parse(last));
+}
+
+/** Summarize /email-ingestion/run for the mailboxes the user just synced (CEO may trigger a company-wide run). */
+function summarizeIngestionForMailboxes(
+  results: IngestionRunResultRow[] | undefined,
+  mailboxIds: Set<string>,
+): string | null {
+  if (!results?.length) return null;
+  let newMessages = 0;
+  let skippedFiltered = 0;
+  const errors: string[] = [];
+  for (const r of results) {
+    if (!mailboxIds.has(r.employeeId)) continue;
+    newMessages += Number(r.newMessages ?? 0);
+    skippedFiltered += Number(r.skippedFiltered ?? 0);
+    const err = typeof r.error === 'string' ? r.error.trim() : '';
+    if (err) errors.push(err);
+  }
+  if (errors.length > 0) {
+    return errors[0]!.length > 320 ? `${errors[0]!.slice(0, 317)}…` : errors[0]!;
+  }
+  if (newMessages === 0 && skippedFiltered === 0) {
+    return 'Gmail was checked — no new messages were stored for your inbox this run (already synced or none in the crawl window).';
+  }
+  if (newMessages === 0 && skippedFiltered > 0) {
+    return `Gmail was checked — 0 new messages stored, ${skippedFiltered} skipped (Inbox AI, date window, or duplicates). Open All threads or AI skipped to find mail.`;
+  }
+  return `Saved ${newMessages} new message(s) this run.${skippedFiltered > 0 ? ` ${skippedFiltered} skipped — check AI skipped if you expected more.` : ''}`;
+}
+
 /** Next crawl time from ISO (UTC from API), shown in the user’s local timezone. */
 function formatNextCrawlLocal(iso: string): string {
   const d = new Date(iso);
@@ -1450,6 +1502,17 @@ function CeoLiveSyncStrip({
             </p>
             {latestIso ? <p className="mt-0.5 text-xs text-slate-500">{formatLiveSyncAbsolute(latestIso)}</p> : null}
           </div>
+          {latestIso ? (
+            <div className="sm:col-span-2">
+              <p className="rounded-lg bg-slate-50/90 px-2.5 py-1.5 text-[10px] leading-snug text-slate-600">
+                <strong className="font-medium text-slate-700">Last synced</strong> means Gmail was checked — not
+                every message becomes a row on <strong className="font-medium text-slate-700">Need your reply</strong>{' '}
+                (that tab is follow-ups only). Use <strong className="font-medium text-slate-700">All threads</strong>{' '}
+                for any tracked thread, and <strong className="font-medium text-slate-700">AI skipped</strong> if Inbox
+                AI did not store the message.
+              </p>
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
@@ -1569,7 +1632,8 @@ function MyEmailPageInner() {
   const [allTabStatus, setAllTabStatus] = useState('');
   const [allTabPriority, setAllTabPriority] = useState('');
 
-  const [mailTab, setMailTab] = useState<MailTab>('action');
+  /** Default `all` so new mail is visible immediately; “Need your reply” filters to follow-ups only. */
+  const [mailTab, setMailTab] = useState<MailTab>('all');
   const [mailListPage, setMailListPage] = useState(1);
   const [threadSearch, setThreadSearch] = useState('');
 
@@ -3546,6 +3610,7 @@ function MyEmailPageInner() {
     }
     setLiveSyncBusy(true);
     setError(null);
+    const useQuickSyncOnly = targets.every((mb) => mailboxReadyForQuickLiveSync(mb, trackingIso));
     try {
       for (const mb of targets) {
         const patchRes = await apiFetch(
@@ -3566,36 +3631,40 @@ function MyEmailPageInner() {
         }
       }
       liveTrackSourceRef.current = `${targets[0].id}:${trackingIso}`;
-      const endIso = new Date().toISOString();
-      for (let i = 0; i < targets.length; i++) {
-        const mb = targets[i];
-        try {
-          await runTrackingHistoricalWindowToNow(token, {
-            employeeId: mb.id,
-            mailboxEmail: mb.email,
-            startIso: trackingIso,
-            endIso,
-            mailboxIndex: i + 1,
-            mailboxTotal: targets.length,
-            chainLiveIngestion: false,
-          });
-        } catch (e) {
-          if (isAbortError(e)) {
-            setSuccess('Inbox analysis stopped. Partial results are saved.');
+      if (!useQuickSyncOnly) {
+        const endIso = new Date().toISOString();
+        for (let i = 0; i < targets.length; i++) {
+          const mb = targets[i];
+          try {
+            await runTrackingHistoricalWindowToNow(token, {
+              employeeId: mb.id,
+              mailboxEmail: mb.email,
+              startIso: trackingIso,
+              endIso,
+              mailboxIndex: i + 1,
+              mailboxTotal: targets.length,
+              chainLiveIngestion: false,
+            });
+          } catch (e) {
+            if (isAbortError(e)) {
+              setSuccess('Inbox analysis stopped. Partial results are saved.');
+              return;
+            }
+            if (isHistoricalStreamInterrupted(e)) {
+              setSuccess(
+                'Analysis connection interrupted. Partial results are saved; refresh or press Sync now to continue.',
+              );
+              await loadDashboard(token, syncEmployeeIdsParam || undefined);
+              setHistoricalBackfillUi(null);
+              return;
+            }
+            setError(
+              e instanceof Error
+                ? e.message
+                : `Could not analyze the tracking window for ${mb.email}.`,
+            );
             return;
           }
-          if (isHistoricalStreamInterrupted(e)) {
-            setSuccess('Analysis connection interrupted. Partial results are saved; refresh or press Sync now to continue.');
-            await loadDashboard(token, syncEmployeeIdsParam || undefined);
-            setHistoricalBackfillUi(null);
-            return;
-          }
-          setError(
-            e instanceof Error
-              ? e.message
-              : `Could not analyze the tracking window for ${mb.email}.`,
-          );
-          return;
         }
       }
       const runReq = apiFetch('/email-ingestion/run', token);
@@ -3620,6 +3689,7 @@ function MyEmailPageInner() {
       const j = (await res.json().catch(() => ({}))) as {
         status?: string;
         message?: string;
+        results?: IngestionRunResultRow[];
       };
       if (!res.ok) {
         setError(j.message ?? 'Could not run sync.');
@@ -3633,10 +3703,20 @@ function MyEmailPageInner() {
         return;
       }
       setLiveSyncAwaitingTimestamp(Date.now());
+      const mailboxIdSet = new Set(targets.map((mb) => mb.id));
+      const resultHint = summarizeIngestionForMailboxes(j.results, mailboxIdSet);
       if (j.status === 'running') {
-        setSuccess('A sync is already running — wait a moment, then refresh.');
+        setSuccess(
+          resultHint
+            ? `A sync is already running — wait a moment, then refresh. (${resultHint})`
+            : 'A sync is already running — wait a moment, then refresh.',
+        );
       } else {
-        setSuccess('Sync finished. Updating your inbox…');
+        setSuccess(
+          resultHint
+            ? `Sync finished. ${resultHint} Updating your inbox…`
+            : 'Sync finished. Updating your inbox…',
+        );
       }
       await loadDashboard(token, syncEmployeeIdsParam || undefined);
       void loadLiveIngestSchedule();
