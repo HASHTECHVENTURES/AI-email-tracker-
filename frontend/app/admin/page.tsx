@@ -395,7 +395,7 @@ function CompanyDetailPanel({ detail, loading: detailLoading }: { detail: Compan
         </div>
         {ai.ai_quota_fallback_messages > 0 && (
           <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-800">
-            {ai.ai_quota_fallback_messages} stored message(s) carry a quota-related relevance note (typically from an earlier ingest mode). New inbound mail is not ingested while Gemini monthly quota or spend cap is exceeded.
+            {ai.ai_quota_fallback_messages} stored message(s) carry a quota-related relevance note (typically from an earlier ingest mode). New inbound mail is not ingested while Gemini API limits block classification, except safe direct human-mail fallback.
           </div>
         )}
       </div>

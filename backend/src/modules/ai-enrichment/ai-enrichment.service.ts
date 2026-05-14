@@ -88,7 +88,7 @@ export class AiEnrichmentService {
     const result = await this.callGemini(threadText);
     if (result === null) {
       this.logger.warn(
-        `AI enrichment skipped for ${conversationId} — Gemini monthly quota or spend cap exhausted (conversation row unchanged).`,
+        `AI enrichment skipped for ${conversationId} — Gemini API limit reached (conversation row unchanged).`,
       );
       return null;
     }
@@ -149,7 +149,7 @@ export class AiEnrichmentService {
         if (is429 && isMonthly) {
           this.monthlyQuotaExhausted = true;
           this.logger.error(
-            `Gemini monthly quota or spend cap exhausted — AI enrichment paused (no DB updates until quota resets). ${msg.slice(0, 200)}`,
+            `Gemini API limit reached — AI enrichment paused (no DB updates until the next cycle). ${msg.slice(0, 200)}`,
           );
           return null;
         }

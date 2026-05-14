@@ -118,9 +118,8 @@ export class EmailIngestionService {
   private readonly relevanceModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | null;
 
   /**
-   * Set to `true` when a Gemini 429 indicates monthly quota / spend cap exhaustion.
-   * Once set, inbound mail is not ingested (classification returns not relevant) until
-   * the next cycle resets the flag after billing is restored.
+   * Set to `true` when Gemini returns a limit/rate/quota error for this cycle.
+   * Once set, non-direct inbound mail is paused until the next cycle resets the flag.
    */
   private monthlyQuotaExhausted = false;
 
@@ -910,7 +909,7 @@ export class EmailIngestionService {
         if (is429 && isMonthly) {
           this.monthlyQuotaExhausted = true;
           this.logger.error(
-            `Gemini monthly quota or spend cap exhausted — inbound ingestion paused for this cycle. ${msg.slice(0, 200)}`,
+            `Gemini API limit reached — inbound ingestion paused for this cycle. ${msg.slice(0, 200)}`,
           );
           return null;
         }
@@ -984,8 +983,16 @@ export class EmailIngestionService {
           confidence: null,
         };
       }
+      if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+        return {
+          relevant: true,
+          reason:
+            'Safety fallback: direct human mailbox message kept while Inbox AI is temporarily unavailable.',
+          confidence: null,
+        };
+      }
       const reason = this.monthlyQuotaExhausted
-        ? 'Inbox AI unavailable: Gemini monthly quota or spend cap exceeded. Inbound ingestion is paused until billing is restored.'
+        ? 'Inbox AI unavailable: Gemini API quota or rate limit reached. Inbound ingestion paused for non-direct mail without writing skip rows.'
         : 'Inbox AI unavailable: classification failed after retries. Inbound ingestion is paused until Inbox AI responds again.';
       return { relevant: false, reason, confidence: null, inboundAiHardStop: true };
     }
@@ -994,6 +1001,14 @@ export class EmailIngestionService {
       return {
         relevant: true,
         reason: 'Unfiltered import — Inbox AI unavailable; CEO confirmed on My Email.',
+        confidence: null,
+      };
+    }
+    if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+      return {
+        relevant: true,
+        reason:
+          'Safety fallback: direct human mailbox message kept while Inbox AI is unavailable.',
         confidence: null,
       };
     }

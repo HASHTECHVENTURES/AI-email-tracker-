@@ -383,6 +383,13 @@ export class HistoricalFetchService {
         });
 
         if (!decision.relevant) {
+          if (decision.inboundAiHardStop) {
+            skippedIrrelevant++;
+            this.logger.warn(
+              `Historical fetch paused for ${employee.email}: ${decision.reason ?? 'Inbox AI unavailable'}`,
+            );
+            break;
+          }
           skippedIrrelevant++;
           const reasonText =
             decision.reason?.trim() || 'Marked not relevant by Inbox AI (historical search).';
@@ -545,7 +552,7 @@ export class HistoricalFetchService {
         if (is429 && isMonthly) {
           this.monthlyQuotaExhausted = true;
           this.logger.error(
-            `Gemini monthly quota or spend cap exhausted — historical relevance paused. ${msg.slice(0, 200)}`,
+            `Gemini API limit reached — historical relevance paused. ${msg.slice(0, 200)}`,
           );
           return null;
         }
@@ -582,7 +589,7 @@ export class HistoricalFetchService {
     hasNoiseGmailLabel: boolean,
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
-  ): Promise<{ relevant: boolean; reason: string | null }> {
+  ): Promise<{ relevant: boolean; reason: string | null; inboundAiHardStop?: boolean }> {
     if (target.direction === 'OUTBOUND') {
       return {
         relevant: true,
@@ -608,28 +615,52 @@ export class HistoricalFetchService {
         return parsed;
       }
       if (this.monthlyQuotaExhausted && !ingestWithoutAiConfirmed) {
+        if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+          return {
+            relevant: true,
+            reason:
+              'Safety fallback: direct human mailbox message kept while Inbox AI is temporarily unavailable.',
+          };
+        }
         return {
           relevant: false,
           reason:
-            'Inbox AI unavailable: Gemini monthly quota or spend cap exceeded. Historical messages are not imported until billing is restored.',
+            'Inbox AI unavailable: Gemini API quota or rate limit reached. Historical import paused without writing skip rows.',
+          inboundAiHardStop: true,
         };
       }
       if (ingestWithoutAiConfirmed) {
         return { relevant: true, reason: 'Unfiltered import — Inbox AI unavailable' };
       }
-      this.logger.warn(
-        'Historical relevance: no verdict from Gemini for this message — fail-open to relevant=true so the window is not silently emptied.',
-      );
+      if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+        return {
+          relevant: true,
+          reason:
+            'Safety fallback: direct human mailbox message kept while Inbox AI is temporarily unavailable.',
+        };
+      }
       return {
-        relevant: true,
+        relevant: false,
         reason:
-          'Inbox AI did not return a usable verdict; message kept so your backfill is not empty. Check Gemini logs and API key.',
+          'Inbox AI unavailable: Gemini did not return a usable verdict. Historical import paused without writing skip rows.',
+        inboundAiHardStop: true,
       };
     }
     if (ingestWithoutAiConfirmed) {
       return { relevant: true, reason: 'Unfiltered import — Inbox AI unavailable' };
     }
-    return { relevant: false, reason: null };
+    if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+      return {
+        relevant: true,
+        reason:
+          'Safety fallback: direct human mailbox message kept while Inbox AI is unavailable.',
+      };
+    }
+    return {
+      relevant: false,
+      reason: 'Inbox AI is required but not available for this mailbox.',
+      inboundAiHardStop: true,
+    };
   }
 
   private async storeMessages(companyId: string, employeeId: string, messages: EmailMessage[]): Promise<void> {

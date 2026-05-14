@@ -834,19 +834,20 @@ function skipKindShortLabel(kind: string): string {
   return kind;
 }
 
-/** True when the server stored a Gemini 429 / monthly quota / spend-cap style skip (not normal low-confidence). */
+/** True when the server stored a Gemini API limit/rate/quota style skip (not normal low-confidence). */
 function skipReasonIsGeminiQuotaExhausted(reason: string | null | undefined): boolean {
   const r = (reason ?? '').toLowerCase();
   if (!r) return false;
-  if (!r.includes('gemini') && !r.includes('quota') && !r.includes('spend')) return false;
+  if (!r.includes('gemini') && !r.includes('quota') && !r.includes('rate') && !r.includes('429')) return false;
   return (
     r.includes('monthly quota') ||
     r.includes('spend cap') ||
     r.includes('spending cap') ||
     r.includes('quota or spend') ||
+    r.includes('api quota') ||
+    r.includes('rate limit') ||
     r.includes('resource_exhausted') ||
-    r.includes('429') ||
-    r.includes('billing is restored')
+    r.includes('429')
   );
 }
 
@@ -927,7 +928,7 @@ function SkippedMailsTabTable({
   rows: AiSkippedMailItem[];
   /** Rows on this API page before client search filter (for empty-state copy). */
   unfilteredPageCount: number;
-  /** At least one loaded skip row mentions Gemini monthly quota / spend cap (Google AI billing, not Supabase). */
+  /** At least one loaded skip row mentions a Gemini API limit / rate / quota (Google AI, not Supabase). */
   geminiQuotaExhaustedOnLoadedPage: boolean;
   aiSkippedMailboxId: string;
   onMailboxChange: (id: string) => void;
@@ -1001,12 +1002,12 @@ function SkippedMailsTabTable({
       </p>
       {geminiQuotaBanner ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-          <p className="font-semibold">Inbox AI is paused by Google Gemini limits (not Supabase)</p>
+          <p className="font-semibold">Inbox AI hit a Google Gemini API limit (not Supabase)</p>
           <p className="mt-2 leading-relaxed">
-            Several skips mention <strong>Gemini monthly quota or spend cap</strong>. Upgrading <strong>Supabase</strong>{' '}
+            Several skips mention a <strong>Gemini API quota/rate limit</strong>. Upgrading <strong>Supabase</strong>{' '}
             does not change that — the API key on your <strong>Railway</strong> backend (
             <code className="rounded bg-amber-100/80 px-1">GEMINI_API_KEY</code>) talks to{' '}
-            <strong>Google</strong>. Raise the limit or enable billing in{' '}
+            <strong>Google</strong>. Check quota/rate limits and billing for the exact Google project in{' '}
             <a
               href="https://aistudio.google.com/apikey"
               className="font-medium text-amber-900 underline decoration-amber-700/60 underline-offset-2 hover:text-amber-950"
@@ -1015,8 +1016,8 @@ function SkippedMailsTabTable({
             >
               Google AI Studio
             </a>{' '}
-            / Google Cloud for that project, then use <strong>Reanalyze</strong> or run sync again. Optional: CEO can
-            confirm <strong>import without Inbox AI</strong> in settings to store mail without Gemini classification.
+            / Google Cloud for that project, then use <strong>Reanalyze</strong> or run sync again. New code no longer
+            writes repeated Gemini-limit skip rows for future live runs.
           </p>
         </div>
       ) : null}
