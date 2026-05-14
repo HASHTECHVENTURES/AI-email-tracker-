@@ -2,8 +2,9 @@
 
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import type { Session } from '@supabase/supabase-js';
+import type { AuthError, Session } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
+import { formatAuthClientError } from '@/lib/supabase/public-env';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { PasswordInput } from '@/components/PasswordInput';
@@ -45,6 +46,20 @@ const AUTH_NOTICE_STORAGE_KEY = 'ai_et_auth_notice_v1';
 
 const DUPLICATE_WORKSPACE_MSG =
   'A workspace is already set up for this email and company profile. You can continue with your existing account.';
+
+const TRANSIENT_SUPABASE_STATUSES = new Set([502, 503, 504]);
+
+function isTransientSupabaseAuthFailure(err: Pick<AuthError, 'status' | 'message'> | null | undefined): boolean {
+  if (!err) return false;
+  if (typeof err.status === 'number' && TRANSIENT_SUPABASE_STATUSES.has(err.status)) return true;
+  const m = (err.message ?? '').toLowerCase();
+  return (
+    m.includes('gateway timeout') ||
+    m.includes('bad gateway') ||
+    m.includes('service unavailable') ||
+    /\b50[234]\b/.test(m)
+  );
+}
 
 function mapSupabaseSignUpError(message: string): string {
   if (/already registered|already been registered|user already registered|email address is already|exists/i.test(message)) {
@@ -396,9 +411,9 @@ function AuthPageInner() {
           }
         }
         setPhase('onboarding');
-      } catch {
+      } catch (err) {
         if (cancelled) return;
-        setInfo('Session check failed. Please sign in again.');
+        setInfo(formatAuthClientError(err));
         setPhase('auth');
       }
     }
@@ -451,12 +466,28 @@ function AuthPageInner() {
         setInfo('Please select your role before signing in.');
         return;
       }
-      const { error } = await supabase.auth.signInWithPassword({
-        email: trimmedEmail,
-        password,
-      });
-      if (error) {
-        setInfo(error.message);
+      let signErr: AuthError | null = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: trimmedEmail,
+          password,
+        });
+        if (!error) {
+          signErr = null;
+          break;
+        }
+        signErr = error;
+        if (!isTransientSupabaseAuthFailure(error) || attempt === 3) break;
+        await new Promise<void>((r) => {
+          window.setTimeout(r, 700 * attempt);
+        });
+      }
+      if (signErr) {
+        setInfo(
+          isTransientSupabaseAuthFailure(signErr)
+            ? 'Sign-in service timed out. Wait a few seconds and tap Sign in again.'
+            : signErr.message,
+        );
         return;
       }
       const {
@@ -471,6 +502,10 @@ function AuthPageInner() {
         if (statusRes.status === 401) {
           await supabase.auth.signOut();
           setInfo('This login exists in Supabase but is not linked to an app account. Ask the admin to create your portal login or check the email/role.');
+        } else if (statusRes.status === 502 || statusRes.status === 503 || statusRes.status === 504) {
+          setInfo(
+            'The app backend took too long to respond (common when the server is waking up). Wait 10–20 seconds and tap Sign in again.',
+          );
         } else {
           setInfo('Could not verify this account. Try again.');
         }
@@ -538,8 +573,8 @@ function AuthPageInner() {
       router.replace(
         consumeGmailConnectedRedirect(postLoginPath(status.user?.role, safeNext), gmailConnectedParam),
       );
-    } catch {
-      setInfo('Sign in could not complete. Please try again.');
+    } catch (err) {
+      setInfo(formatAuthClientError(err));
     } finally {
       setLoading(false);
     }
@@ -596,6 +631,8 @@ function AuthPageInner() {
       }
       setInfoVariant('default');
       setInfo('Check your email to verify your account, then sign in.');
+    } catch (err) {
+      setInfo(formatAuthClientError(err));
     } finally {
       setLoading(false);
     }
@@ -634,6 +671,8 @@ function AuthPageInner() {
         }),
       });
       await finalizeOnboarding(session, res, { quiet: false });
+    } catch (err) {
+      setInfo(formatAuthClientError(err));
     } finally {
       setLoading(false);
     }

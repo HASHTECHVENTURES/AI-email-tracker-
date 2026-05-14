@@ -49,6 +49,17 @@ function shouldRetryNetworkFetch(init?: RequestInit): boolean {
   return requestMethod(init) === 'GET';
 }
 
+/** Cold Railway / proxy timeouts often surface as 502/503/504; retry a few GETs used right after login. */
+function transientHttpExtraRetries(path: string, init?: RequestInit): number {
+  if (requestMethod(init) !== 'GET') return 0;
+  if (path === '/auth/status' || path === '/auth/me') return 2;
+  return 0;
+}
+
+function isTransientHttpStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }
@@ -157,10 +168,12 @@ export function apiBase(): string {
 export async function apiFetch(path: string, accessToken: string, init?: RequestInit): Promise<Response> {
   // Avoid 304 + stale JSON (e.g. old gemini_api_key_configured after adding GEMINI_API_KEY on the API).
   const cache = init?.cache ?? 'no-store';
-  const attempts = shouldRetryNetworkFetch(init) ? 2 : 1;
-  try {
+  const networkAttempts = shouldRetryNetworkFetch(init) ? 2 : 1;
+  const transientExtra = transientHttpExtraRetries(path, init);
+
+  const performFetch = async (): Promise<Response> => {
     let lastNetworkError: unknown = null;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
+    for (let attempt = 1; attempt <= networkAttempts; attempt++) {
       try {
         return await fetch(apiUrl(path), {
           ...init,
@@ -174,12 +187,21 @@ export async function apiFetch(path: string, accessToken: string, init?: Request
           },
         });
       } catch (err) {
-        if (!isNetworkFetchFailure(err) || attempt >= attempts) throw err;
+        if (!isNetworkFetchFailure(err) || attempt >= networkAttempts) throw err;
         lastNetworkError = err;
         await delay(650);
       }
     }
     throw lastNetworkError ?? new Error('Network request failed.');
+  };
+
+  try {
+    let res = await performFetch();
+    for (let t = 0; t < transientExtra && isTransientHttpStatus(res.status); t++) {
+      await delay(700 * (t + 1));
+      res = await performFetch();
+    }
+    return res;
   } catch (err) {
     if (isNetworkFetchFailure(err)) {
       throw new Error(formatNetworkFetchFailureMessage());
