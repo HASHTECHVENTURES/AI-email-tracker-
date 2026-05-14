@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { formatAuthClientError } from '@/lib/supabase/public-env';
 import { apiFetch, MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY } from '@/lib/api';
 
 export type ManagedDepartment = { id: string; name: string };
@@ -215,8 +216,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setToken(session.access_token);
       await loadProfile(session.access_token);
-    } catch {
-      setError('Authentication error.');
+    } catch (err) {
+      setError(formatAuthClientError(err));
     } finally {
       setLoading(false);
     }
@@ -231,10 +232,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * After sign-in, load `/auth/me` here; bootstrap alone only runs once on mount and would leave `me` null.
    */
   useEffect(() => {
-    const supabase = createClient();
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, session) => {
+    let subscription: { unsubscribe: () => void } | undefined;
+    try {
+      const supabase = createClient();
+      ({
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!session) {
         setMe(null);
         setToken(null);
@@ -255,8 +258,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
       await loadProfile(session.access_token);
-    });
-    return () => subscription.unsubscribe();
+    }));
+    } catch (err) {
+      setError(formatAuthClientError(err));
+      setLoading(false);
+      return;
+    }
+    return () => subscription?.unsubscribe();
   }, [loadProfile]);
 
   const signOut = useCallback(async () => {

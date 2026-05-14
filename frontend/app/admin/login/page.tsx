@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { PasswordInput } from '@/components/PasswordInput';
 import { apiFetch } from '@/lib/api';
 import { createClient } from '@/lib/supabase/client';
+import { formatAuthClientError } from '@/lib/supabase/public-env';
 
 const inputClass =
   'mt-1.5 w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500';
@@ -42,8 +43,8 @@ function AdminLoginInner() {
             router.replace('/admin');
           }
         }
-      } catch {
-        // keep login form visible
+      } catch (err) {
+        setError(formatAuthClientError(err));
       }
     }
     void bootstrap();
@@ -84,6 +85,8 @@ function AdminLoginInner() {
         return;
       }
       router.replace(nextPath.startsWith('/admin') ? nextPath : '/admin');
+    } catch (err) {
+      setError(formatAuthClientError(err));
     } finally {
       setLoading(false);
     }
