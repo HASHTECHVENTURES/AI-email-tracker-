@@ -2865,6 +2865,16 @@ function MyEmailPageInner() {
   const canRunMyMailboxSync =
     me?.role === 'CEO' || isDepartmentManagerRole(me?.role) || me?.role === 'EMPLOYEE';
 
+  /**
+   * Primary “your inbox” tab on My Email (`#ceo`): full historical AI progress, polling/SSE handoff, and live-ingest
+   * strip — for CEOs, department managers (HEAD), and employees. Not used on CEO-only Manager mail / Team mail tabs.
+   */
+  const myEmailRichHistoricalProgress =
+    myEmailTab === 'ceo' &&
+    (me?.role === 'CEO' ||
+      (me != null && isDepartmentManagerRole(me.role)) ||
+      me?.role === 'EMPLOYEE');
+
   /** After Gmail connects: require a tracking start (date + time) before any analysis/sync — same mental model as Historical “pick a window”. */
   useEffect(() => {
     if (!showFullInboxChrome || !dash?.mailboxes || authLoading) return;
@@ -3759,9 +3769,9 @@ function MyEmailPageInner() {
     return () => clearTimeout(id);
   }, [token, me, filterMailbox, loadDashboard, syncEmployeeIdsParam, myEmailTab]);
 
-  /** CEO inbox tab: while the window pull writes threads, refresh dashboard so stat cards and tab counts catch up. */
+  /** While the historical window pull writes threads, refresh dashboard so stat cards and tab counts catch up. */
   useEffect(() => {
-    if (!token || me?.role !== 'CEO' || myEmailTab !== 'ceo') return;
+    if (!token || !myEmailRichHistoricalProgress) return;
     const phase = historicalBackfillUi?.phase;
     if (phase !== 'saving' && phase !== 'recomputing') return;
     void loadDashboard(token, syncEmployeeIdsParam || undefined);
@@ -3771,7 +3781,7 @@ function MyEmailPageInner() {
     return () => clearInterval(id);
   }, [
     token,
-    me?.role,
+    myEmailRichHistoricalProgress,
     myEmailTab,
     historicalBackfillUi?.phase,
     historicalBackfillUi?.employeeId,
@@ -3949,8 +3959,7 @@ function MyEmailPageInner() {
           Math.round((100 * bulkDeleteProgress.done) / bulkDeleteProgress.total),
         );
 
-  /** CEO · My Email (default inbox tab): extra AI progress + live category refresh — not manager/team views. */
-  const ceoMyEmailAiPortalDetail = me.role === 'CEO' && myEmailTab === 'ceo';
+  const ceoMyEmailAiPortalDetail = myEmailRichHistoricalProgress;
   const showCeoHistoricalStop =
     historicalBackfillUi != null &&
     historicalBackfillUi.phase !== 'complete' &&
@@ -4400,8 +4409,7 @@ function MyEmailPageInner() {
             </div>
           ) : null}
 
-          {me.role === 'CEO' &&
-          myEmailTab === 'ceo' &&
+          {ceoMyEmailAiPortalDetail &&
           historicalBackfillUi &&
           historicalBackfillUi.phase !== 'complete' &&
           historicalBackfillUi.phase !== 'error' ? (
