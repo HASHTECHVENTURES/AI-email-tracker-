@@ -1,12 +1,4 @@
-import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
-
-/** Copy Set-Cookie headers from session refresh onto another response (e.g. auth redirect). */
-function copyCookies(from: NextResponse, to: NextResponse) {
-  from.cookies.getAll().forEach((c) => {
-    to.cookies.set(c.name, c.value, c);
-  });
-}
 
 export async function middleware(request: NextRequest) {
   try {
@@ -41,47 +33,7 @@ export async function middleware(request: NextRequest) {
         url.searchParams.delete('portal');
         return NextResponse.redirect(url);
       }
-    }
-
-    let response = NextResponse.next({ request });
-
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!url || !key) {
-      return response;
-    }
-
-    const supabase = createServerClient(url, key, {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
-        setAll(cookiesToSet: { name: string; value: string; options?: object }[]) {
-          try {
-            cookiesToSet.forEach(({ name, value }) => {
-              request.cookies.set(name, value);
-            });
-          } catch {
-            /* Next.js may treat request cookies as read-only; response cookies are enough for the browser */
-          }
-          response = NextResponse.next({ request });
-          cookiesToSet.forEach(({ name, value, options }) => {
-            response.cookies.set(name, value, options);
-          });
-        },
-      },
-    });
-
-    let user: { id: string } | null = null;
-    try {
-      // Prefer getSession() so the client refreshes expired access tokens from the refresh cookie
-      // (getUser() alone can miss a freshly refreshed session after long Gmail OAuth round-trips).
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      user = session?.user ?? null;
-    } catch {
-      user = null;
+      return NextResponse.next();
     }
 
     const protectedPaths = [
@@ -100,7 +52,11 @@ export async function middleware(request: NextRequest) {
     ];
     const isAdminLogin = pathname === '/admin/login';
     const isProtected = !isAdminLogin && protectedPaths.some((p) => pathname.startsWith(p));
-    if (!user && isProtected) {
+    const hasSupabaseSessionCookie = request.cookies.getAll().some((cookie) => {
+      if (!cookie.name.startsWith('sb-')) return false;
+      return cookie.name.endsWith('-auth-token') || cookie.name.includes('-auth-token.');
+    });
+    if (!hasSupabaseSessionCookie && isProtected) {
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = pathname.startsWith('/admin') ? '/admin/login' : '/auth';
       // Do not clone the full query string (e.g. Gmail OAuth adds connected=, employee_id=).
@@ -111,12 +67,10 @@ export async function middleware(request: NextRequest) {
       if (gmailConnected === '1') {
         redirectUrl.searchParams.set('connected', '1');
       }
-      const redirectResponse = NextResponse.redirect(redirectUrl);
-      copyCookies(response, redirectResponse);
-      return redirectResponse;
+      return NextResponse.redirect(redirectUrl);
     }
 
-    return response;
+    return NextResponse.next();
   } catch (e) {
     console.error('[middleware]', e);
     return NextResponse.next({ request });
