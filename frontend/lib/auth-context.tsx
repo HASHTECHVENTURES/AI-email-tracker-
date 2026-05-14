@@ -202,70 +202,79 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setManagerActiveDepartmentIdState(id);
   }, []);
 
-  const bootstrap = useCallback(async () => {
-    try {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session) {
-        setLoading(false);
-        return;
-      }
-
-      setToken(session.access_token);
-      await loadProfile(session.access_token);
-    } catch (err) {
-      setError(formatAuthClientError(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [loadProfile]);
-
-  useEffect(() => {
-    void bootstrap();
-  }, [bootstrap]);
-
   /**
-   * Subscribe once (do not depend on `token` — that re-subscribed every refresh and caused request storms).
-   * After sign-in, load `/auth/me` here; bootstrap alone only runs once on mount and would leave `me` null.
+   * Single auth pipeline: do not also call `getSession()` on mount — that races
+   * `onAuthStateChange(INITIAL_SESSION)` and duplicates token refresh (504 + lock warnings).
    */
   useEffect(() => {
+    let cancelled = false;
     let subscription: { unsubscribe: () => void } | undefined;
     try {
       const supabase = createClient();
       ({
         data: { subscription },
-      } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (!session) {
-        setMe(null);
-        setToken(null);
-        setLoading(false);
-        setError(null);
-        setManagerActiveDepartmentIdState(null);
-        setShellRoleHint(null);
-        clearShellRoleStorage();
-        try {
-          localStorage.removeItem(MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY);
-        } catch {
-          /* ignore */
-        }
-        return;
-      }
-      setToken(session.access_token);
-      if (event === 'INITIAL_SESSION') {
-        return;
-      }
-      await loadProfile(session.access_token);
-    }));
+      } = supabase.auth.onAuthStateChange((event, session) => {
+        void (async () => {
+          if (cancelled) return;
+          if (!session) {
+            setMe(null);
+            setToken(null);
+            setError(null);
+            setManagerActiveDepartmentIdState(null);
+            setShellRoleHint(null);
+            clearShellRoleStorage();
+            try {
+              localStorage.removeItem(MANAGER_ACTIVE_DEPARTMENT_STORAGE_KEY);
+            } catch {
+              /* ignore */
+            }
+            setLoading(false);
+            return;
+          }
+
+          setToken(session.access_token);
+
+          if (event === 'TOKEN_REFRESHED') {
+            return;
+          }
+
+          try {
+            await loadProfile(session.access_token);
+          } catch (err) {
+            if (!cancelled) setError(formatAuthClientError(err));
+          } finally {
+            if (!cancelled) setLoading(false);
+          }
+        })();
+      }));
     } catch (err) {
       setError(formatAuthClientError(err));
       setLoading(false);
-      return;
+      return () => {
+        cancelled = true;
+        subscription?.unsubscribe();
+      };
     }
-    return () => subscription?.unsubscribe();
+    return () => {
+      cancelled = true;
+      subscription?.unsubscribe();
+    };
   }, [loadProfile]);
+
+  /** If Supabase hangs (e.g. stuck token refresh), avoid an infinite shell spinner. */
+  useEffect(() => {
+    if (!loading) return;
+    const id = window.setTimeout(() => {
+      setLoading((still) => {
+        if (!still) return still;
+        setError(
+          'Sign-in check is taking too long (often a slow or failing Supabase request). Try refreshing, or wait and try again.',
+        );
+        return false;
+      });
+    }, 22000);
+    return () => window.clearTimeout(id);
+  }, [loading]);
 
   const signOut = useCallback(async () => {
     const supabase = createClient();
