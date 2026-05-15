@@ -385,6 +385,7 @@ export class HistoricalFetchService {
         if (!decision.relevant) {
           if (decision.inboundAiHardStop) {
             skippedIrrelevant++;
+            stoppedEarly = true;
             this.logger.warn(
               `Historical fetch paused for ${employee.email}: ${decision.reason ?? 'Inbox AI unavailable'}`,
             );
@@ -477,6 +478,33 @@ export class HistoricalFetchService {
     base: HistoricalFetchResult,
     createdByUserId?: string,
   ): Promise<HistoricalFetchResult> {
+    if (!base.stopped) {
+      const nowIso = new Date().toISOString();
+      await this.supabase
+        .from('employees')
+        .update({
+          last_synced_at: nowIso,
+          last_gmail_sync_at: nowIso,
+          last_ai_analysis_at: nowIso,
+          gmail_status: 'CONNECTED',
+        })
+        .eq('id', employeeId)
+        .eq('company_id', ctx.companyId);
+
+      await this.supabase.from('mail_sync_state').upsert(
+        {
+          employee_id: employeeId,
+          start_date: startIso,
+          last_processed_at: endIso,
+          gmail_list_page_token: null,
+          gmail_list_query_after_epoch: null,
+          backfill_max_sent_at: null,
+          updated_at: nowIso,
+        },
+        { onConflict: 'employee_id' },
+      );
+    }
+
     const uid = createdByUserId?.trim();
     if (!uid) return base;
     const run_id = await this.selfTrackingService.recordHistoricalSearchRun(ctx, {
