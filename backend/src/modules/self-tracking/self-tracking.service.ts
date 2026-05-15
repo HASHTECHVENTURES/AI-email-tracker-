@@ -323,25 +323,29 @@ export class SelfTrackingService {
           manually_closed: r.manually_closed,
           is_ignored: r.is_ignored,
           user_cc_only: r.user_cc_only ?? false,
+          thread_subject: null as string | null,
           open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
           updated_at: r.updated_at,
         };
       });
 
+    const conversationsWithSubjects =
+      await this.conversationsService.attachThreadSubjects(conversations);
 
-    const needs_attention = conversations.filter(
+    const needs_attention = conversationsWithSubjects.filter(
       (c) =>
-        c.follow_up_status === 'MISSED' ||
-        (c.priority === 'HIGH' && c.follow_up_status !== 'DONE'),
+        !c.user_cc_only &&
+        (c.follow_up_status === 'MISSED' ||
+          (c.priority === 'HIGH' && c.follow_up_status !== 'DONE')),
     );
 
     const stats = {
-      total: conversations.length,
-      pending: conversations.filter((c) => c.follow_up_status === 'PENDING')
+      total: conversationsWithSubjects.length,
+      pending: conversationsWithSubjects.filter((c) => c.follow_up_status === 'PENDING')
         .length,
-      missed: conversations.filter((c) => c.follow_up_status === 'MISSED')
+      missed: conversationsWithSubjects.filter((c) => c.follow_up_status === 'MISSED')
         .length,
-      done: conversations.filter((c) => c.follow_up_status === 'DONE').length,
+      done: conversationsWithSubjects.filter((c) => c.follow_up_status === 'DONE').length,
     };
 
     let syncedTargetIds = targetIds;
@@ -394,7 +398,7 @@ export class SelfTrackingService {
     return {
       mailboxes,
       needs_attention,
-      conversations,
+      conversations: conversationsWithSubjects,
       stats,
       person_filter_options: mailboxes.map((m) => ({ id: m.id, name: m.name })),
       synced_mail: {
@@ -546,12 +550,14 @@ export class SelfTrackingService {
         manually_closed: r.manually_closed,
         is_ignored: r.is_ignored,
         user_cc_only: r.user_cc_only ?? false,
+        thread_subject: null as string | null,
         open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
         updated_at: r.updated_at,
       };
     });
 
-    return { conversations };
+    const withSubjects = await this.conversationsService.attachThreadSubjects(conversations);
+    return { conversations: withSubjects };
   }
 
   /**
@@ -636,7 +642,7 @@ export class SelfTrackingService {
       updated_at: string;
     };
 
-    return (data ?? []).map((r: Row) => {
+    const mapped = (data ?? []).map((r: Row) => {
       const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
       const tid = encodeURIComponent(r.provider_thread_id);
       return {
@@ -661,10 +667,12 @@ export class SelfTrackingService {
         manually_closed: r.manually_closed,
         is_ignored: r.is_ignored,
         user_cc_only: r.user_cc_only ?? false,
+        thread_subject: null as string | null,
         open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
         updated_at: r.updated_at,
       };
     });
+    return this.conversationsService.attachThreadSubjects(mapped);
   }
 
   /**

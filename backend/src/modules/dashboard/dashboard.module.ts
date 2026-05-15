@@ -8,6 +8,7 @@ import { EmployeesModule } from '../employees/employees.module';
 import { SettingsModule } from '../settings/settings.module';
 import { CompanyPolicyModule } from '../company-policy/company-policy.module';
 import { SelfTrackingModule } from '../self-tracking/self-tracking.module';
+import { ConversationsModule } from '../conversations/conversations.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { SelfTrackingModule } from '../self-tracking/self-tracking.module';
     EmployeesModule,
     SettingsModule,
     CompanyPolicyModule,
+    ConversationsModule,
     forwardRef(() => SelfTrackingModule),
   ],
   controllers: [DashboardController],

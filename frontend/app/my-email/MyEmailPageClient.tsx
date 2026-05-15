@@ -120,6 +120,8 @@ type ConversationRow = {
   follow_up_required?: boolean;
   /** Latest inbound had you only on Cc, not To. */
   user_cc_only?: boolean;
+  /** Original Gmail subject (latest message in thread). */
+  thread_subject?: string | null;
 };
 
 const MAIL_PAGE_SIZE = 50;
@@ -218,6 +220,7 @@ function isStaleNeedReplyByClientMessage(c: ConversationRow, staleDays: number):
 
 /** Need reply KPI/tab: hide stale *pending* threads, but never hide MISSED SLA rows (they were invisible before). */
 function passesNeedReplyVisibility(c: ConversationRow): boolean {
+  if (c.user_cc_only === true) return false;
   if (!needsMyReply(c)) return false;
   if (c.follow_up_status === 'MISSED') return true;
   return !HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS);
@@ -368,6 +371,12 @@ function RelWithAbsoluteDate({ iso }: { iso: string | null | undefined }): React
 }
 
 /** Primary line for tables: AI/thread summary, or a readable fallback. */
+function conversationThreadSubject(c: ConversationRow): string {
+  const sub = (c.thread_subject ?? '').trim();
+  if (sub.length > 0) return sub;
+  return '—';
+}
+
 function conversationDisplayTitle(c: ConversationRow): string {
   const s = (c.summary ?? '').trim();
   if (s.length > 0) return s;
@@ -387,6 +396,17 @@ function conversationSenderLabel(c: ConversationRow): string {
   if (ce) return ce;
   if (cn) return cn;
   return '';
+}
+
+function ConversationMailSubjectCell({ c }: { c: ConversationRow }) {
+  const subject = conversationThreadSubject(c);
+  return (
+    <td className="max-w-[min(16rem,32vw)] px-3 py-3 align-top text-slate-800">
+      <span className="line-clamp-2 text-sm font-medium leading-snug" title={subject !== '—' ? subject : undefined}>
+        {subject}
+      </span>
+    </td>
+  );
 }
 
 function ConversationSubjectCell({ c }: { c: ConversationRow }) {
@@ -3554,7 +3574,9 @@ function MyEmailPageInner() {
       const reason = (c.reason ?? '').toLowerCase();
       const threadId = (c.provider_thread_id ?? '').toLowerCase();
       const convId = (c.conversation_id ?? '').toLowerCase();
+      const mailSubject = (c.thread_subject ?? '').toLowerCase();
       return (
+        mailSubject.includes(q) ||
         title.includes(q) ||
         client.includes(q) ||
         clientName.includes(q) ||
@@ -5243,6 +5265,7 @@ function MyEmailPageInner() {
                         {scopedPersonOptions.length > 1 ? (
                           <th className="px-3 py-3">Person</th>
                         ) : null}
+                        <th className="px-3 py-3">Subject</th>
                         <th className="px-3 py-3">Thread</th>
                         <th className="px-3 py-3">SLA</th>
                         <th className="min-w-[8rem] px-3 py-3">Activity</th>
@@ -5294,6 +5317,7 @@ function MyEmailPageInner() {
                                 {c.employee_name}
                               </td>
                             ) : null}
+                            <ConversationMailSubjectCell c={c} />
                             <ConversationSubjectCell c={c} />
                             <td className="px-3 py-3 align-top">
                               <span

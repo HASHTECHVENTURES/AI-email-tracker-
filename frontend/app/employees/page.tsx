@@ -43,6 +43,7 @@ type EmployeeRow = {
   tracking_paused?: boolean;
   /** When false, Inbox AI + thread enrichment skip this mailbox. */
   ai_enabled?: boolean;
+  has_portal_login?: boolean;
 };
 
 type DashboardConv = {
@@ -102,6 +103,11 @@ function EmployeesPageInner() {
   const [addError, setAddError] = useState<string | null>(null);
   const [addSuccess, setAddSuccess] = useState<string | null>(null);
   const [addSaving, setAddSaving] = useState(false);
+  const [passwordTarget, setPasswordTarget] = useState<EmployeeRow | null>(null);
+  const [portalPassword, setPortalPassword] = useState('');
+  const [portalPasswordConfirm, setPortalPasswordConfirm] = useState('');
+  const [portalPasswordSaving, setPortalPasswordSaving] = useState(false);
+  const [portalPasswordError, setPortalPasswordError] = useState<string | null>(null);
   const isManager = isDepartmentManagerRole(me?.role);
   const isCeo = me?.role === 'CEO';
   const myEmailNorm = me?.email?.trim().toLowerCase() ?? '';
@@ -486,6 +492,64 @@ function EmployeesPageInner() {
     }
   }
 
+  function openPortalPasswordModal(emp: EmployeeRow) {
+    setPortalPasswordError(null);
+    setPortalPassword('');
+    setPortalPasswordConfirm('');
+    setPasswordTarget(emp);
+  }
+
+  function closePortalPasswordModal() {
+    setPasswordTarget(null);
+    setPortalPasswordError(null);
+    setPortalPassword('');
+    setPortalPasswordConfirm('');
+  }
+
+  async function submitPortalPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setPortalPasswordError(null);
+    if (!passwordTarget) return;
+    if (portalPassword.length < 8) {
+      setPortalPasswordError('Password must be at least 8 characters.');
+      return;
+    }
+    if (portalPassword !== portalPasswordConfirm) {
+      setPortalPasswordError('Passwords do not match.');
+      return;
+    }
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return;
+    setPortalPasswordSaving(true);
+    try {
+      const res = await apiFetch(
+        `/employees/portal-password/${encodeURIComponent(passwordTarget.id)}`,
+        session.access_token,
+        { method: 'PATCH', body: JSON.stringify({ password: portalPassword }) },
+      );
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
+        setPortalPasswordError((body.message as string) || 'Could not save password');
+        return;
+      }
+      const action = (body as { action?: string }).action;
+      const memberName = passwordTarget.name;
+      closePortalPasswordModal();
+      flashNotice(
+        action === 'login_created'
+          ? `Employee portal login created for ${memberName}. Share the email and new password securely.`
+          : `Password updated for ${memberName}. Share the new password securely.`,
+      );
+      await loadLists(session.access_token);
+    } finally {
+      setPortalPasswordSaving(false);
+    }
+  }
+
   function toggleSort(field: 'name' | 'department' | 'gmail' | 'last_sync') {
     if (sortBy === field) {
       setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
@@ -774,6 +838,13 @@ function EmployeesPageInner() {
                         <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
+                            onClick={() => openPortalPasswordModal(emp)}
+                            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-700 transition-all duration-200 hover:bg-slate-50"
+                          >
+                            {emp.has_portal_login ? 'Change password' : 'Set password'}
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => void deleteEmployee(emp.id, emp.name)}
                             className="rounded-lg border border-red-200 px-2.5 py-1.5 text-xs text-red-700 transition-all duration-200 hover:bg-red-50"
                           >
@@ -953,6 +1024,67 @@ function EmployeesPageInner() {
                   className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
                 >
                   Close
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {passwordTarget ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="portal-password-title"
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget) closePortalPasswordModal();
+          }}
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+            <h3 id="portal-password-title" className="text-lg font-semibold text-slate-900">
+              {passwordTarget.has_portal_login ? 'Change password' : 'Set up Employee portal login'}
+            </h3>
+            <p className="mt-2 text-sm text-slate-600">
+              {passwordTarget.name} · <span className="font-medium text-slate-800">{passwordTarget.email}</span>
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              They sign in with this email and the password you choose. Minimum 8 characters.
+            </p>
+            <form onSubmit={(e) => void submitPortalPassword(e)} className="mt-4 space-y-3">
+              {portalPasswordError ? <p className="text-sm text-red-600">{portalPasswordError}</p> : null}
+              <PasswordInput
+                value={portalPassword}
+                onChange={(ev) => setPortalPassword(ev.target.value)}
+                placeholder="New password"
+                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                minLength={8}
+                autoComplete="new-password"
+                required
+              />
+              <PasswordInput
+                value={portalPasswordConfirm}
+                onChange={(ev) => setPortalPasswordConfirm(ev.target.value)}
+                placeholder="Confirm password"
+                className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+                minLength={8}
+                autoComplete="new-password"
+                required
+              />
+              <div className="flex flex-wrap gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={portalPasswordSaving}
+                  className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+                >
+                  {portalPasswordSaving ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => closePortalPasswordModal()}
+                  className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
                 </button>
               </div>
             </form>

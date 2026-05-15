@@ -450,7 +450,7 @@ export class ConversationsService {
       client_email: contactEmail,
       last_client_msg_at: lastClientMsgAt?.toISOString() ?? null,
       last_employee_reply_at: lastEmployeeReplyAt?.toISOString() ?? null,
-      follow_up_required: result.followUpRequired,
+      follow_up_required: userCcOnly ? false : result.followUpRequired,
       follow_up_status: result.followUpStatus,
       delay_hours: result.delayHours,
       lifecycle_status: result.lifecycleStatus,
@@ -715,6 +715,39 @@ export class ConversationsService {
     }
 
     return result;
+  }
+
+  /**
+   * Attach the latest non-empty Gmail subject per thread (original subject line for UI tables).
+   */
+  async attachThreadSubjects<T extends { employee_id: string; provider_thread_id: string }>(
+    items: T[],
+  ): Promise<(T & { thread_subject: string | null })[]> {
+    if (items.length === 0) return [];
+    const employeeIds = [...new Set(items.map((i) => i.employee_id))];
+    const threadIds = [...new Set(items.map((i) => i.provider_thread_id))];
+    const { data, error } = await this.supabase
+      .from('email_messages')
+      .select('employee_id, provider_thread_id, subject, sent_at')
+      .in('employee_id', employeeIds)
+      .in('provider_thread_id', threadIds)
+      .order('sent_at', { ascending: false })
+      .limit(Math.min(10_000, items.length * 20));
+    if (error) {
+      this.logger.warn(`attachThreadSubjects: ${error.message}`);
+      return items.map((i) => ({ ...i, thread_subject: null }));
+    }
+    const subjectByKey = new Map<string, string>();
+    for (const row of data ?? []) {
+      const key = `${row.employee_id}:${row.provider_thread_id}`;
+      if (subjectByKey.has(key)) continue;
+      const sub = (row.subject as string | null)?.trim() ?? '';
+      if (sub.length > 0) subjectByKey.set(key, sub);
+    }
+    return items.map((i) => ({
+      ...i,
+      thread_subject: subjectByKey.get(`${i.employee_id}:${i.provider_thread_id}`) ?? null,
+    }));
   }
 
   /** Latest inbound: in To → primary; only in Cc → FYI bucket in UI. */

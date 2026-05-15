@@ -57,6 +57,7 @@ type ConversationRow = {
   lifecycle_status: string;
   open_gmail_link: string;
   updated_at: string;
+  thread_subject?: string | null;
 };
 
 type DashPayload = {
@@ -559,7 +560,7 @@ function ManagerMyMailInner() {
                           </td>
                         )}
                         <td className="max-w-[200px] truncate px-4 py-3 text-slate-700">
-                          {c.summary || c.short_reason || '(no subject)'}
+                          {(c.thread_subject ?? '').trim() || c.summary || c.short_reason || '(no subject)'}
                         </td>
                         <td className="px-4 py-3">{statusBadge(c.follow_up_status)}</td>
                         <td className="px-4 py-3">
@@ -637,7 +638,7 @@ function ManagerMyMailInner() {
                           </td>
                         )}
                         <td className="max-w-[200px] truncate px-4 py-3 text-slate-700">
-                          {c.summary || c.short_reason || '(no subject)'}
+                          {(c.thread_subject ?? '').trim() || c.summary || c.short_reason || '(no subject)'}
                         </td>
                         <td className="max-w-[140px] truncate px-4 py-3 text-xs text-slate-500">
                           {c.client_email || '—'}

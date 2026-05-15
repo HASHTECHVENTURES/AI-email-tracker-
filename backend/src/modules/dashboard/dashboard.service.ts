@@ -11,6 +11,7 @@ import { RequestContext } from '../common/request-context';
 import type { HistoricalSearchRunListItem } from '../self-tracking/self-tracking.service';
 import { SelfTrackingService } from '../self-tracking/self-tracking.service';
 import { EmployeesService } from '../employees/employees.service';
+import { ConversationsService } from '../conversations/conversations.service';
 
 export interface GlobalMetrics {
   total_conversations: number;
@@ -60,6 +61,8 @@ export interface ConversationListItem {
   is_ignored: boolean;
   /** You were only on Cc (not To) on the latest inbound — FYI bucket. */
   user_cc_only: boolean;
+  /** Latest Gmail subject for this thread (not the AI summary). */
+  thread_subject: string | null;
   open_gmail_link: string;
   /** ISO timestamp — used for "resolved today" style KPIs */
   updated_at: string;
@@ -192,6 +195,7 @@ export class DashboardService {
     private readonly employeesService: EmployeesService,
     @Inject(forwardRef(() => SelfTrackingService))
     private readonly selfTrackingService: SelfTrackingService,
+    private readonly conversationsService: ConversationsService,
   ) {
     const apiKey = process.env.GEMINI_API_KEY;
     const genAI = new GoogleGenerativeAI(apiKey ?? '');
@@ -523,7 +527,7 @@ export class DashboardService {
       ),
     );
     const defaultSla = await this.getDefaultSlaHours();
-    return rows.map((r) => {
+    const mapped = rows.map((r) => {
       const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
       const tid = encodeURIComponent(r.provider_thread_id);
       const emp = employeeById.get(targetId);
@@ -549,10 +553,12 @@ export class DashboardService {
         manually_closed: r.manually_closed,
         is_ignored: r.is_ignored,
         user_cc_only: r.user_cc_only ?? false,
+        thread_subject: null as string | null,
         open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
         updated_at: r.updated_at,
       };
     });
+    return this.conversationsService.attachThreadSubjects(mapped);
   }
 
   /** Executive = company-wide CEO; department = manager’s team only. */
@@ -1350,8 +1356,9 @@ ${dataBlock}`;
     const needs_attention = visibleConversations
       .filter(
         (c) =>
-          c.follow_up_status === 'MISSED' ||
-          (c.priority === 'HIGH' && c.follow_up_status !== 'DONE'),
+          !c.user_cc_only &&
+          (c.follow_up_status === 'MISSED' ||
+            (c.priority === 'HIGH' && c.follow_up_status !== 'DONE')),
       )
       .slice(0, attentionCap);
 

@@ -779,7 +779,7 @@ export class HistoricalFetchService {
       updated_at: string;
     };
 
-    return (data as Row[]).map((r) => {
+    const mapped = (data as Row[]).map((r) => {
       const tid = encodeURIComponent(r.provider_thread_id);
       return {
         conversation_id: r.conversation_id,
@@ -803,9 +803,11 @@ export class HistoricalFetchService {
         manually_closed: r.manually_closed,
         is_ignored: r.is_ignored,
         user_cc_only: r.user_cc_only ?? false,
+        thread_subject: null as string | null,
         open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
         updated_at: r.updated_at,
       };
     });
+    return this.conversationsService.attachThreadSubjects(mapped);
   }
 }
