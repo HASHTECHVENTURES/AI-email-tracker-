@@ -721,6 +721,9 @@ export class EmailIngestionService {
         if (!decision.relevant) {
           skippedFiltered += 1;
           skippedByAiDecision += 1;
+          if (decision.transientAiUnavailable) {
+            continue;
+          }
           const reasonText =
             decision.reason?.trim() ||
             (allowGeminiRelevance && this.relevanceModel
@@ -936,7 +939,13 @@ export class EmailIngestionService {
     hasNoiseGmailLabel: boolean,
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
-  ): Promise<{ relevant: boolean; reason: string | null; confidence: number | null; inboundAiHardStop?: boolean }> {
+  ): Promise<{
+    relevant: boolean;
+    reason: string | null;
+    confidence: number | null;
+    inboundAiHardStop?: boolean;
+    transientAiUnavailable?: boolean;
+  }> {
     if (target.direction === 'OUTBOUND') {
       return {
         relevant: true,
@@ -979,9 +988,11 @@ export class EmailIngestionService {
         };
       }
       const reason = this.monthlyQuotaExhausted
-        ? 'Inbox AI unavailable: Gemini API quota or rate limit reached. Inbound ingestion paused for non-direct mail without writing skip rows.'
+        ? 'Inbox AI unavailable: Gemini API quota or rate limit reached. Non-direct mail skipped for this cycle without writing skip rows.'
         : 'Inbox AI unavailable: classification failed after retries. Inbound ingestion is paused until Inbox AI responds again.';
-      return { relevant: false, reason, confidence: null, inboundAiHardStop: true };
+      return this.monthlyQuotaExhausted
+        ? { relevant: false, reason, confidence: null, transientAiUnavailable: true }
+        : { relevant: false, reason, confidence: null, inboundAiHardStop: true };
     }
 
     if (ingestWithoutAiConfirmed) {

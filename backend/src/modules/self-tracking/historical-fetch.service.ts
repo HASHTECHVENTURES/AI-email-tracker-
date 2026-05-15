@@ -392,6 +392,9 @@ export class HistoricalFetchService {
             break;
           }
           skippedIrrelevant++;
+          if (decision.transientAiUnavailable) {
+            continue;
+          }
           const reasonText =
             decision.reason?.trim() || 'Marked not relevant by Inbox AI (historical search).';
           try {
@@ -605,7 +608,12 @@ export class HistoricalFetchService {
     hasNoiseGmailLabel: boolean,
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
-  ): Promise<{ relevant: boolean; reason: string | null; inboundAiHardStop?: boolean }> {
+  ): Promise<{
+    relevant: boolean;
+    reason: string | null;
+    inboundAiHardStop?: boolean;
+    transientAiUnavailable?: boolean;
+  }> {
     if (target.direction === 'OUTBOUND') {
       return {
         relevant: true,
@@ -641,8 +649,8 @@ export class HistoricalFetchService {
         return {
           relevant: false,
           reason:
-            'Inbox AI unavailable: Gemini API quota or rate limit reached. Historical import paused without writing skip rows.',
-          inboundAiHardStop: true,
+            'Inbox AI unavailable: Gemini API quota or rate limit reached. Non-direct historical mail skipped without writing skip rows.',
+          transientAiUnavailable: true,
         };
       }
       if (ingestWithoutAiConfirmed) {
@@ -658,8 +666,8 @@ export class HistoricalFetchService {
       return {
         relevant: false,
         reason:
-          'Inbox AI unavailable: Gemini did not return a usable verdict. Historical import paused without writing skip rows.',
-        inboundAiHardStop: true,
+          'Inbox AI unavailable: Gemini did not return a usable verdict. Non-direct historical mail skipped without writing skip rows.',
+        transientAiUnavailable: true,
       };
     }
     if (ingestWithoutAiConfirmed) {
