@@ -904,26 +904,13 @@ export class EmailIngestionService {
       } catch (err) {
         const msg = (err as Error).message ?? String(err);
         const is429 = /\b429\b|quota|Quota|rate|Rate|resource_exhausted/i.test(msg);
-        const isMonthly = /monthly|exceeded its|spending\s+cap|spend\s+cap/i.test(msg);
 
-        if (is429 && isMonthly) {
+        if (is429) {
           this.monthlyQuotaExhausted = true;
           this.logger.error(
-            `Gemini API limit reached — inbound ingestion paused for this cycle. ${msg.slice(0, 200)}`,
+            `Gemini API limit reached — switching inbound ingest to direct-human fallback for this cycle. ${msg.slice(0, 200)}`,
           );
           return null;
-        }
-
-        if (is429 && attempt < retries) {
-          const secMatch = msg.match(/retry in (\d+(\.\d+)?)\s*s/i);
-          const msMatch = !secMatch ? msg.match(/retry in (\d+(\.\d+)?)\s*ms/i) : null;
-          let waitSec = secMatch ? Math.ceil(Number(secMatch[1])) : msMatch ? Math.ceil(Number(msMatch[1]) / 1000) : 45;
-          waitSec = Math.max(1, Math.min(waitSec, 120));
-          this.logger.warn(
-            `Gemini inbox relevance rate limit — retry ${attempt + 1}/${retries} in ${waitSec}s: ${msg.slice(0, 160)}`,
-          );
-          await new Promise((r) => setTimeout(r, waitSec * 1000));
-          continue;
         }
 
         if (attempt < retries && !is429) {
