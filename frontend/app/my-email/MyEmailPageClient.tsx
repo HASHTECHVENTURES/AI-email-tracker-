@@ -313,10 +313,20 @@ type RuntimeStatus = {
   lastIngestionError: string | null;
   nextIngestionAt?: string | null;
   secondsUntilNextIngestion?: number | null;
+  ingestionIntervalSeconds?: number;
 };
 
 /** Parallel DELETEs (bounded) — faster than strict sequential; progress still updates per completion. */
 const BULK_DELETE_CONCURRENCY = 4;
+
+/** My Email live sync: only these mailbox employee ids (CEO/manager/employee), not the whole company. */
+function liveIngestRunUrl(employeeIds: string[]): string {
+  const ids = [...new Set(employeeIds.map((id) => id.trim()).filter(Boolean))];
+  if (ids.length === 0) return '/email-ingestion/run';
+  const qs = new URLSearchParams();
+  qs.set('employee_ids', ids.join(','));
+  return `/email-ingestion/run?${qs.toString()}`;
+}
 
 async function bulkDeleteConversationsById(
   ids: string[],
@@ -1303,7 +1313,7 @@ function mailboxReadyForQuickLiveSync(mb: Mailbox, trackingIso: string): boolean
   return Number.isFinite(Date.parse(last));
 }
 
-/** Summarize /email-ingestion/run for the mailboxes the user just synced (CEO may trigger a company-wide run). */
+/** Summarize /email-ingestion/run for the mailboxes included in this Sync now request. */
 function summarizeIngestionForMailboxes(
   results: IngestionRunResultRow[] | undefined,
   mailboxIds: Set<string>,
@@ -1343,6 +1353,88 @@ function formatCountdownMmSs(ms: number): string {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return `${m}:${String(r).padStart(2, '0')}`;
+}
+
+/** Human countdown e.g. "2m 05s" or "45s" — uses server seconds when provided. */
+function formatCountdownMinutesSeconds(totalSeconds: number): string {
+  const s = Math.max(0, Math.ceil(totalSeconds));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m > 0) return `${m}m ${String(r).padStart(2, '0')}s`;
+  return `${s}s`;
+}
+
+/** Typical scoped My Email sync (one inbox) — used for honest ETA while the server lock is on. */
+const LIVE_SCOPED_SYNC_TYPICAL_SECONDS = 180;
+
+function buildLiveMailCountdownCopy(opts: {
+  nowMs: number;
+  runtime: RuntimeStatus | null;
+  scheduleReady: boolean;
+  syncBusy: boolean;
+  liveIngestAwaitingServer: boolean;
+  liveSyncStartedAtMs: number | null;
+  awaitingAfterRun: boolean;
+}): { headline: string; detail: string; tone: 'active' | 'wait' | 'idle' } {
+  const {
+    nowMs,
+    runtime,
+    scheduleReady,
+    syncBusy,
+    liveIngestAwaitingServer,
+    liveSyncStartedAtMs,
+    awaitingAfterRun,
+  } = opts;
+
+  const serverRunning = runtime?.ingestionRunning === true;
+  const active = syncBusy || liveIngestAwaitingServer || serverRunning || awaitingAfterRun;
+
+  if (active) {
+    const serverStartMs = runtime?.lastIngestionStartedAt
+      ? Date.parse(runtime.lastIngestionStartedAt)
+      : NaN;
+    const startedMs =
+      liveSyncStartedAtMs ??
+      (Number.isFinite(serverStartMs) ? serverStartMs : nowMs);
+    const elapsedSec = Math.max(0, Math.floor((nowMs - startedMs) / 1000));
+    const remainingSec = Math.max(10, LIVE_SCOPED_SYNC_TYPICAL_SECONDS - elapsedSec);
+    return {
+      tone: 'active',
+      headline: `Live sync running · about ${formatCountdownMinutesSeconds(remainingSec)} until your list updates`,
+      detail: `Elapsed ${formatCountdownMmSs(elapsedSec * 1000)}. Your inbox is checked on the server; this page refreshes threads every 8 seconds while sync runs. CEO, managers, and employees all use the same live path for their own mailbox.`,
+    };
+  }
+
+  const secUntil =
+    runtime?.secondsUntilNextIngestion != null && Number.isFinite(runtime.secondsUntilNextIngestion)
+      ? Math.max(0, runtime.secondsUntilNextIngestion)
+      : null;
+  const parsedNext = runtime?.nextIngestionAt ? Date.parse(runtime.nextIngestionAt) : NaN;
+  const fromIsoSec =
+    !secUntil && runtime?.nextIngestionAt && Number.isFinite(parsedNext)
+      ? Math.max(0, Math.ceil((parsedNext - nowMs) / 1000))
+      : null;
+  const waitSec = secUntil ?? fromIsoSec;
+
+  if (scheduleReady && waitSec != null) {
+    const intervalMin = Math.max(
+      1,
+      Math.round((runtime?.ingestionIntervalSeconds ?? 120) / 60),
+    );
+    return {
+      tone: 'wait',
+      headline: `Next automatic Gmail check in ${formatCountdownMinutesSeconds(waitSec)}`,
+      detail: `Background live mail runs about every ${intervalMin} minute${intervalMin === 1 ? '' : 's'} for connected inboxes. Press Sync now to pull new mail immediately (usually under 3 minutes for your mailbox).`,
+    };
+  }
+
+  return {
+    tone: 'idle',
+    headline: 'Live mail',
+    detail: scheduleReady
+      ? 'Automatic checks run on a schedule. Use Sync now to fetch new Gmail mail for your inbox right away.'
+      : 'Loading sync schedule…',
+  };
 }
 
 function isAbortError(e: unknown): boolean {
@@ -1454,7 +1546,7 @@ async function pollHistoricalFetchProgressUntilDone(
   return 'timeout';
 }
 
-/** CEO Live Mails: last sync + countdown + manual sync (always between toggle and KPIs). */
+/** My Email live strip (CEO, manager, employee): sync + accurate countdown from `/settings/runtime`. */
 function CeoLiveSyncStrip({
   mailboxes,
   liveTrackDate,
@@ -1463,10 +1555,12 @@ function CeoLiveSyncStrip({
   onLiveTrackTimeChange,
   onSyncNow,
   syncBusy,
-  nextIngestionAtIso,
+  runtime,
   scheduleReady,
   canManualSync = true,
   recentManualSyncAtMs = null,
+  liveIngestAwaitingServer = false,
+  liveSyncStartedAtMs = null,
   showStopAnalysis = false,
   onStopAnalysis,
 }: {
@@ -1477,15 +1571,12 @@ function CeoLiveSyncStrip({
   onLiveTrackTimeChange: (v: string) => void;
   onSyncNow: () => void;
   syncBusy: boolean;
-  /** From GET /settings/runtime — next UTC cron slot, matches server schedule. */
-  nextIngestionAtIso: string | null;
-  /** False until the first `/settings/runtime` response for this view. */
+  runtime: RuntimeStatus | null;
   scheduleReady: boolean;
-  /** Employees rely on the scheduled crawl; CEO/managers can trigger a company run. */
   canManualSync?: boolean;
-  /** Set when Run sync now succeeded; cleared when `last_synced_at` appears on a mailbox. */
   recentManualSyncAtMs?: number | null;
-  /** While the historical Inbox-AI pass is streaming, offer a hard stop (aborts the SSE request). */
+  liveIngestAwaitingServer?: boolean;
+  liveSyncStartedAtMs?: number | null;
   showStopAnalysis?: boolean;
   onStopAnalysis?: () => void;
 }) {
@@ -1503,12 +1594,15 @@ function CeoLiveSyncStrip({
     !latestIso &&
     recentManualSyncAtMs != null &&
     nowMs - recentManualSyncAtMs < 120_000;
-  const parsedNext = nextIngestionAtIso ? Date.parse(nextIngestionAtIso) : NaN;
-  /** Always show the timer when the server gave a next slot — never replace it with “Running…” (lock state can stick). */
-  const nextTickMs =
-    nextIngestionAtIso && !Number.isNaN(parsedNext)
-      ? Math.max(0, parsedNext - nowMs)
-      : null;
+  const liveCountdown = buildLiveMailCountdownCopy({
+    nowMs,
+    runtime,
+    scheduleReady,
+    syncBusy,
+    liveIngestAwaitingServer,
+    liveSyncStartedAtMs,
+    awaitingAfterRun,
+  });
   const trackingWindowPreview = trackingWindowPreviewLine(liveTrackDate, liveTrackTime);
 
   if (!connected) {
@@ -1526,6 +1620,19 @@ function CeoLiveSyncStrip({
 
   return (
     <div className="rounded-2xl border border-slate-200/80 bg-white px-4 py-4 shadow-card sm:px-5">
+      <div
+        aria-live="polite"
+        className={`mb-4 rounded-xl border px-3 py-2.5 text-xs leading-relaxed ${
+          liveCountdown.tone === 'active'
+            ? 'border-violet-200 bg-violet-50/90 text-violet-950'
+            : liveCountdown.tone === 'wait'
+              ? 'border-sky-200 bg-sky-50/90 text-sky-950'
+              : 'border-slate-200 bg-slate-50/90 text-slate-700'
+        }`}
+      >
+        <p className="text-sm font-semibold tabular-nums">{liveCountdown.headline}</p>
+        <p className="mt-1 text-[11px] opacity-90">{liveCountdown.detail}</p>
+      </div>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="grid flex-1 gap-4 sm:grid-cols-2">
           <div>
@@ -1553,8 +1660,9 @@ function CeoLiveSyncStrip({
                 (that tab is follow-ups only). Use <strong className="font-medium text-slate-700">All threads</strong>{' '}
                 for any tracked thread, and <strong className="font-medium text-slate-700">AI skipped</strong> if Inbox
                 AI did not store the message. While you keep this page open, your thread list also{' '}
-                <strong className="font-medium text-slate-700">refreshes automatically</strong> about every 25 seconds
-                so new mail from the server can appear without pressing Sync.
+                <strong className="font-medium text-slate-700">refreshes automatically</strong> (about every 8
+                seconds while a sync is running, otherwise about every 25 seconds) so new mail can appear without
+                pressing Sync.
               </p>
             </div>
           ) : null}
@@ -1693,10 +1801,12 @@ function MyEmailPageInner() {
   const [liveSyncBusy, setLiveSyncBusy] = useState(false);
   /** After a successful run, `last_synced_at` can lag — show a calmer line until it appears. */
   const [liveSyncAwaitingTimestamp, setLiveSyncAwaitingTimestamp] = useState<number | null>(null);
-  /** CEO Live: next cron from GET /settings/runtime (null = not loaded yet). */
-  const [liveIngestSchedule, setLiveIngestSchedule] = useState<{
-    nextIngestionAt: string | null;
-  } | null>(null);
+  /** True while server ingest lock is on after Sync now (poll runtime + refresh list). */
+  const [liveIngestAwaitingServer, setLiveIngestAwaitingServer] = useState(false);
+  /** When the user started Sync now — for elapsed / ETA on the live countdown strip. */
+  const [liveSyncStartedAtMs, setLiveSyncStartedAtMs] = useState<number | null>(null);
+  /** Live mail schedule + ingest lock from GET /settings/runtime (null = not loaded yet). */
+  const [liveRuntime, setLiveRuntime] = useState<RuntimeStatus | null>(null);
   /** CEO Live: local date/time → saved as `tracking_start_at` before each manual sync. */
   const [liveTrackDate, setLiveTrackDate] = useState('');
   const [liveTrackTime, setLiveTrackTime] = useState('');
@@ -2093,7 +2203,7 @@ function MyEmailPageInner() {
       );
 
       try {
-        const runReq = apiFetch('/email-ingestion/run', t);
+        const runReq = apiFetch(liveIngestRunUrl([employeeId]), t);
         const timed = await Promise.race([
           runReq.then((res) => ({ kind: 'response' as const, res })),
           new Promise<{ kind: 'timeout' }>((resolve) =>
@@ -2101,6 +2211,8 @@ function MyEmailPageInner() {
           ),
         ]);
         if (timed.kind === 'timeout') {
+          setLiveSyncStartedAtMs(Date.now());
+          setLiveIngestAwaitingServer(true);
           setHistoricalBackfillUi((u) =>
             u
               ? {
@@ -2108,7 +2220,7 @@ function MyEmailPageInner() {
                   liveIngestHandoff: {
                     status: 'pending',
                     message:
-                      'Live sync is still running on the server. Stat cards and thread lists will refresh in a few seconds.',
+                      'Live sync is still running on the server. Your thread list will refresh automatically.',
                   },
                 }
               : u,
@@ -2151,6 +2263,8 @@ function MyEmailPageInner() {
             );
             ingestResult = { ran: true, timedOut: false, response: res, body };
           } else if (body.status === 'running') {
+            setLiveSyncStartedAtMs(Date.now());
+            setLiveIngestAwaitingServer(true);
             setHistoricalBackfillUi((u) =>
               u
                 ? {
@@ -2158,7 +2272,7 @@ function MyEmailPageInner() {
                     liveIngestHandoff: {
                       status: 'running',
                       message:
-                        'Another live sync was already in progress — this page will update when it finishes.',
+                        'Another sync is in progress — your inbox will refresh automatically when it finishes.',
                     },
                   }
                 : u,
@@ -2297,13 +2411,14 @@ function MyEmailPageInner() {
     if (!token) return;
     const res = await apiFetch('/settings/runtime', token);
     if (!res.ok) {
-      setLiveIngestSchedule({ nextIngestionAt: null });
+      setLiveRuntime(null);
       return;
     }
     const rt = (await res.json()) as RuntimeStatus;
-    setLiveIngestSchedule({
-      nextIngestionAt: rt.nextIngestionAt ?? null,
-    });
+    setLiveRuntime(rt);
+    if (!rt.ingestionRunning) {
+      setLiveIngestAwaitingServer(false);
+    }
   }, [token]);
 
   const removeConversationFromWorkspace = useCallback(
@@ -2311,6 +2426,16 @@ function MyEmailPageInner() {
       if (!token) return;
       setResolvingId(conversationId);
       setError(null);
+      const rollbackRef: { current: DashboardPayload | null } = { current: null };
+      setDash((prev) => {
+        if (!prev) return prev;
+        rollbackRef.current = prev;
+        return {
+          ...prev,
+          conversations: prev.conversations.filter((c) => c.conversation_id !== conversationId),
+          needs_attention: prev.needs_attention.filter((c) => c.conversation_id !== conversationId),
+        };
+      });
       try {
         const res = await apiFetch(
           `/conversations/${encodeURIComponent(conversationId)}`,
@@ -2324,25 +2449,20 @@ function MyEmailPageInner() {
             { method: 'POST' },
           );
           if (!fallback.ok) {
+            if (rollbackRef.current) setDash(rollbackRef.current);
             setError(await readApiErrorMessage(res, 'Could not remove thread.'));
             return;
           }
         }
-        setDash((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            conversations: prev.conversations.filter((c) => c.conversation_id !== conversationId),
-            needs_attention: prev.needs_attention.filter((c) => c.conversation_id !== conversationId),
-          };
-        });
-        await loadDashboard(token, undefined, { skipLegacyPurge: true });
         setSuccess('Thread removed from your workspace.');
+      } catch {
+        if (rollbackRef.current) setDash(rollbackRef.current);
+        setError('Could not remove thread. Try again.');
       } finally {
         setResolvingId(null);
       }
     },
-    [token, loadDashboard],
+    [token],
   );
 
   useEffect(() => {
@@ -2734,14 +2854,15 @@ function MyEmailPageInner() {
     }
 
     if (ingestMeta.ran && ingestMeta.timedOut) {
+      setLiveSyncStartedAtMs(Date.now());
+      setLiveIngestAwaitingServer(true);
       setPipeline({
         ...basePipeline,
-        running: false,
-        status: 'success',
-        finishedAt: new Date().toISOString(),
+        running: true,
+        status: 'running',
       });
       setSuccess(
-        'Historical analysis finished. Live sync is running in the background — your inbox will refresh shortly.',
+        'Historical analysis finished. Live sync is running — your inbox will refresh automatically.',
       );
       await loadDashboard(token, mb.id);
       return;
@@ -2760,7 +2881,7 @@ function MyEmailPageInner() {
       runRes = ingestMeta.response;
       runBody = ingestMeta.body as { status?: string; message?: string; reason?: string };
     } else {
-      runRes = await apiFetch('/email-ingestion/run', token);
+      runRes = await apiFetch(liveIngestRunUrl([mb.id]), token);
       runBody = (await runRes.json().catch(() => ({}))) as {
         status?: string;
         message?: string;
@@ -2813,7 +2934,9 @@ function MyEmailPageInner() {
         setSuccess('Ingestion completed. Your inbox list updates below as threads are processed.');
       }
     } else if (runBody.status === 'running') {
-      setSuccess('Another sync is already in progress; this page will update when it finishes.');
+      setLiveSyncStartedAtMs(Date.now());
+      setLiveIngestAwaitingServer(true);
+      setSuccess('Another sync is in progress; your inbox will refresh automatically when it finishes.');
     } else {
       setPipeline(null);
       setError(
@@ -2931,10 +3054,10 @@ function MyEmailPageInner() {
                 status: 'running',
                 ingestionStartedAtServer:
                   rt.lastIngestionStartedAt ?? p.ingestionStartedAtServer ?? null,
-                /** Totals on the server are only finalized when a run completes; avoid showing stale ones mid-sync. */
               }
             : p,
         );
+        void loadDashboard(token, pipeline.mailboxId);
         return;
       }
 
@@ -3103,15 +3226,27 @@ function MyEmailPageInner() {
   useEffect(() => {
     if (!token || !showFullInboxChrome || myEmailTab !== 'ceo') return;
     let cancelled = false;
+    const pollMs =
+      liveSyncBusy || liveIngestAwaitingServer || liveRuntime?.ingestionRunning
+        ? 2_000
+        : 10_000;
     void loadLiveIngestSchedule();
     const id = window.setInterval(() => {
       if (!cancelled) void loadLiveIngestSchedule();
-    }, 30_000);
+    }, pollMs);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [token, showFullInboxChrome, myEmailTab, loadLiveIngestSchedule]);
+  }, [
+    token,
+    showFullInboxChrome,
+    myEmailTab,
+    loadLiveIngestSchedule,
+    liveSyncBusy,
+    liveIngestAwaitingServer,
+    liveRuntime?.ingestionRunning,
+  ]);
 
   useEffect(() => {
     setAiSkippedOffset(0);
@@ -3703,6 +3838,7 @@ function MyEmailPageInner() {
       return;
     }
     setLiveSyncBusy(true);
+    setLiveSyncStartedAtMs(Date.now());
     setError(null);
     const useQuickSyncOnly = targets.every((mb) => mailboxReadyForQuickLiveSync(mb, trackingIso));
     try {
@@ -3761,7 +3897,8 @@ function MyEmailPageInner() {
           }
         }
       }
-      const runReq = apiFetch('/email-ingestion/run', token);
+      const mailboxIds = targets.map((mb) => mb.id);
+      const runReq = apiFetch(liveIngestRunUrl(mailboxIds), token);
       const timed = await Promise.race([
         runReq.then((res) => ({ kind: 'response' as const, res })),
         new Promise<{ kind: 'timeout' }>((resolve) =>
@@ -3770,13 +3907,11 @@ function MyEmailPageInner() {
       ]);
       if (timed.kind === 'timeout') {
         setLiveSyncAwaitingTimestamp(Date.now());
-        setSuccess('Sync started. It is still running in background; refreshing inbox now.');
+        setLiveSyncStartedAtMs(Date.now());
+        setLiveIngestAwaitingServer(true);
+        setSuccess('Sync started for your inbox. The list will refresh automatically while it runs.');
         await loadDashboard(token, syncEmployeeIdsParam || undefined);
         void loadLiveIngestSchedule();
-        window.setTimeout(() => {
-          void loadDashboard(token, syncEmployeeIdsParam || undefined);
-          void loadLiveIngestSchedule();
-        }, 2500);
         return;
       }
       const res = timed.res;
@@ -3800,10 +3935,12 @@ function MyEmailPageInner() {
       const mailboxIdSet = new Set(targets.map((mb) => mb.id));
       const resultHint = summarizeIngestionForMailboxes(j.results, mailboxIdSet);
       if (j.status === 'running') {
+        setLiveSyncStartedAtMs(Date.now());
+        setLiveIngestAwaitingServer(true);
         setSuccess(
           resultHint
-            ? `A sync is already running — wait a moment, then refresh. (${resultHint})`
-            : 'A sync is already running — wait a moment, then refresh.',
+            ? `A sync is already running — your inbox will refresh when it finishes. (${resultHint})`
+            : 'A sync is already running — your inbox will refresh when it finishes.',
         );
       } else {
         setSuccess(
@@ -3888,14 +4025,12 @@ function MyEmailPageInner() {
 
       if (ingestMeta.ran && ingestMeta.timedOut) {
         setLiveSyncAwaitingTimestamp(Date.now());
-        setSuccess('Tracking window saved. Sync is running in the background — your inbox will fill in shortly.');
+        setLiveSyncStartedAtMs(Date.now());
+        setLiveIngestAwaitingServer(true);
+        setSuccess('Tracking window saved. Live sync is running — your inbox will refresh automatically.');
         await loadDashboard(token, syncEmployeeIdsParam || undefined);
         void loadLiveIngestSchedule();
         setTrackingOnboarding(null);
-        window.setTimeout(() => {
-          void loadDashboard(token, syncEmployeeIdsParam || undefined);
-          void loadLiveIngestSchedule();
-        }, 2500);
         return;
       }
 
@@ -3931,17 +4066,15 @@ function MyEmailPageInner() {
 
       setLiveSyncAwaitingTimestamp(Date.now());
       if (ingestMeta.ran && j.status === 'running') {
-        setSuccess('Tracking window saved. A sync is already running — wait a moment, then refresh.');
+        setLiveSyncStartedAtMs(Date.now());
+        setLiveIngestAwaitingServer(true);
+        setSuccess('Tracking window saved. A sync is already running — your inbox will refresh when it finishes.');
       } else {
         setSuccess('Tracking window saved. Historical catch-up and live sync finished — refreshing your inbox…');
       }
       await loadDashboard(token, syncEmployeeIdsParam || undefined);
       void loadLiveIngestSchedule();
       setTrackingOnboarding(null);
-      window.setTimeout(() => {
-        void loadDashboard(token, syncEmployeeIdsParam || undefined);
-        void loadLiveIngestSchedule();
-      }, 2500);
     } finally {
       setOnboardingBusy(false);
     }
@@ -4010,9 +4143,10 @@ function MyEmailPageInner() {
       return;
     }
     if (historicalBlockingDashboardPoll) return;
-    if (pipeline?.running) return;
 
-    const POLL_MS = 25_000;
+    const fastLive =
+      liveSyncBusy || liveIngestAwaitingServer || Boolean(pipeline?.running);
+    const POLL_MS = fastLive ? 8_000 : 25_000;
     const tick = () => {
       if (typeof document !== 'undefined' && document.hidden) return;
       const t = tokenRef.current;
@@ -4035,7 +4169,32 @@ function MyEmailPageInner() {
     me?.role,
     pipeline?.running,
     historicalBlockingDashboardPoll,
+    liveSyncBusy,
+    liveIngestAwaitingServer,
   ]);
+
+  /** After Sync now (or handoff), poll until server ingest finishes and keep refreshing the list. */
+  useEffect(() => {
+    if (!token || !liveIngestAwaitingServer) return;
+    let stopped = false;
+    const poll = async () => {
+      const res = await apiFetch('/settings/runtime', token);
+      if (!res.ok || stopped) return;
+      const rt = (await res.json()) as RuntimeStatus;
+      setLiveRuntime(rt);
+      const p = syncEmployeeIdsParamRef.current;
+      void loadDashboardRef.current(token, p || undefined);
+      if (!rt.ingestionRunning) {
+        setLiveIngestAwaitingServer(false);
+      }
+    };
+    const id = window.setInterval(() => void poll(), 2500);
+    void poll();
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  }, [token, liveIngestAwaitingServer]);
 
   /** When returning from Gmail / another tab, pull fresh threads immediately (no wait for interval). */
   useEffect(() => {
@@ -4292,10 +4451,9 @@ function MyEmailPageInner() {
                 Elapsed {formatElapsedSince(pipeline.startedAt)}
               </span>{' '}
               · The server is syncing{' '}
-              <strong className="font-medium text-slate-800">every connected mailbox</strong> for your
-              company (not just this card). With several accounts that is often{' '}
-              <strong className="font-medium text-slate-800">several minutes to 20+ minutes</strong>,
-              depending on inbox size — not a frozen screen.
+              <strong className="font-medium text-slate-800">your inbox</strong> for new Gmail mail
+              (Inbox AI + thread update). This usually takes under a few minutes; the list refreshes
+              automatically while it runs.
             </p>
             {pipeline.ingestionStartedAtServer ? (
               <p className="mt-1 text-[10px] text-slate-500 tabular-nums">
@@ -4423,7 +4581,7 @@ function MyEmailPageInner() {
       subtitle={shellSubtitle}
       isActive={headerInboxGmailConnected}
       mailboxCrawlEnabled={
-        liveIngestSchedule == null ? undefined : liveIngestSchedule.nextIngestionAt != null
+        liveRuntime == null ? undefined : liveRuntime.nextIngestionAt != null
       }
       lastSyncLabel={headerOwnInboxLastSyncLabel}
       onSignOut={() => void ctxSignOut()}
@@ -4693,10 +4851,12 @@ function MyEmailPageInner() {
                       onLiveTrackTimeChange={setLiveTrackTime}
                       onSyncNow={() => void runLiveIngestionNow()}
                       syncBusy={liveSyncBusy}
-                      nextIngestionAtIso={liveIngestSchedule?.nextIngestionAt ?? null}
-                      scheduleReady={liveIngestSchedule != null}
+                      runtime={liveRuntime}
+                      scheduleReady={liveRuntime != null}
                       canManualSync={canRunMyMailboxSync}
                       recentManualSyncAtMs={liveSyncAwaitingTimestamp}
+                      liveIngestAwaitingServer={liveIngestAwaitingServer}
+                      liveSyncStartedAtMs={liveSyncStartedAtMs}
                       showStopAnalysis={showCeoHistoricalStop}
                       onStopAnalysis={stopHistoricalBackfill}
                     />

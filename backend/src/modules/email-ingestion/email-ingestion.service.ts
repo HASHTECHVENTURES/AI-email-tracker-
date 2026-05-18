@@ -320,6 +320,22 @@ export class EmailIngestionService {
    * Employee portal — "Run sync now" for **this** mailbox only (same `ingestForEmployee` path as cron).
    */
   async runIncrementalForSingleEmployee(companyId: string, employeeId: string): Promise<IngestionResult[]> {
+    return this.runIncrementalForEmployeeIds(companyId, [employeeId]);
+  }
+
+  /**
+   * My Email "Sync now" — ingest only the given mailbox(es), not the whole company.
+   * Cron still uses {@link runIncrementalCycle} for all mailboxes.
+   */
+  async runIncrementalForEmployeeIds(
+    companyId: string,
+    employeeIds: string[],
+  ): Promise<IngestionResult[]> {
+    const uniqueIds = [...new Set(employeeIds.map((id) => id.trim()).filter(Boolean))];
+    if (uniqueIds.length === 0) {
+      throw new BadRequestException('At least one employee_id is required');
+    }
+
     const pre = await this.settingsService.getAll();
     if (pre.email_ai_relevance_enabled && !this.relevanceModel) {
       this.logger.warn(
@@ -332,43 +348,9 @@ export class EmailIngestionService {
 
     const emailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(companyId);
     if (!emailCrawlOn) {
-      this.logger.debug(`Single-mailbox ingest skipped for company ${companyId} (platform email crawl off)`);
+      this.logger.debug(`Scoped ingest skipped for company ${companyId} (platform email crawl off)`);
       return [];
     }
-
-    const em = await this.employeesService.getById(companyId, employeeId);
-    if (!em || em.active === false) {
-      throw new NotFoundException('Mailbox not found');
-    }
-
-    const hasOAuth = await this.oauthTokenService.hasToken(em.id);
-    if (!hasOAuth) {
-      return [
-        {
-          companyId,
-          employeeId: em.id,
-          employeeName: em.name,
-          newMessages: 0,
-          skippedFiltered: 0,
-          affectedThreads: 0,
-          conversationsUpdated: 0,
-          error: 'Gmail not connected',
-        },
-      ];
-    }
-
-    const employee: Employee = {
-      id: em.id,
-      name: em.name,
-      email: em.email,
-      companyId: em.companyId,
-      departmentId: em.departmentId,
-      active: em.active,
-      slaHoursDefault: em.slaHoursDefault,
-      aiEnabled: em.aiEnabled,
-      trackingStartAt: em.trackingStartAt ?? null,
-      trackingPaused: em.trackingPaused,
-    };
 
     const acquired = await this.settingsService.tryAcquireIngestionLock();
     if (!acquired) {
@@ -379,21 +361,66 @@ export class EmailIngestionService {
     const results: IngestionResult[] = [];
 
     try {
-      try {
-        const result = await this.ingestForEmployee(companyId, employee, cycleSettings);
-        results.push(result);
-      } catch (err) {
-        this.logger.error(`Single-mailbox ingestion failed for ${employee.id}`, (err as Error).message);
-        results.push({
-          companyId,
-          employeeId: employee.id,
-          employeeName: employee.name,
-          newMessages: 0,
-          skippedFiltered: 0,
-          affectedThreads: 0,
-          conversationsUpdated: 0,
-          error: (err as Error).message,
-        });
+      for (const employeeId of uniqueIds) {
+        const em = await this.employeesService.getById(companyId, employeeId);
+        if (!em || em.active === false) {
+          results.push({
+            companyId,
+            employeeId,
+            employeeName: employeeId,
+            newMessages: 0,
+            skippedFiltered: 0,
+            affectedThreads: 0,
+            conversationsUpdated: 0,
+            error: 'Mailbox not found',
+          });
+          continue;
+        }
+
+        const hasOAuth = await this.oauthTokenService.hasToken(em.id);
+        if (!hasOAuth) {
+          results.push({
+            companyId,
+            employeeId: em.id,
+            employeeName: em.name,
+            newMessages: 0,
+            skippedFiltered: 0,
+            affectedThreads: 0,
+            conversationsUpdated: 0,
+            error: 'Gmail not connected',
+          });
+          continue;
+        }
+
+        const employee: Employee = {
+          id: em.id,
+          name: em.name,
+          email: em.email,
+          companyId: em.companyId,
+          departmentId: em.departmentId,
+          active: em.active,
+          slaHoursDefault: em.slaHoursDefault,
+          aiEnabled: em.aiEnabled,
+          trackingStartAt: em.trackingStartAt ?? null,
+          trackingPaused: em.trackingPaused,
+        };
+
+        try {
+          const result = await this.ingestForEmployee(companyId, employee, cycleSettings);
+          results.push(result);
+        } catch (err) {
+          this.logger.error(`Scoped ingestion failed for ${employee.id}`, (err as Error).message);
+          results.push({
+            companyId,
+            employeeId: employee.id,
+            employeeName: employee.name,
+            newMessages: 0,
+            skippedFiltered: 0,
+            affectedThreads: 0,
+            conversationsUpdated: 0,
+            error: (err as Error).message,
+          });
+        }
       }
 
       await this.conversationsService.autoArchiveResolved();

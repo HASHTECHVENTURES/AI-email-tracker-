@@ -56,6 +56,13 @@ type DiagnosticsPayload = {
     node_env: string | null;
   };
   totals: { email_messages: number; conversations: number };
+  storage_health?: {
+    legacy_resolved_threads: number;
+    conversations_done: number;
+    conversations_manually_closed: number;
+    permanently_removed_thread_markers: number;
+    hint: string;
+  };
   mailboxes: DiagnosticsMailbox[];
   recent_ingested_messages: Array<{
     employee_id: string;
@@ -89,6 +96,7 @@ export default function SettingsPage() {
   const [diagLoading, setDiagLoading] = useState(false);
   const [diag, setDiag] = useState<DiagnosticsPayload | null>(null);
   const [diagError, setDiagError] = useState<string | null>(null);
+  const [purgeLegacyLoading, setPurgeLegacyLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
   const [platformAdmin, setPlatformAdmin] = useState(false);
   /** Avoids showing master toggles as OFF before GET /settings returns (was a visible flash). */
@@ -264,6 +272,34 @@ export default function SettingsPage() {
       await load(token);
     } finally {
       setSavingMasterCombined(false);
+    }
+  }
+
+  async function purgeLegacyResolvedThreads() {
+    if (!token) return;
+    setError(null);
+    setNotice(null);
+    setPurgeLegacyLoading(true);
+    try {
+      const res = await apiFetch('/self-tracking/purge-legacy-resolved', token, { method: 'POST' });
+      const body = (await res.json().catch(() => ({}))) as {
+        removed?: number;
+        failed?: number;
+        message?: string;
+      };
+      if (!res.ok) {
+        setError(body.message || 'Purge failed');
+        return;
+      }
+      const n = body.removed ?? 0;
+      setNotice(
+        n > 0
+          ? `Permanently removed ${n} old resolved thread(s) and their stored mail bodies.`
+          : 'No legacy resolved threads left to remove.',
+      );
+      await runDiagnostics();
+    } finally {
+      setPurgeLegacyLoading(false);
     }
   }
 
@@ -563,6 +599,28 @@ export default function SettingsPage() {
                   {diag.totals.email_messages} email message row(s), {diag.totals.conversations} conversation(s) in this company.
                 </p>
               </div>
+              {diag.storage_health ? (
+                <div className="rounded-lg border border-amber-100 bg-amber-50/80 p-3 text-slate-800">
+                  <p className="font-medium text-amber-950">Storage &amp; resolved threads</p>
+                  <ul className="mt-2 list-inside list-disc space-y-1 text-xs">
+                    <li>Legacy “mark done” threads still in DB: {diag.storage_health.legacy_resolved_threads}</li>
+                    <li>Threads with status Done: {diag.storage_health.conversations_done}</li>
+                    <li>Manually closed flag: {diag.storage_health.conversations_manually_closed}</li>
+                    <li>Permanently removed (skip markers): {diag.storage_health.permanently_removed_thread_markers}</li>
+                  </ul>
+                  <p className="mt-2 text-xs text-amber-900">{diag.storage_health.hint}</p>
+                  {isCeo && diag.storage_health.legacy_resolved_threads > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => void purgeLegacyResolvedThreads()}
+                      disabled={purgeLegacyLoading}
+                      className="mt-3 rounded-lg bg-amber-700 px-3 py-2 text-xs font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
+                    >
+                      {purgeLegacyLoading ? 'Removing…' : 'Purge all legacy resolved threads now'}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               <div>
                 <p className="font-medium text-slate-900">Checklist</p>
                 <ul className="mt-2 list-inside list-disc space-y-1 text-slate-600">

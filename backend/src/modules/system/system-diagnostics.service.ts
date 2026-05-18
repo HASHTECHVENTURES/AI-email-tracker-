@@ -52,6 +52,14 @@ export class SystemDiagnosticsService {
     settings: Awaited<ReturnType<SettingsService['getAll']>>;
     ingestion_runtime: Awaited<ReturnType<SettingsService['getRuntimeStatus']>>;
     totals: { email_messages: number; conversations: number };
+    /** Resolved-thread cleanup / Supabase storage (CEO troubleshooting). */
+    storage_health: {
+      legacy_resolved_threads: number;
+      conversations_done: number;
+      conversations_manually_closed: number;
+      permanently_removed_thread_markers: number;
+      hint: string;
+    };
     mailboxes: MailboxDiagnostic[];
     recent_ingested_messages: RecentIngestedRow[];
     /** Gates for Gemini during ingest — same logic as `EmailIngestionService` `allowGeminiRelevance` (per mailbox also needs `ai_enabled`). */
@@ -151,6 +159,57 @@ export class SystemDiagnosticsService {
       .from('conversations')
       .select('*', { count: 'exact', head: true })
       .eq('company_id', ctx.companyId);
+
+    const { count: convDone } = await this.supabase
+      .from('conversations')
+      .select('*', { count: 'exact', head: true })
+      .eq('company_id', ctx.companyId)
+      .eq('is_ignored', false)
+      .eq('follow_up_status', 'DONE');
+
+    const { count: convManuallyClosed } = await this.supabase
+      .from('conversations')
+      .select('*', { count: 'exact', head: true })
+      .eq('company_id', ctx.companyId)
+      .eq('is_ignored', false)
+      .eq('manually_closed', true);
+
+    const { data: convForLegacy } = await this.supabase
+      .from('conversations')
+      .select('conversation_id, manually_closed, reason, short_reason')
+      .eq('company_id', ctx.companyId)
+      .eq('is_ignored', false);
+
+    const legacyResolvedThreads = (convForLegacy ?? []).filter((r) => {
+      const row = r as {
+        manually_closed?: boolean;
+        reason?: string | null;
+        short_reason?: string | null;
+      };
+      if (row.manually_closed === true) return true;
+      const reason = (row.reason ?? '').toLowerCase();
+      const short = (row.short_reason ?? '').toLowerCase();
+      return (
+        reason.includes('manually marked') ||
+        reason.includes('marked done by user') ||
+        short.includes('manually marked')
+      );
+    }).length;
+
+    let permanentlyRemovedMarkers = 0;
+    if (ids.length > 0) {
+      const { count: markerCount } = await this.supabase
+        .from('email_ingestion_skips')
+        .select('*', { count: 'exact', head: true })
+        .in('employee_id', ids)
+        .like('provider_message_id', '__user_resolved_thread__:%');
+      permanentlyRemovedMarkers = markerCount ?? 0;
+    }
+
+    const storageHint =
+      legacyResolvedThreads > 0
+        ? `${legacyResolvedThreads} thread(s) still use the old “mark done” storage (not deleted). Open My Email to auto-purge, or Settings → purge below.`
+        : 'No legacy “mark done only” threads detected. Resolve/Remove permanently deletes messages and conversation rows.';
 
     const mailboxes: MailboxDiagnostic[] = [];
     for (const e of rows) {
@@ -281,6 +340,13 @@ export class SystemDiagnosticsService {
       totals: {
         email_messages: totalMsg ?? 0,
         conversations: totalConv ?? 0,
+      },
+      storage_health: {
+        legacy_resolved_threads: legacyResolvedThreads,
+        conversations_done: convDone ?? 0,
+        conversations_manually_closed: convManuallyClosed ?? 0,
+        permanently_removed_thread_markers: permanentlyRemovedMarkers,
+        hint: storageHint,
       },
       mailboxes,
       recent_ingested_messages: (recent ?? []) as RecentIngestedRow[],

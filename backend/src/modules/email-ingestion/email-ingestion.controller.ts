@@ -1,4 +1,12 @@
-import { ConflictException, Controller, ForbiddenException, Get, Req } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Controller,
+  ForbiddenException,
+  Get,
+  Query,
+  Req,
+} from '@nestjs/common';
 import { Request } from 'express';
 import { EmailIngestionService } from './email-ingestion.service';
 import { getRequestContext } from '../common/request-context';
@@ -14,7 +22,10 @@ export class EmailIngestionController {
   ) {}
 
   @Get('run')
-  async runIngestion(@Req() req: Request) {
+  async runIngestion(
+    @Req() req: Request,
+    @Query('employee_ids') employeeIdsParam?: string,
+  ) {
     const internal = Boolean(req.internalApiAuth);
 
     if (!internal) {
@@ -74,6 +85,43 @@ export class EmailIngestionController {
         throw new ForbiddenException(
           'Only CEO, department manager, linked employee mailbox, or internal API key can trigger a sync run',
         );
+      }
+
+      const scopedIds = [
+        ...new Set(
+          (employeeIdsParam ?? '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+        ),
+      ];
+      if (scopedIds.length > 0) {
+        try {
+          const results = await this.emailIngestionService.runIncrementalForEmployeeIds(
+            ctx.companyId,
+            scopedIds,
+          );
+          return {
+            status: 'completed',
+            scope: 'mailboxes',
+            timestamp: new Date().toISOString(),
+            results,
+          };
+        } catch (err) {
+          if (err instanceof ConflictException) {
+            return {
+              status: 'running',
+              message:
+                'Ingestion is already running. Wait for it to finish, then try Sync now again.',
+              timestamp: new Date().toISOString(),
+              results: [],
+            };
+          }
+          if (err instanceof BadRequestException) {
+            throw err;
+          }
+          throw err;
+        }
       }
     }
 
