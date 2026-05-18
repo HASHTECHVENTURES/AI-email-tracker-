@@ -27,7 +27,6 @@ import { buildSharedIngestRelevancePrompt } from './relevance-prompt.builder';
 import {
   ingestSkipReasonForInboundNoise,
   looksLikeDirectHumanMail,
-  shouldSilentlyDropInboundNoise,
 } from './relevance-guards';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { getGeminiApiKeyFromEnv } from '../common/env';
@@ -762,9 +761,6 @@ export class EmailIngestionService {
         if (!decision.relevant) {
           skippedFiltered += 1;
           skippedByAiDecision += 1;
-          if (shouldSilentlyDropInboundNoise(msg, this.gmailService.isNoise(msg.labelIds))) {
-            continue;
-          }
           if (decision.transientAiUnavailable) {
             continue;
           }
@@ -1079,9 +1075,8 @@ export class EmailIngestionService {
     }
     if (/parse|json|malformed|failed|error/.test(text)) return 'parsing_failed';
     if (ingestSkipReasonForInboundNoise(message, false)) return 'low_confidence';
-    // Word-boundary checks: bare /format/ matched inside "information", "transformation", etc.;
-    // bare /ics/ matched inside "physics", "comics", etc. — mislabeling many ai_irrelevant skips.
-    if (/\bunsupported\b|\bformat\b|\.ics\b|text\/calendar/i.test(text)) {
+    // Word-boundary checks: bare /format/ matched inside "information", "transformation", etc.
+    if (/\bunsupported\b|\bformat\b/i.test(text) && !/calendar invitation|meeting invite/i.test(text)) {
       return 'unsupported_format';
     }
     if (/context|thread|history|missing/.test(text)) return 'missing_thread_context';
@@ -1273,16 +1268,6 @@ export class EmailIngestionService {
         reason: decision.reason,
         confidence: decision.confidence,
         conversationsUpdated: recompute.threadsProcessed,
-      };
-    }
-
-    if (shouldSilentlyDropInboundNoise(msg, this.gmailService.isNoise(msg.labelIds))) {
-      await this.clearIngestionSkip(employeeId, providerMessageId);
-      return {
-        outcome: 'skipped',
-        reason: decision.reason?.trim() ?? null,
-        confidence: decision.confidence,
-        conversationsUpdated: 0,
       };
     }
 

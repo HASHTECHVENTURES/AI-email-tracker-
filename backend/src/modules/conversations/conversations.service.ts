@@ -612,10 +612,10 @@ export class ConversationsService {
       lifecycle_status:
         userCcOnly || latestInboundIsNoise ? 'RESOLVED' : result.lifecycleStatus,
       short_reason: latestInboundIsNoise
-        ? 'Calendar or promotional mail — no reply needed.'
+        ? 'Promotional mail — no reply needed.'
         : result.shortReason,
       reason: latestInboundIsNoise
-        ? 'Calendar or promotional mail — no reply needed.'
+        ? 'Promotional mail — no reply needed.'
         : result.shortReason,
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,

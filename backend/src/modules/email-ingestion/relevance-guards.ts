@@ -101,55 +101,25 @@ export function looksLikePromotionalMail(
   return false;
 }
 
-/** Inbound mail that should never create a “need your reply” follow-up. */
+/**
+ * Inbound promotional/newsletter mail — excluded from Need reply and auto-skipped at ingest.
+ * Calendar invites and meeting events are NOT noise; they belong in Need reply when unanswered.
+ */
 export function looksLikeInboundNoReplyNoise(
   msg: InboundNoiseFields,
   hasNoiseGmailLabel = false,
 ): boolean {
   if (msg.direction && msg.direction !== 'INBOUND') return false;
-  return looksLikeCalendarNotification(msg) || looksLikePromotionalMail(msg, hasNoiseGmailLabel);
+  return looksLikePromotionalMail(msg, hasNoiseGmailLabel);
 }
 
-/** Hard skip at ingest when Inbox AI would otherwise store calendar/promo noise. */
+/** Hard skip at ingest for promotional noise only (not calendar/events). */
 export function ingestSkipReasonForInboundNoise(
   msg: InboundNoiseFields,
   hasNoiseGmailLabel: boolean,
 ): string | null {
   if (!looksLikeInboundNoReplyNoise(msg, hasNoiseGmailLabel)) return null;
-  if (looksLikeCalendarNotification(msg)) {
-    return 'Calendar invitation or RSVP (accepted/declined/tentative) — not a customer reply thread.';
-  }
   return 'Promotional or marketing mail — not a customer reply thread.';
-}
-
-/** Calendar/promo: drop quietly — do not show in AI skipped or Need reply. */
-export function shouldSilentlyDropInboundNoise(
-  msg: InboundNoiseFields,
-  hasNoiseGmailLabel = false,
-): boolean {
-  return ingestSkipReasonForInboundNoise(msg, hasNoiseGmailLabel) != null;
-}
-
-/** Hide legacy skip-ledger rows for calendar/promo from the AI skipped UI. */
-export function isNoiseSkipLedgerEntry(fields: {
-  skip_reason?: string | null;
-  subject?: string | null;
-  from_email?: string | null;
-}): boolean {
-  const stub: InboundNoiseFields = {
-    subject: fields.subject ?? undefined,
-    from_email: fields.from_email ?? undefined,
-    body_text: fields.skip_reason ?? undefined,
-    direction: 'INBOUND',
-  };
-  if (looksLikeInboundNoReplyNoise(stub, false)) return true;
-  const r = (fields.skip_reason ?? '').toLowerCase();
-  return (
-    r.includes('calendar invitation') ||
-    r.includes('promotional or marketing') ||
-    r.includes('rsvp (accepted') ||
-    r.includes('not a customer reply thread')
-  );
 }
 
 /**

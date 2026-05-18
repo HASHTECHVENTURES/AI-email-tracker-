@@ -218,17 +218,9 @@ function isStaleNeedReplyByClientMessage(c: ConversationRow, staleDays: number):
   return Date.now() - t > staleDays * 86_400_000;
 }
 
-/** Calendar RSVPs and promo mail should not appear in Need your reply (also enforced on the server). */
-function isCalendarOrPromoNeedReplyNoise(c: ConversationRow): boolean {
+/** Promotional/newsletter mail only — calendar invites and events stay in Need your reply. */
+function isPromoNeedReplyNoise(c: ConversationRow): boolean {
   const text = `${c.thread_subject ?? ''} ${c.summary ?? ''} ${c.short_reason ?? ''}`.toLowerCase();
-  if (
-    /^(accepted|declined|tentative|invitation|updated invitation|canceled|cancelled):/i.test(text.trim()) ||
-    /\bhas accepted your invitation\b/i.test(text) ||
-    /\bhas declined your invitation\b/i.test(text) ||
-    /\bhas tentatively accepted\b/i.test(text)
-  ) {
-    return true;
-  }
   if (
     /(unsubscribe|view in browser|promo code|flash sale|limited time offer|\d+%\s*off|marketing newsletter)/i.test(
       text,
@@ -242,7 +234,7 @@ function isCalendarOrPromoNeedReplyNoise(c: ConversationRow): boolean {
 /** Need reply KPI/tab: hide stale *pending* threads, but never hide MISSED SLA rows (they were invisible before). */
 function passesNeedReplyVisibility(c: ConversationRow): boolean {
   if (c.user_cc_only === true) return false;
-  if (isCalendarOrPromoNeedReplyNoise(c)) return false;
+  if (isPromoNeedReplyNoise(c)) return false;
   if (!needsMyReply(c)) return false;
   if (c.follow_up_status === 'MISSED') return true;
   return !HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS);
@@ -879,33 +871,6 @@ type AiSkippedMailItem = {
   provider_thread_id: string | null;
 };
 
-/** Calendar invites and promo mail are not follow-up threads — hide from AI skipped (server filters too). */
-function isNoiseSkipLedgerRow(row: AiSkippedMailItem): boolean {
-  const sub = (row.subject ?? '').trim();
-  const from = (row.from_email ?? '').trim().toLowerCase();
-  const r = (row.skip_reason ?? '').toLowerCase();
-  if (
-    r.includes('calendar invitation') ||
-    r.includes('promotional or marketing') ||
-    r.includes('rsvp (accepted') ||
-    r.includes('not a customer reply thread')
-  ) {
-    return true;
-  }
-  if (/^invitation\b/i.test(sub)) return true;
-  if (
-    /^(accepted|declined|tentative|canceled|cancelled|updated invitation|invitation):\s/i.test(sub)
-  ) {
-    return true;
-  }
-  if (
-    /@calendar\.google|calendar-notification@google\.com|@resource\.calendar\.google/i.test(from)
-  ) {
-    return true;
-  }
-  return false;
-}
-
 function skipKindShortLabel(kind: string): string {
   if (kind === 'ai_irrelevant') return 'Inbox AI';
   if (kind === 'before_tracking') return 'Before tracking';
@@ -931,6 +896,14 @@ function skipReasonIsGeminiQuotaExhausted(reason: string | null | undefined): bo
 }
 
 function skipReasonBadgeLabel(row: AiSkippedMailItem): string {
+  const reasonRaw = row.skip_reason ?? '';
+  const reason = reasonRaw.toLowerCase();
+  if (reason.includes('calendar invitation') || reason.includes('rsvp (accepted')) {
+    return 'Calendar / event';
+  }
+  if (reason.includes('promotional or marketing')) {
+    return 'Promotional';
+  }
   const code = row.skip_reason_code ?? '';
   const labels: Record<string, string> = {
     low_confidence: 'Low confidence',
@@ -942,16 +915,13 @@ function skipReasonBadgeLabel(row: AiSkippedMailItem): string {
   };
   if (code && labels[code]) {
     if (code === 'unsupported_format') {
-      const r = (row.skip_reason ?? '').toLowerCase();
+      const r = reason;
       const looksLikeRealFormatIssue =
-        /\bunsupported\b|\bformat\b|mime|content-type|\.ics\b|\bics\b|\bcalendar\b|\binvite\b|text\/calendar/.test(
-          r,
-        );
+        /\bunsupported\b|\bformat\b|mime|content-type|text\/calendar/.test(r);
       if (!looksLikeRealFormatIssue) return labels.low_confidence;
     }
     return labels[code];
   }
-  const reason = (row.skip_reason ?? '').toLowerCase();
   if (reason.includes('attachment')) return labels.attachment_only;
   if (reason.includes('empty')) return labels.empty_body;
   if (reason.includes('parse') || reason.includes('failed')) return labels.parsing_failed;
@@ -1077,8 +1047,8 @@ function SkippedMailsTabTable({
         </div>
       </div>
       <p className="rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
-        These conversations could not be confidently categorized by AI. Calendar invitations and
-        promotional mail are not listed here — they are ignored automatically and do not need a reply.
+        These conversations could not be confidently categorized by AI. Use <strong>Reanalyze</strong>{' '}
+        on calendar or meeting invites so they move into Need your reply.
       </p>
       {geminiQuotaBanner ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
@@ -3295,8 +3265,7 @@ function MyEmailPageInner() {
         throw new Error(await readApiErrorMessage(res, 'Could not load skipped messages.'));
       }
       const data = (await res.json()) as { items?: AiSkippedMailItem[]; total?: number };
-      const items = Array.isArray(data.items) ? data.items : [];
-      setAiSkippedRows(items.filter((row) => !isNoiseSkipLedgerRow(row)));
+      setAiSkippedRows(Array.isArray(data.items) ? data.items : []);
       setAiSkippedTotal(typeof data.total === 'number' ? data.total : 0);
       setAiSkippedCountSyncedAt(new Date().toISOString());
     } catch (e) {
