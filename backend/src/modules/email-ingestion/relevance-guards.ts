@@ -22,17 +22,28 @@ function readInboundFields(msg: InboundNoiseFields): {
   };
 }
 
-/** Google/Outlook calendar invites, updates, and accept/decline/tentative RSVPs. */
-export function looksLikeCalendarNotification(msg: InboundNoiseFields): boolean {
+/**
+ * Calendar invites & meeting events from any sender (not only marketing@).
+ * Covers Gmail "Invitation: … @ Mon May 18, 2026 5pm", Fireflies prep, ICS bodies, etc.
+ */
+export function looksLikeMeetingOrEventMail(msg: InboundNoiseFields): boolean {
   const { from, subject, body } = readInboundFields(msg);
   const sub = subject.toLowerCase();
   const b = body.toLowerCase();
+  const combined = `${sub} ${b}`;
 
   if (
-    /calendar-notification@google\.com|@resource\.calendar\.google|group\.calendar\.google|outlook\.com$/i.test(
+    /calendar-notification@google\.com|@resource\.calendar\.google|group\.calendar\.google/i.test(
       from,
     ) ||
     /@calendar\.google/i.test(from)
+  ) {
+    return true;
+  }
+
+  if (
+    /@(?:fireflies\.ai|calendly\.com|zoom\.us|calendar\.google\.com)\b/i.test(from) &&
+    /(meeting|invite|invitation|scheduled|calendar|prep)/i.test(combined)
   ) {
     return true;
   }
@@ -41,7 +52,11 @@ export function looksLikeCalendarNotification(msg: InboundNoiseFields): boolean 
     /^invitation\b/i.test(sub) ||
     /^invitation:/i.test(sub) ||
     /^meeting prep:/i.test(sub) ||
+    /^updated invitation:/i.test(sub) ||
     /\binvitation:\s+.+\s@\s+(?:mon|tue|wed|thu|fri|sat|sun)\b/i.test(sub) ||
+    /\s@\s+(?:mon|tue|wed|thu|fri|sat|sun)\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}/i.test(
+      sub,
+    ) ||
     /^(accepted|declined|tentative|canceled|cancelled|updated invitation|invitation):\s/i.test(
       sub,
     ) ||
@@ -51,20 +66,35 @@ export function looksLikeCalendarNotification(msg: InboundNoiseFields): boolean 
     /\baccepted an invitation\b/i.test(sub) ||
     /\bcalendar invitation\b/i.test(sub) ||
     /\bevent (updated|cancelled|canceled)\b/i.test(sub) ||
-    /\bmeeting (update|reminder|scheduled|cancelled|canceled)\b/i.test(sub);
+    /\bmeeting (update|reminder|scheduled|cancelled|canceled|prep)\b/i.test(sub) ||
+    (/\binvitation\b/i.test(sub) && /\d{1,2}:\d{2}\s*(?:am|pm)?/i.test(sub) && /\d{4}/.test(sub));
 
   const bodyHit =
     /begin:vcalendar/i.test(b) ||
     /content-type:\s*text\/calendar/i.test(b) ||
+    /\bmethod:\s*request\b/i.test(b) ||
+    /\bvevent\b/i.test(b) ||
     /\bhas accepted your invitation\b/i.test(b) ||
     /\bhas declined your invitation\b/i.test(b) ||
     /\bhas tentatively accepted\b/i.test(b) ||
     /view on google calendar/i.test(b) ||
     /invitation from google calendar/i.test(b) ||
     /rsvp to this event/i.test(b) ||
-    /organizer:\s*\S+@/i.test(b);
+    /organizer:\s*\S+@/i.test(b) ||
+    /https?:\/\/[^\s]*meet\.google\.com/i.test(b) ||
+    /https?:\/\/[^\s]*zoom\.us\/(?:j|my)\//i.test(b) ||
+    /https?:\/\/[^\s]*teams\.microsoft\.com/i.test(b) ||
+    /\bwhen:\s*.{3,120}/i.test(b) ||
+    /\bwhere:\s*.{3,120}/i.test(b) ||
+    /\bhas invited you to\b/i.test(b) ||
+    /\byou have been invited\b/i.test(b);
 
   return subjectHit || bodyHit;
+}
+
+/** @deprecated Use looksLikeMeetingOrEventMail — kept for existing imports. */
+export function looksLikeCalendarNotification(msg: InboundNoiseFields): boolean {
+  return looksLikeMeetingOrEventMail(msg);
 }
 
 /** Marketing / promo / newsletter-style mail (Gmail Promotions label is a strong signal). */
@@ -72,12 +102,13 @@ export function looksLikePromotionalMail(
   msg: InboundNoiseFields,
   hasNoiseGmailLabel = false,
 ): boolean {
-  if (looksLikeCalendarNotification(msg)) return false;
-  if (hasNoiseGmailLabel) return true;
+  if (looksLikeMeetingOrEventMail(msg)) return false;
 
   const { from, subject, body } = readInboundFields(msg);
   const sub = subject.toLowerCase();
   const b = body.toLowerCase();
+
+  if (hasNoiseGmailLabel) return true;
 
   if (
     /^(no-?reply|noreply|do-?not-?reply|mailer-daemon|postmaster|newsletter|promotions?|deals?|offers?)@/i.test(
@@ -86,7 +117,6 @@ export function looksLikePromotionalMail(
   ) {
     return true;
   }
-  // marketing@ often sends real meeting invites — only promo when subject/body look like broadcast mail.
   if (/^marketing@/i.test(from)) {
     return (
       /(newsletter|unsubscribe|promo|promotion|campaign|webinar|view in browser|flash sale)/i.test(sub) ||
@@ -95,7 +125,7 @@ export function looksLikePromotionalMail(
   }
 
   if (
-    /(newsletter|digest|unsubscribe|promo|promotion|campaign|webinar|view in browser|flash sale|limited time offer|\d+%\s*off|save \d+%|coupon|promo code|free shipping|shop now|exclusive deal)/i.test(
+    /(newsletter|digest|unsubscribe|promo code|promotion|campaign|webinar|view in browser|flash sale|limited time offer|\d+%\s*off|save \d+%|coupon|free shipping|shop now|exclusive deal)/i.test(
       sub,
     )
   ) {
@@ -103,7 +133,7 @@ export function looksLikePromotionalMail(
   }
 
   if (
-    /(unsubscribe|manage preferences|view in browser|email preferences|opt out|you are receiving this (email )?because)/i.test(
+    /(unsubscribe|manage preferences|email preferences|opt out|you are receiving this (email )?because)/i.test(
       b,
     )
   ) {
@@ -130,7 +160,7 @@ export function ingestForceRelevantCalendarOrMeeting(
   msg: InboundNoiseFields,
 ): { relevant: true; reason: string; confidence: number } | null {
   if (msg.direction && msg.direction !== 'INBOUND') return null;
-  if (!looksLikeCalendarNotification(msg)) return null;
+  if (!looksLikeMeetingOrEventMail(msg)) return null;
   return {
     relevant: true,
     reason: 'Calendar or meeting event — tracked in Need your reply.',
@@ -158,8 +188,8 @@ export function looksLikeDirectHumanMail(
   hasNoiseGmailLabel: boolean,
 ): boolean {
   if (target.direction !== 'INBOUND') return false;
+  if (looksLikeMeetingOrEventMail(target)) return true;
   if (hasNoiseGmailLabel) return false;
-  if (looksLikeCalendarNotification(target)) return true;
   if (looksLikeInboundNoReplyNoise(target, hasNoiseGmailLabel)) return false;
 
   const norm = (v: string) => v.trim().toLowerCase();
@@ -176,9 +206,9 @@ export function looksLikeDirectHumanMail(
 
   const automatedSender = /(no-?reply|noreply|do-?not-?reply|mailer-daemon|postmaster)/i.test(from);
   const obviousBroadcastSubject =
-    /(newsletter|digest|unsubscribe|promo|promotion|campaign|webinar|view in browser)/i.test(subject);
+    /(newsletter|digest|unsubscribe|promo code|promotion|campaign|webinar)/i.test(subject);
   const obviousBroadcastBody =
-    /(unsubscribe|manage preferences|view in browser|email preferences)/i.test(body);
+    /(unsubscribe|manage preferences|email preferences)/i.test(body);
 
   if (!isDirectToMailbox || !isSmallAudience) return false;
   if (automatedSender || obviousBroadcastSubject || obviousBroadcastBody) return false;

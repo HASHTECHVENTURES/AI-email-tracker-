@@ -12,7 +12,7 @@ import { buildSharedIngestRelevancePrompt } from '../email-ingestion/relevance-p
 import {
   ingestForceRelevantCalendarOrMeeting,
   ingestSkipReasonForInboundNoise,
-  looksLikeCalendarNotification,
+  looksLikeMeetingOrEventMail,
   looksLikeDirectHumanMail,
 } from '../email-ingestion/relevance-guards';
 import { OauthTokenService } from '../auth/oauth-token.service';
@@ -656,10 +656,10 @@ export class HistoricalFetchService {
       const parsed = await this.callGeminiRelevance(prompt);
       if (parsed) {
         const postAiNoise = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
-        if (parsed.relevant && postAiNoise && !looksLikeCalendarNotification(target)) {
+        if (parsed.relevant && postAiNoise && !looksLikeMeetingOrEventMail(target)) {
           return { relevant: false, reason: postAiNoise };
         }
-        if (!parsed.relevant && looksLikeCalendarNotification(target)) {
+        if (!parsed.relevant && looksLikeMeetingOrEventMail(target)) {
           return {
             relevant: true,
             reason: 'Calendar or meeting invite kept for Need your reply.',

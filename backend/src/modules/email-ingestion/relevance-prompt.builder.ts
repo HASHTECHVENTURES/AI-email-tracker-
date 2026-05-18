@@ -67,7 +67,7 @@ export function buildSharedIngestRelevancePrompt(
     '- Obvious phishing or pure spam (if unsure, prefer true so a human can delete)',
     '',
     '## Signals (hints only)',
-    `gmail_noise_hint_on_target=${hasNoiseGmailLabel ? 'yes' : 'no'} (Promotions/Forums/Updates — if yes, target is usually not relevant unless clearly a personal business thread).`,
+    `gmail_noise_hint_on_target=${hasNoiseGmailLabel ? 'yes' : 'no'} (Promotions/Forums/Updates — if yes, still mark relevant=true for calendar invitations, meeting prep, or scheduled events with date/time).`,
     '- From-address may be noreply, mailer-daemon, or postmaster — read the body; bounce notices can be relevant.',
     '',
     '## Tie-breakers',
