@@ -879,6 +879,33 @@ type AiSkippedMailItem = {
   provider_thread_id: string | null;
 };
 
+/** Calendar invites and promo mail are not follow-up threads — hide from AI skipped (server filters too). */
+function isNoiseSkipLedgerRow(row: AiSkippedMailItem): boolean {
+  const sub = (row.subject ?? '').trim();
+  const from = (row.from_email ?? '').trim().toLowerCase();
+  const r = (row.skip_reason ?? '').toLowerCase();
+  if (
+    r.includes('calendar invitation') ||
+    r.includes('promotional or marketing') ||
+    r.includes('rsvp (accepted') ||
+    r.includes('not a customer reply thread')
+  ) {
+    return true;
+  }
+  if (/^invitation\b/i.test(sub)) return true;
+  if (
+    /^(accepted|declined|tentative|canceled|cancelled|updated invitation|invitation):\s/i.test(sub)
+  ) {
+    return true;
+  }
+  if (
+    /@calendar\.google|calendar-notification@google\.com|@resource\.calendar\.google/i.test(from)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function skipKindShortLabel(kind: string): string {
   if (kind === 'ai_irrelevant') return 'Inbox AI';
   if (kind === 'before_tracking') return 'Before tracking';
@@ -1050,7 +1077,8 @@ function SkippedMailsTabTable({
         </div>
       </div>
       <p className="rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
-        These conversations could not be confidently categorized by AI.
+        These conversations could not be confidently categorized by AI. Calendar invitations and
+        promotional mail are not listed here — they are ignored automatically and do not need a reply.
       </p>
       {geminiQuotaBanner ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
@@ -3267,7 +3295,8 @@ function MyEmailPageInner() {
         throw new Error(await readApiErrorMessage(res, 'Could not load skipped messages.'));
       }
       const data = (await res.json()) as { items?: AiSkippedMailItem[]; total?: number };
-      setAiSkippedRows(Array.isArray(data.items) ? data.items : []);
+      const items = Array.isArray(data.items) ? data.items : [];
+      setAiSkippedRows(items.filter((row) => !isNoiseSkipLedgerRow(row)));
       setAiSkippedTotal(typeof data.total === 'number' ? data.total : 0);
       setAiSkippedCountSyncedAt(new Date().toISOString());
     } catch (e) {

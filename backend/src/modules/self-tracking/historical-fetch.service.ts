@@ -11,6 +11,7 @@ import { GmailService, buildGmailHistoricalWindowQuery } from '../email-ingestio
 import { buildSharedIngestRelevancePrompt } from '../email-ingestion/relevance-prompt.builder';
 import {
   ingestSkipReasonForInboundNoise,
+  shouldSilentlyDropInboundNoise,
   looksLikeDirectHumanMail,
 } from '../email-ingestion/relevance-guards';
 import { OauthTokenService } from '../auth/oauth-token.service';
@@ -408,6 +409,9 @@ export class HistoricalFetchService {
             break;
           }
           skippedIrrelevant++;
+          if (shouldSilentlyDropInboundNoise(msg, this.gmailService.isNoise(msg.labelIds))) {
+            continue;
+          }
           if (decision.transientAiUnavailable) {
             continue;
           }

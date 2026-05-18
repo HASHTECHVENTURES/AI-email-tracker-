@@ -38,6 +38,7 @@ export function looksLikeCalendarNotification(msg: InboundNoiseFields): boolean 
   }
 
   const subjectHit =
+    /^invitation\b/i.test(sub) ||
     /^(accepted|declined|tentative|canceled|cancelled|updated invitation|invitation):\s/i.test(
       sub,
     ) ||
@@ -119,6 +120,36 @@ export function ingestSkipReasonForInboundNoise(
     return 'Calendar invitation or RSVP (accepted/declined/tentative) — not a customer reply thread.';
   }
   return 'Promotional or marketing mail — not a customer reply thread.';
+}
+
+/** Calendar/promo: drop quietly — do not show in AI skipped or Need reply. */
+export function shouldSilentlyDropInboundNoise(
+  msg: InboundNoiseFields,
+  hasNoiseGmailLabel = false,
+): boolean {
+  return ingestSkipReasonForInboundNoise(msg, hasNoiseGmailLabel) != null;
+}
+
+/** Hide legacy skip-ledger rows for calendar/promo from the AI skipped UI. */
+export function isNoiseSkipLedgerEntry(fields: {
+  skip_reason?: string | null;
+  subject?: string | null;
+  from_email?: string | null;
+}): boolean {
+  const stub: InboundNoiseFields = {
+    subject: fields.subject ?? undefined,
+    from_email: fields.from_email ?? undefined,
+    body_text: fields.skip_reason ?? undefined,
+    direction: 'INBOUND',
+  };
+  if (looksLikeInboundNoReplyNoise(stub, false)) return true;
+  const r = (fields.skip_reason ?? '').toLowerCase();
+  return (
+    r.includes('calendar invitation') ||
+    r.includes('promotional or marketing') ||
+    r.includes('rsvp (accepted') ||
+    r.includes('not a customer reply thread')
+  );
 }
 
 /**

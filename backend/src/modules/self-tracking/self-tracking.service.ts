@@ -13,6 +13,7 @@ import { EmployeesService, MailArchiveItem, OrgEmployeeDto } from '../employees/
 import { RequestContext } from '../common/request-context';
 import { isMigration026ColumnError } from '../common/migration-026-compat';
 import type { ConversationListItem } from '../dashboard/dashboard.service';
+import { isNoiseSkipLedgerEntry } from '../email-ingestion/relevance-guards';
 
 const CEO_SYNCED_MAIL_PAGE_LIMIT = 200;
 /** Max calendar span for historical missed search (inclusive). */
@@ -1020,9 +1021,16 @@ export class SelfTrackingService {
       for (const r of [...(withSent ?? []), ...(noSent ?? [])] as unknown as SkipRow[]) {
         byMsg.set(r.provider_message_id, r);
       }
-      const merged = [...byMsg.values()].sort(
-        (a, b) => new Date(b.skipped_at).getTime() - new Date(a.skipped_at).getTime(),
-      );
+      const merged = [...byMsg.values()]
+        .filter(
+          (r) =>
+            !isNoiseSkipLedgerEntry({
+              skip_reason: (r as SkipRow).skip_reason,
+              subject: (r as SkipRow).subject,
+              from_email: (r as SkipRow).from_email,
+            }),
+        )
+        .sort((a, b) => new Date(b.skipped_at).getTime() - new Date(a.skipped_at).getTime());
       const total = merged.length;
       const slice = merged.slice(off, off + lim);
       return {
