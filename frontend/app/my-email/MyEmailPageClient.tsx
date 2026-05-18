@@ -2246,33 +2246,52 @@ function MyEmailPageInner() {
   /** After first successful load for this user, filter-only refetches skip the page skeleton. */
   const dashboardLoadedForUserId = useRef<string | null>(null);
 
-  const loadDashboard = useCallback(async (t: string, syncEmployeeIds?: string) => {
-    const f = filterRef.current;
-    const qs = new URLSearchParams();
-    if (f.mailbox) qs.set('mailbox_id', f.mailbox);
-    if (syncEmployeeIds) qs.set('sync_employee_ids', syncEmployeeIds);
-    const q = qs.toString();
-      const res = await apiFetch(
-      `/self-tracking/dashboard${q ? `?${q}` : ''}`,
-      t,
-    );
-    if (!res.ok) {
-      setError(await readApiErrorMessage(res, 'Could not load mailbox data.'));
-      setDash(null);
-      return;
-    }
-    const body = (await res.json()) as DashboardPayload;
-    setDash({
-      ...body,
-      synced_mail: body.synced_mail ?? {
-        total: 0,
-        items: [],
-        limit: 200,
-        offset: 0,
-      },
-    });
-    setError(null);
-  }, []);
+  const loadDashboard = useCallback(
+    async (t: string, syncEmployeeIds?: string, opts?: { skipLegacyPurge?: boolean }) => {
+      const f = filterRef.current;
+      const qs = new URLSearchParams();
+      if (f.mailbox) qs.set('mailbox_id', f.mailbox);
+      if (syncEmployeeIds) qs.set('sync_employee_ids', syncEmployeeIds);
+      const q = qs.toString();
+      const res = await apiFetch(`/self-tracking/dashboard${q ? `?${q}` : ''}`, t);
+      if (!res.ok) {
+        setError(await readApiErrorMessage(res, 'Could not load mailbox data.'));
+        setDash(null);
+        return;
+      }
+      const body = (await res.json()) as DashboardPayload;
+      setDash({
+        ...body,
+        synced_mail: body.synced_mail ?? {
+          total: 0,
+          items: [],
+          limit: 200,
+          offset: 0,
+        },
+      });
+      setError(null);
+
+      if (!opts?.skipLegacyPurge) {
+        const pqs = new URLSearchParams();
+        if (f.mailbox) pqs.set('mailbox_id', f.mailbox);
+        const pq = pqs.toString();
+        const purgeRes = await apiFetch(
+          `/self-tracking/purge-legacy-resolved${pq ? `?${pq}` : ''}`,
+          t,
+          { method: 'POST' },
+        );
+        if (purgeRes.ok) {
+          const pr = (await purgeRes.json()) as { removed?: number };
+          const n = pr.removed ?? 0;
+          if (n > 0) {
+            setSuccess(`Removed ${n} old resolved thread${n === 1 ? '' : 's'} from storage.`);
+            await loadDashboard(t, syncEmployeeIds, { skipLegacyPurge: true });
+          }
+        }
+      }
+    },
+    [],
+  );
 
   const loadLiveIngestSchedule = useCallback(async () => {
     if (!token) return;
@@ -2287,20 +2306,27 @@ function MyEmailPageInner() {
     });
   }, [token]);
 
-  const resolveConversation = useCallback(
+  const removeConversationFromWorkspace = useCallback(
     async (conversationId: string) => {
       if (!token) return;
       setResolvingId(conversationId);
       setError(null);
       try {
         const res = await apiFetch(
-          `/conversations/${encodeURIComponent(conversationId)}/mark-done`,
+          `/conversations/${encodeURIComponent(conversationId)}`,
           token,
-          { method: 'POST' },
+          { method: 'DELETE' },
         );
         if (!res.ok) {
-          setError(await readApiErrorMessage(res, 'Could not remove thread.'));
-          return;
+          const fallback = await apiFetch(
+            `/conversations/${encodeURIComponent(conversationId)}/mark-done`,
+            token,
+            { method: 'POST' },
+          );
+          if (!fallback.ok) {
+            setError(await readApiErrorMessage(res, 'Could not remove thread.'));
+            return;
+          }
         }
         setDash((prev) => {
           if (!prev) return prev;
@@ -2310,7 +2336,7 @@ function MyEmailPageInner() {
             needs_attention: prev.needs_attention.filter((c) => c.conversation_id !== conversationId),
           };
         });
-        await loadDashboard(token);
+        await loadDashboard(token, undefined, { skipLegacyPurge: true });
         setSuccess('Thread removed from your workspace.');
       } finally {
         setResolvingId(null);
@@ -5390,19 +5416,19 @@ function MyEmailPageInner() {
                                   </a>
                                 </td>
                                 <td className="px-3 py-3 text-right align-top" onClick={(e) => e.stopPropagation()}>
-                                  {c.follow_up_status !== 'DONE' ? (
-                                    <button
-                                      type="button"
-                                      disabled={resolvingId === c.conversation_id}
-                                      onClick={() => void resolveConversation(c.conversation_id)}
-                                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-                                      title="Remove this thread from the portal and delete stored mail bodies (frees database space)"
-                                    >
-                                      {resolvingId === c.conversation_id ? '…' : 'Resolve'}
-                                    </button>
-                                  ) : (
-                                    <span className="text-[11px] text-slate-400">—</span>
-                                  )}
+                                  <button
+                                    type="button"
+                                    disabled={resolvingId === c.conversation_id}
+                                    onClick={() => void removeConversationFromWorkspace(c.conversation_id)}
+                                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+                                    title="Permanently remove this thread and delete stored mail from the database"
+                                  >
+                                    {resolvingId === c.conversation_id
+                                      ? '…'
+                                      : c.follow_up_status === 'DONE'
+                                        ? 'Remove'
+                                        : 'Resolve'}
+                                  </button>
                                 </td>
                               </>
                             )}

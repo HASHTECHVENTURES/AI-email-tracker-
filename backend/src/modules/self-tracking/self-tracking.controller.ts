@@ -173,6 +173,23 @@ export class SelfTrackingController {
     return { ok: true };
   }
 
+  /**
+   * Permanently delete threads that were only marked resolved before the delete-on-resolve fix.
+   */
+  @Post('purge-legacy-resolved')
+  async purgeLegacyResolved(
+    @Req() req: Request,
+    @Query('mailbox_id') mailboxId?: string,
+  ) {
+    const user = req.user;
+    if (!user) throw new UnauthorizedException();
+    const ctx = getRequestContext(req);
+    assertSelfTrackingReader(ctx);
+    return this.selfTrackingService.purgeLegacyManuallyResolvedThreads(ctx, user.email, {
+      mailboxId,
+    });
+  }
+
   @Get('dashboard')
   async dashboard(
     @Req() req: Request,

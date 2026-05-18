@@ -93,6 +93,26 @@ export class SelfTrackingService {
    * EMPLOYEE: the single mailbox row linked to the portal login.
    * Sets `is_manager_mailbox` for CEO merged list only.
    */
+  async purgeLegacyManuallyResolvedThreads(
+    ctx: RequestContext,
+    callerEmail: string,
+    opts?: { mailboxId?: string },
+  ): Promise<{ removed: number; failed: number }> {
+    const mailboxes = await this.getVisibleMailboxes(ctx, callerEmail);
+    let employeeIds = mailboxes.map((m) => m.id);
+    const mb = opts?.mailboxId?.trim();
+    if (mb) {
+      if (!employeeIds.includes(mb)) {
+        throw new ForbiddenException('Mailbox is not in your scope');
+      }
+      employeeIds = [mb];
+    }
+    if (employeeIds.length === 0) return { removed: 0, failed: 0 };
+    return this.conversationsService.purgeLegacyManuallyResolvedThreads(ctx.companyId, {
+      employeeIds,
+    });
+  }
+
   async getVisibleMailboxes(
     ctx: RequestContext,
     callerEmail: string,

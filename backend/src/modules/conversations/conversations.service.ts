@@ -322,6 +322,68 @@ export class ConversationsService {
   }
 
   /**
+   * Remove threads that were "resolved" with the old mark-done flow (row kept in DB).
+   * Permanently deletes messages + conversation and records skip markers.
+   */
+  async purgeLegacyManuallyResolvedThreads(
+    companyId: string,
+    opts?: { employeeIds?: string[]; limit?: number },
+  ): Promise<{ removed: number; failed: number }> {
+    const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 500);
+    let query = this.supabase
+      .from('conversations')
+      .select('conversation_id, manually_closed, reason, short_reason')
+      .eq('company_id', companyId);
+
+    if (opts?.employeeIds?.length) {
+      query = query.in('employee_id', opts.employeeIds);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      this.logger.error('purgeLegacyManuallyResolvedThreads list failed', error.message);
+      throw error;
+    }
+
+    const legacy = (data ?? []).filter((r) => {
+      const row = r as {
+        conversation_id: string;
+        manually_closed?: boolean;
+        reason?: string | null;
+        short_reason?: string | null;
+      };
+      if (row.manually_closed === true) return true;
+      const reason = (row.reason ?? '').toLowerCase();
+      const short = (row.short_reason ?? '').toLowerCase();
+      return (
+        reason.includes('manually marked') ||
+        reason.includes('marked done by user') ||
+        short.includes('manually marked')
+      );
+    });
+
+    let removed = 0;
+    let failed = 0;
+    for (const row of legacy.slice(0, limit)) {
+      try {
+        await this.permanentlyRemoveConversation(companyId, row.conversation_id);
+        removed += 1;
+      } catch (e) {
+        failed += 1;
+        this.logger.warn(
+          `purgeLegacyManuallyResolvedThreads failed ${row.conversation_id}: ${(e as Error).message}`,
+        );
+      }
+    }
+    if (removed > 0) {
+      this.logger.log(
+        `purgeLegacyManuallyResolvedThreads: removed ${removed} legacy resolved thread(s) (failed=${failed})`,
+      );
+    }
+    return { removed, failed };
+  }
+
+  /**
    * Reassign a conversation thread to a different employee in the same company.
    *
    * Because `conversation_id` is the composite key `{employee_id}:{provider_thread_id}`,
