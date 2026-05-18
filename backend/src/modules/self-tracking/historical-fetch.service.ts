@@ -9,7 +9,10 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { GmailService, buildGmailHistoricalWindowQuery } from '../email-ingestion/gmail.service';
 import { buildSharedIngestRelevancePrompt } from '../email-ingestion/relevance-prompt.builder';
-import { looksLikeDirectHumanMail } from '../email-ingestion/relevance-guards';
+import {
+  ingestSkipReasonForInboundNoise,
+  looksLikeDirectHumanMail,
+} from '../email-ingestion/relevance-guards';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { SettingsService } from '../settings/settings.service';
@@ -620,6 +623,10 @@ export class HistoricalFetchService {
         reason: 'Outbound — your sent message (reply detection / SLA)',
       };
     }
+    const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
+    if (noiseSkip) {
+      return { relevant: false, reason: noiseSkip };
+    }
     if (allowGeminiRelevance && this.relevanceModel) {
       const sliceWithTarget = this.sortThreadChronological(
         threadSlice.some((m) => m.providerMessageId === target.providerMessageId)
@@ -629,6 +636,10 @@ export class HistoricalFetchService {
       const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
       const parsed = await this.callGeminiRelevance(prompt);
       if (parsed) {
+        const postAiNoise = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
+        if (parsed.relevant && postAiNoise) {
+          return { relevant: false, reason: postAiNoise };
+        }
         if (!parsed.relevant && looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
           return {
             relevant: true,

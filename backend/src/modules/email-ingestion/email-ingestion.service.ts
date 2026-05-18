@@ -24,7 +24,7 @@ import {
   GmailService,
 } from './gmail.service';
 import { buildSharedIngestRelevancePrompt } from './relevance-prompt.builder';
-import { looksLikeDirectHumanMail } from './relevance-guards';
+import { ingestSkipReasonForInboundNoise, looksLikeDirectHumanMail } from './relevance-guards';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { getGeminiApiKeyFromEnv } from '../common/env';
 import {
@@ -953,6 +953,10 @@ export class EmailIngestionService {
         confidence: 1,
       };
     }
+    const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
+    if (noiseSkip) {
+      return { relevant: false, reason: noiseSkip, confidence: 1 };
+    }
     if (allowGeminiRelevance && this.relevanceModel) {
       const sliceWithTarget = this.sortThreadChronological(
         threadSlice.some((m) => m.providerMessageId === target.providerMessageId)
@@ -962,6 +966,10 @@ export class EmailIngestionService {
       const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
       const parsed = await this.callGeminiIngestRelevance(prompt, target.fromEmail);
       if (parsed) {
+        const postAiNoise = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
+        if (parsed.relevant && postAiNoise) {
+          return { relevant: false, reason: postAiNoise, confidence: parsed.confidence };
+        }
         if (!parsed.relevant && looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
           return {
             relevant: true,

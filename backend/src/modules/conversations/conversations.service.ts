@@ -10,6 +10,7 @@ import { SettingsService } from '../settings/settings.service';
 import { EmailService } from '../email/email.service';
 import { CompanyPolicyService } from '../company-policy/company-policy.service';
 import { isMigration026ColumnError, stripConversations026Fields } from '../common/migration-026-compat';
+import { looksLikeInboundNoReplyNoise } from '../email-ingestion/relevance-guards';
 
 interface ThreadKey {
   companyId?: string;
@@ -28,6 +29,7 @@ interface EmailRow {
   to_emails: string[];
   cc_emails: string[] | null;
   subject: string;
+  body_text: string | null;
   sent_at: string;
 }
 
@@ -377,7 +379,7 @@ export class ConversationsService {
     const { data: emails, error } = await this.supabase
       .from('email_messages')
       .select(
-        'provider_message_id, provider_thread_id, employee_id, direction, from_email, from_name, reply_to_email, to_emails, cc_emails, subject, sent_at',
+        'provider_message_id, provider_thread_id, employee_id, direction, from_email, from_name, reply_to_email, to_emails, cc_emails, subject, body_text, sent_at',
       )
       .eq('company_id', companyId)
       .eq('employee_id', employeeId)
@@ -415,6 +417,15 @@ export class ConversationsService {
 
     const result = this.followupService.analyze(lastClientMsgAt, lastEmployeeReplyAt, slaHours, manuallyClosed);
 
+    const latestInboundIsNoise = lastInbound
+      ? looksLikeInboundNoReplyNoise({
+          direction: 'INBOUND',
+          from_email: lastInbound.from_email,
+          subject: lastInbound.subject,
+          body_text: lastInbound.body_text,
+        })
+      : false;
+
     const contactEmail = (
       lastInbound?.reply_to_email?.trim() ||
       lastInbound?.from_email?.trim() ||
@@ -450,16 +461,23 @@ export class ConversationsService {
       client_email: contactEmail,
       last_client_msg_at: lastClientMsgAt?.toISOString() ?? null,
       last_employee_reply_at: lastEmployeeReplyAt?.toISOString() ?? null,
-      follow_up_required: userCcOnly ? false : result.followUpRequired,
-      follow_up_status: result.followUpStatus,
+      follow_up_required:
+        userCcOnly || latestInboundIsNoise ? false : result.followUpRequired,
+      follow_up_status:
+        userCcOnly || latestInboundIsNoise ? 'DONE' : result.followUpStatus,
       delay_hours: result.delayHours,
-      lifecycle_status: result.lifecycleStatus,
-      short_reason: result.shortReason,
-      reason: result.shortReason,
+      lifecycle_status:
+        userCcOnly || latestInboundIsNoise ? 'RESOLVED' : result.lifecycleStatus,
+      short_reason: latestInboundIsNoise
+        ? 'Calendar or promotional mail — no reply needed.'
+        : result.shortReason,
+      reason: latestInboundIsNoise
+        ? 'Calendar or promotional mail — no reply needed.'
+        : result.shortReason,
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,
       user_cc_only: userCcOnly,
-      priority: looksAutomated ? 'LOW' : (existing?.priority ?? 'MEDIUM'),
+      priority: looksAutomated || latestInboundIsNoise ? 'LOW' : (existing?.priority ?? 'MEDIUM'),
       summary: summaryForRow,
       confidence: existing ? Number(existing.confidence) : 0,
       classification_status: 'classified',

@@ -218,9 +218,31 @@ function isStaleNeedReplyByClientMessage(c: ConversationRow, staleDays: number):
   return Date.now() - t > staleDays * 86_400_000;
 }
 
+/** Calendar RSVPs and promo mail should not appear in Need your reply (also enforced on the server). */
+function isCalendarOrPromoNeedReplyNoise(c: ConversationRow): boolean {
+  const text = `${c.thread_subject ?? ''} ${c.summary ?? ''} ${c.short_reason ?? ''}`.toLowerCase();
+  if (
+    /^(accepted|declined|tentative|invitation|updated invitation|canceled|cancelled):/i.test(text.trim()) ||
+    /\bhas accepted your invitation\b/i.test(text) ||
+    /\bhas declined your invitation\b/i.test(text) ||
+    /\bhas tentatively accepted\b/i.test(text)
+  ) {
+    return true;
+  }
+  if (
+    /(unsubscribe|view in browser|promo code|flash sale|limited time offer|\d+%\s*off|marketing newsletter)/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /** Need reply KPI/tab: hide stale *pending* threads, but never hide MISSED SLA rows (they were invisible before). */
 function passesNeedReplyVisibility(c: ConversationRow): boolean {
   if (c.user_cc_only === true) return false;
+  if (isCalendarOrPromoNeedReplyNoise(c)) return false;
   if (!needsMyReply(c)) return false;
   if (c.follow_up_status === 'MISSED') return true;
   return !HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS);
