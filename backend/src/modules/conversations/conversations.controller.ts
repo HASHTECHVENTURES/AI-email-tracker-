@@ -132,12 +132,12 @@ export class ConversationsController {
       await this.auditLogService.log({
         userId: req.user.id,
         companyId: ctx.companyId,
-        action: 'mark_done',
+        action: 'conversation_resolved_deleted',
         entity: 'conversation',
         entityId: conversationId,
       });
     }
-    return { status: 'ok', action: 'marked_done' };
+    return { status: 'ok', action: 'deleted_permanently' };
   }
 
   @Post(':id/mark-done')
@@ -153,12 +153,12 @@ export class ConversationsController {
       await this.auditLogService.log({
         userId: req.user.id,
         companyId: ctx.companyId,
-        action: 'mark_done',
+        action: 'conversation_resolved_deleted',
         entity: 'conversation',
         entityId: conversationId,
       });
     }
-    return { status: 'ok', action: 'marked_done' };
+    return { status: 'ok', action: 'deleted_permanently' };
   }
 
   @Post(':id/ignore')

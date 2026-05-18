@@ -2299,11 +2299,19 @@ function MyEmailPageInner() {
           { method: 'POST' },
         );
         if (!res.ok) {
-          setError(await readApiErrorMessage(res, 'Could not mark resolved.'));
+          setError(await readApiErrorMessage(res, 'Could not remove thread.'));
           return;
         }
+        setDash((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            conversations: prev.conversations.filter((c) => c.conversation_id !== conversationId),
+            needs_attention: prev.needs_attention.filter((c) => c.conversation_id !== conversationId),
+          };
+        });
         await loadDashboard(token);
-        setSuccess('Marked resolved.');
+        setSuccess('Thread removed from your workspace.');
       } finally {
         setResolvingId(null);
       }
@@ -5388,7 +5396,7 @@ function MyEmailPageInner() {
                                       disabled={resolvingId === c.conversation_id}
                                       onClick={() => void resolveConversation(c.conversation_id)}
                                       className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
-                                      title="Mark this thread resolved if you already replied or no follow-up is needed"
+                                      title="Remove this thread from the portal and delete stored mail bodies (frees database space)"
                                     >
                                       {resolvingId === c.conversation_id ? '…' : 'Resolve'}
                                     </button>

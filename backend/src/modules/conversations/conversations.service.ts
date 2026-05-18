@@ -12,6 +12,13 @@ import { CompanyPolicyService } from '../company-policy/company-policy.service';
 import { isMigration026ColumnError, stripConversations026Fields } from '../common/migration-026-compat';
 import { looksLikeInboundNoReplyNoise } from '../email-ingestion/relevance-guards';
 
+/** Skip-ledger marker so Gmail sync does not recreate a user-resolved thread. */
+export const USER_RESOLVED_THREAD_SKIP_PREFIX = '__user_resolved_thread__:';
+
+export function userResolvedThreadSkipMessageId(providerThreadId: string): string {
+  return `${USER_RESOLVED_THREAD_SKIP_PREFIX}${providerThreadId}`;
+}
+
 interface ThreadKey {
   companyId?: string;
   employeeId: string;
@@ -162,26 +169,131 @@ export class ConversationsService {
     return data as ConversationRow[];
   }
 
+  /**
+   * Resolve = permanently remove thread data from Supabase (messages + conversation row)
+   * and record a tiny skip marker so sync does not recreate it.
+   */
   async markAsDone(companyId: string, conversationId: string): Promise<boolean> {
-    const { data, error } = await this.supabase
-      .from('conversations')
-      .update({
-        manually_closed: true,
-        follow_up_status: 'DONE',
-        lifecycle_status: 'RESOLVED',
-        short_reason: 'Manually marked as done.',
-        reason: 'Marked done by user. No follow-up required for this thread.',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('company_id', companyId)
-      .eq('conversation_id', conversationId)
-      .select('conversation_id');
+    const conversation = await this.getConversation(companyId, conversationId);
+    if (!conversation) return false;
+    await this.permanentlyRemoveConversation(companyId, conversationId);
+    return true;
+  }
 
+  /** True when the user clicked Resolve on this Gmail thread (skip marker in ingestion ledger). */
+  async isThreadPermanentlyResolved(employeeId: string, providerThreadId: string): Promise<boolean> {
+    const markerId = userResolvedThreadSkipMessageId(providerThreadId);
+    const { data, error } = await this.supabase
+      .from('email_ingestion_skips')
+      .select('provider_message_id')
+      .eq('employee_id', employeeId)
+      .eq('provider_message_id', markerId)
+      .maybeSingle();
     if (error) {
-      this.logger.error(`Failed to mark ${conversationId} as done`, error.message);
+      this.logger.warn(`isThreadPermanentlyResolved: ${error.message}`);
+      return false;
+    }
+    return data != null;
+  }
+
+  private async recordUserResolvedThreadSkip(
+    employeeId: string,
+    providerThreadId: string,
+  ): Promise<void> {
+    const row: Record<string, unknown> = {
+      employee_id: employeeId,
+      provider_message_id: userResolvedThreadSkipMessageId(providerThreadId),
+      skip_kind: 'legacy',
+      skip_reason: 'User resolved — thread permanently removed from portal.',
+      provider_thread_id: providerThreadId,
+      skipped_at: new Date().toISOString(),
+      classification_status: 'skipped',
+    };
+    let { error } = await this.supabase.from('email_ingestion_skips').upsert(row, {
+      onConflict: 'employee_id,provider_message_id',
+    });
+    if (error && isMigration026ColumnError(error)) {
+      const legacy: Record<string, unknown> = {
+        employee_id: employeeId,
+        provider_message_id: row.provider_message_id,
+        skipped_at: row.skipped_at,
+      };
+      ({ error } = await this.supabase.from('email_ingestion_skips').upsert(legacy, {
+        onConflict: 'employee_id,provider_message_id',
+      }));
+    }
+    if (error) {
+      this.logger.error(`recordUserResolvedThreadSkip ${providerThreadId}: ${error.message}`);
       throw error;
     }
-    return (data?.length ?? 0) > 0;
+  }
+
+  /**
+   * Deletes conversation row, all ingested message bodies for the thread, related alerts,
+   * and per-thread skip rows; leaves one small skip marker to block re-ingest.
+   */
+  async permanentlyRemoveConversation(companyId: string, conversationId: string): Promise<void> {
+    const conversation = await this.getConversation(companyId, conversationId);
+    if (!conversation) {
+      throw new Error(`Conversation ${conversationId} not found`);
+    }
+
+    const { employee_id: employeeId, provider_thread_id: providerThreadId } = conversation;
+
+    const { error: alertsError } = await this.supabase
+      .from('alerts')
+      .delete()
+      .eq('conversation_id', conversationId);
+    if (alertsError) {
+      this.logger.warn(`permanentlyRemoveConversation alerts ${conversationId}: ${alertsError.message}`);
+    }
+
+    const { error: msgError } = await this.supabase
+      .from('email_messages')
+      .delete()
+      .eq('company_id', companyId)
+      .eq('employee_id', employeeId)
+      .eq('provider_thread_id', providerThreadId);
+
+    if (msgError) {
+      this.logger.error(`Failed to delete messages for ${conversationId}`, msgError.message);
+      throw msgError;
+    }
+
+    const { error: skipThreadError } = await this.supabase
+      .from('email_ingestion_skips')
+      .delete()
+      .eq('employee_id', employeeId)
+      .eq('provider_thread_id', providerThreadId);
+    if (skipThreadError) {
+      const { error: skipLegacy } = await this.supabase
+        .from('email_ingestion_skips')
+        .delete()
+        .eq('employee_id', employeeId)
+        .like('provider_message_id', `${USER_RESOLVED_THREAD_SKIP_PREFIX}%`);
+      if (skipLegacy) {
+        this.logger.warn(
+          `permanentlyRemoveConversation skips ${conversationId}: ${skipThreadError.message}`,
+        );
+      }
+    }
+
+    await this.recordUserResolvedThreadSkip(employeeId, providerThreadId);
+
+    const { error: convError } = await this.supabase
+      .from('conversations')
+      .delete()
+      .eq('company_id', companyId)
+      .eq('conversation_id', conversationId);
+
+    if (convError) {
+      this.logger.error(`Failed to delete conversation ${conversationId}`, convError.message);
+      throw convError;
+    }
+
+    this.logger.log(
+      `Permanently removed conversation ${conversationId} (messages + row; thread marked resolved)`,
+    );
   }
 
   async ignoreThread(companyId: string, conversationId: string): Promise<boolean> {
@@ -206,38 +318,7 @@ export class ConversationsService {
   }
 
   async deleteConversation(companyId: string, conversationId: string): Promise<void> {
-    // Derive employee_id and provider_thread_id from the composite key
-    const conversation = await this.getConversation(companyId, conversationId);
-    if (!conversation) {
-      throw new Error(`Conversation ${conversationId} not found`);
-    }
-
-    // Delete all email messages in this thread for this employee first
-    const { error: msgError } = await this.supabase
-      .from('email_messages')
-      .delete()
-      .eq('company_id', companyId)
-      .eq('employee_id', conversation.employee_id)
-      .eq('provider_thread_id', conversation.provider_thread_id);
-
-    if (msgError) {
-      this.logger.error(`Failed to delete messages for ${conversationId}`, msgError.message);
-      throw msgError;
-    }
-
-    // Delete the conversation record
-    const { error: convError } = await this.supabase
-      .from('conversations')
-      .delete()
-      .eq('company_id', companyId)
-      .eq('conversation_id', conversationId);
-
-    if (convError) {
-      this.logger.error(`Failed to delete conversation ${conversationId}`, convError.message);
-      throw convError;
-    }
-
-    this.logger.log(`Permanently deleted conversation ${conversationId} and its messages`);
+    await this.permanentlyRemoveConversation(companyId, conversationId);
   }
 
   /**

@@ -331,6 +331,19 @@ export class HistoricalFetchService {
           break;
         }
 
+        if (await this.conversationsService.isThreadPermanentlyResolved(employeeId, msg.providerThreadId)) {
+          onProgress?.({
+            phase: 'ai_decision',
+            index,
+            total,
+            relevant: false,
+            reason: 'Thread resolved and removed by user',
+            subject: msg.subject ?? '(no subject)',
+            from: msg.fromEmail,
+          });
+          continue;
+        }
+
         if (msg.sentAt < startDate || msg.sentAt > endDate) {
           onProgress?.({
             phase: 'ai_decision',

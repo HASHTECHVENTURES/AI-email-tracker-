@@ -682,6 +682,16 @@ export class EmailIngestionService {
       try {
         const msg = await this.gmailService.fetchFullMessage(employee.id, employee.email, msgId);
 
+        if (
+          await this.conversationsService.isThreadPermanentlyResolved(
+            employee.id,
+            msg.providerThreadId,
+          )
+        ) {
+          skippedFiltered += 1;
+          continue;
+        }
+
         if (!batchLatestSent || msg.sentAt > batchLatestSent) {
           batchLatestSent = msg.sentAt;
         }
