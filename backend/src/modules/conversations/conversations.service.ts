@@ -10,7 +10,10 @@ import { SettingsService } from '../settings/settings.service';
 import { EmailService } from '../email/email.service';
 import { CompanyPolicyService } from '../company-policy/company-policy.service';
 import { isMigration026ColumnError, stripConversations026Fields } from '../common/migration-026-compat';
-import { looksLikeInboundNoReplyNoise } from '../email-ingestion/relevance-guards';
+import {
+  looksLikeCalendarNotification,
+  looksLikeInboundNoReplyNoise,
+} from '../email-ingestion/relevance-guards';
 
 /** Skip-ledger marker so Gmail sync does not recreate a user-resolved thread. */
 export const USER_RESOLVED_THREAD_SKIP_PREFIX = '__user_resolved_thread__:';
@@ -562,6 +565,12 @@ export class ConversationsService {
 
     const latestInboundIsNoise = lastInbound
       ? looksLikeInboundNoReplyNoise({
+          direction: 'INBOUND',
+          from_email: lastInbound.from_email,
+          subject: lastInbound.subject,
+          body_text: lastInbound.body_text,
+        }) &&
+        !looksLikeCalendarNotification({
           direction: 'INBOUND',
           from_email: lastInbound.from_email,
           subject: lastInbound.subject,

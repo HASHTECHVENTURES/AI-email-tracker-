@@ -25,7 +25,9 @@ import {
 } from './gmail.service';
 import { buildSharedIngestRelevancePrompt } from './relevance-prompt.builder';
 import {
+  ingestForceRelevantCalendarOrMeeting,
   ingestSkipReasonForInboundNoise,
+  looksLikeCalendarNotification,
   looksLikeDirectHumanMail,
 } from './relevance-guards';
 import { OauthTokenService } from '../auth/oauth-token.service';
@@ -993,6 +995,10 @@ export class EmailIngestionService {
         confidence: 1,
       };
     }
+    const calendarIngest = ingestForceRelevantCalendarOrMeeting(target);
+    if (calendarIngest) {
+      return calendarIngest;
+    }
     const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
     if (noiseSkip) {
       return { relevant: false, reason: noiseSkip, confidence: 1 };
@@ -1007,8 +1013,15 @@ export class EmailIngestionService {
       const parsed = await this.callGeminiIngestRelevance(prompt, target.fromEmail);
       if (parsed) {
         const postAiNoise = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
-        if (parsed.relevant && postAiNoise) {
+        if (parsed.relevant && postAiNoise && !looksLikeCalendarNotification(target)) {
           return { relevant: false, reason: postAiNoise, confidence: parsed.confidence };
+        }
+        if (!parsed.relevant && looksLikeCalendarNotification(target)) {
+          return {
+            relevant: true,
+            reason: 'Calendar or meeting invite kept for Need your reply.',
+            confidence: parsed.confidence,
+          };
         }
         if (!parsed.relevant && looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
           return {

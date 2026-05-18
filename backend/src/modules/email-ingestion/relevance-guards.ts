@@ -39,6 +39,9 @@ export function looksLikeCalendarNotification(msg: InboundNoiseFields): boolean 
 
   const subjectHit =
     /^invitation\b/i.test(sub) ||
+    /^invitation:/i.test(sub) ||
+    /^meeting prep:/i.test(sub) ||
+    /\binvitation:\s+.+\s@\s+(?:mon|tue|wed|thu|fri|sat|sun)\b/i.test(sub) ||
     /^(accepted|declined|tentative|canceled|cancelled|updated invitation|invitation):\s/i.test(
       sub,
     ) ||
@@ -47,7 +50,8 @@ export function looksLikeCalendarNotification(msg: InboundNoiseFields): boolean 
     /\bhas tentatively accepted\b/i.test(sub) ||
     /\baccepted an invitation\b/i.test(sub) ||
     /\bcalendar invitation\b/i.test(sub) ||
-    /\bevent (updated|cancelled|canceled)\b/i.test(sub);
+    /\bevent (updated|cancelled|canceled)\b/i.test(sub) ||
+    /\bmeeting (update|reminder|scheduled|cancelled|canceled)\b/i.test(sub);
 
   const bodyHit =
     /begin:vcalendar/i.test(b) ||
@@ -68,6 +72,7 @@ export function looksLikePromotionalMail(
   msg: InboundNoiseFields,
   hasNoiseGmailLabel = false,
 ): boolean {
+  if (looksLikeCalendarNotification(msg)) return false;
   if (hasNoiseGmailLabel) return true;
 
   const { from, subject, body } = readInboundFields(msg);
@@ -75,11 +80,18 @@ export function looksLikePromotionalMail(
   const b = body.toLowerCase();
 
   if (
-    /^(no-?reply|noreply|do-?not-?reply|mailer-daemon|postmaster|marketing|newsletter|promotions?|deals?|offers?)@/i.test(
+    /^(no-?reply|noreply|do-?not-?reply|mailer-daemon|postmaster|newsletter|promotions?|deals?|offers?)@/i.test(
       from,
     )
   ) {
     return true;
+  }
+  // marketing@ often sends real meeting invites — only promo when subject/body look like broadcast mail.
+  if (/^marketing@/i.test(from)) {
+    return (
+      /(newsletter|unsubscribe|promo|promotion|campaign|webinar|view in browser|flash sale)/i.test(sub) ||
+      /(unsubscribe|manage preferences|view in browser)/i.test(b)
+    );
   }
 
   if (
@@ -113,6 +125,19 @@ export function looksLikeInboundNoReplyNoise(
   return looksLikePromotionalMail(msg, hasNoiseGmailLabel);
 }
 
+/** Calendar/meeting mail must be ingested and appear in Need your reply (never auto-skipped as promo). */
+export function ingestForceRelevantCalendarOrMeeting(
+  msg: InboundNoiseFields,
+): { relevant: true; reason: string; confidence: number } | null {
+  if (msg.direction && msg.direction !== 'INBOUND') return null;
+  if (!looksLikeCalendarNotification(msg)) return null;
+  return {
+    relevant: true,
+    reason: 'Calendar or meeting event — tracked in Need your reply.',
+    confidence: 1,
+  };
+}
+
 /** Hard skip at ingest for promotional noise only (not calendar/events). */
 export function ingestSkipReasonForInboundNoise(
   msg: InboundNoiseFields,
@@ -134,6 +159,7 @@ export function looksLikeDirectHumanMail(
 ): boolean {
   if (target.direction !== 'INBOUND') return false;
   if (hasNoiseGmailLabel) return false;
+  if (looksLikeCalendarNotification(target)) return true;
   if (looksLikeInboundNoReplyNoise(target, hasNoiseGmailLabel)) return false;
 
   const norm = (v: string) => v.trim().toLowerCase();

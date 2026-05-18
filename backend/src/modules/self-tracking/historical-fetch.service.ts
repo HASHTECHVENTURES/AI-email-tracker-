@@ -10,7 +10,9 @@ import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { GmailService, buildGmailHistoricalWindowQuery } from '../email-ingestion/gmail.service';
 import { buildSharedIngestRelevancePrompt } from '../email-ingestion/relevance-prompt.builder';
 import {
+  ingestForceRelevantCalendarOrMeeting,
   ingestSkipReasonForInboundNoise,
+  looksLikeCalendarNotification,
   looksLikeDirectHumanMail,
 } from '../email-ingestion/relevance-guards';
 import { OauthTokenService } from '../auth/oauth-token.service';
@@ -636,6 +638,10 @@ export class HistoricalFetchService {
         reason: 'Outbound — your sent message (reply detection / SLA)',
       };
     }
+    const calendarIngest = ingestForceRelevantCalendarOrMeeting(target);
+    if (calendarIngest) {
+      return calendarIngest;
+    }
     const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
     if (noiseSkip) {
       return { relevant: false, reason: noiseSkip };
@@ -650,8 +656,14 @@ export class HistoricalFetchService {
       const parsed = await this.callGeminiRelevance(prompt);
       if (parsed) {
         const postAiNoise = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
-        if (parsed.relevant && postAiNoise) {
+        if (parsed.relevant && postAiNoise && !looksLikeCalendarNotification(target)) {
           return { relevant: false, reason: postAiNoise };
+        }
+        if (!parsed.relevant && looksLikeCalendarNotification(target)) {
+          return {
+            relevant: true,
+            reason: 'Calendar or meeting invite kept for Need your reply.',
+          };
         }
         if (!parsed.relevant && looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
           return {

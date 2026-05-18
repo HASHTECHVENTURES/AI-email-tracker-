@@ -220,6 +220,8 @@ function isStaleNeedReplyByClientMessage(c: ConversationRow, staleDays: number):
 
 /** Promotional/newsletter mail only — calendar invites and events stay in Need your reply. */
 function isPromoNeedReplyNoise(c: ConversationRow): boolean {
+  const subject = (c.thread_subject ?? '').trim().toLowerCase();
+  if (/^invitation:|^invitation\b|^meeting prep:/i.test(subject)) return false;
   const text = `${c.thread_subject ?? ''} ${c.summary ?? ''} ${c.short_reason ?? ''}`.toLowerCase();
   if (
     /(unsubscribe|view in browser|promo code|flash sale|limited time offer|\d+%\s*off|marketing newsletter)/i.test(
@@ -898,10 +900,16 @@ function skipReasonIsGeminiQuotaExhausted(reason: string | null | undefined): bo
 function skipReasonBadgeLabel(row: AiSkippedMailItem): string {
   const reasonRaw = row.skip_reason ?? '';
   const reason = reasonRaw.toLowerCase();
-  if (reason.includes('calendar invitation') || reason.includes('rsvp (accepted')) {
+  const sub = (row.subject ?? '').trim().toLowerCase();
+  if (
+    reason.includes('calendar invitation') ||
+    reason.includes('rsvp (accepted') ||
+    reason.includes('calendar or meeting') ||
+    /^invitation:|^invitation\b|^meeting prep:/i.test(sub)
+  ) {
     return 'Calendar / event';
   }
-  if (reason.includes('promotional or marketing')) {
+  if (reason.includes('promotional or marketing') && !/^invitation:|^meeting prep:/i.test(sub)) {
     return 'Promotional';
   }
   const code = row.skip_reason_code ?? '';
