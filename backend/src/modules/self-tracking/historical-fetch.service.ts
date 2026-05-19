@@ -8,12 +8,15 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { GmailService, buildGmailHistoricalWindowQuery } from '../email-ingestion/gmail.service';
-import { buildSharedIngestRelevancePrompt } from '../email-ingestion/relevance-prompt.builder';
+import {
+  buildSharedIngestRelevancePrompt,
+  RELEVANCE_MODEL_TEMPERATURE,
+} from '../email-ingestion/relevance-prompt.builder';
 import {
   ingestForceRelevantCalendarOrMeeting,
   ingestSkipReasonForInboundNoise,
-  looksLikeMeetingOrEventMail,
   looksLikeDirectHumanMail,
+  finalizeIngestRelevanceFromAi,
 } from '../email-ingestion/relevance-guards';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { ConversationsService } from '../conversations/conversations.service';
@@ -113,7 +116,10 @@ export class HistoricalFetchService {
     const modelName = process.env.GEMINI_RELEVANCE_MODEL?.trim() || 'gemini-2.5-flash';
     this.relevanceModel = genAI.getGenerativeModel({
       model: modelName,
-      generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+      generationConfig: {
+        temperature: RELEVANCE_MODEL_TEMPERATURE,
+        responseMimeType: 'application/json',
+      },
     });
   }
 
@@ -411,6 +417,25 @@ export class HistoricalFetchService {
           }
           skippedIrrelevant++;
           if (decision.transientAiUnavailable) {
+            const reasonText =
+              decision.reason?.trim() ||
+              'Inbox AI temporarily unavailable — retry or use Reanalyze.';
+            const isQuota = /quota|rate limit|\b429\b/i.test(reasonText);
+            try {
+              await this.emailIngestionService.recordIngestionSkip(employeeId, msg.providerMessageId, {
+                skip_kind: isQuota ? 'quota_exceeded' : 'ai_irrelevant',
+                skip_reason: reasonText,
+                classification_status: 'failed',
+                subject: msg.subject,
+                from_email: msg.fromEmail,
+                sent_at: msg.sentAt,
+                provider_thread_id: msg.providerThreadId,
+              });
+            } catch (skipErr) {
+              this.logger.warn(
+                `Historical fetch: could not record transient skip for ${msgId}: ${(skipErr as Error).message}`,
+              );
+            }
             continue;
           }
           const reasonText =
@@ -575,7 +600,9 @@ export class HistoricalFetchService {
   }
 
   /** Same retry behavior as live ingestion so transient 429s do not blank a whole historical window. */
-  private async callGeminiRelevance(prompt: string): Promise<{ relevant: boolean; reason: string | null } | null> {
+  private async callGeminiRelevance(
+    prompt: string,
+  ): Promise<{ relevant: boolean; reason: string | null; confidence: number | null } | null> {
     if (!this.relevanceModel) return null;
     if (this.monthlyQuotaExhausted) {
       return null;
@@ -585,11 +612,20 @@ export class HistoricalFetchService {
       try {
         const result = await this.relevanceModel.generateContent(prompt);
         const text = result.response.text().replace(/```json\s*/gi, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(text) as { relevant?: boolean; reason?: string };
+        const parsed = JSON.parse(text) as {
+          relevant?: boolean;
+          reason?: string;
+          confidence?: number;
+        };
         if (typeof parsed.relevant === 'boolean') {
+          const confidence =
+            typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
+              ? Math.max(0, Math.min(1, parsed.confidence))
+              : null;
           return {
             relevant: parsed.relevant,
             reason: typeof parsed.reason === 'string' ? parsed.reason.trim().slice(0, 500) : null,
+            confidence,
           };
         }
         this.logger.warn('Historical Gemini relevance: JSON missing boolean relevant flag');
@@ -655,24 +691,16 @@ export class HistoricalFetchService {
       const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
       const parsed = await this.callGeminiRelevance(prompt);
       if (parsed) {
-        const postAiNoise = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
-        if (parsed.relevant && postAiNoise && !looksLikeMeetingOrEventMail(target)) {
-          return { relevant: false, reason: postAiNoise };
-        }
-        if (!parsed.relevant && looksLikeMeetingOrEventMail(target)) {
-          return {
-            relevant: true,
-            reason: 'Calendar or meeting invite kept for Need your reply.',
-          };
-        }
-        if (!parsed.relevant && looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
-          return {
-            relevant: true,
-            reason:
-              'Safety override: direct human mailbox message kept even though Inbox AI marked it not relevant.',
-          };
-        }
-        return parsed;
+        const finalized = finalizeIngestRelevanceFromAi(
+          target,
+          employeeEmail,
+          hasNoiseGmailLabel,
+          parsed,
+        );
+        return {
+          relevant: finalized.relevant,
+          reason: finalized.reason,
+        };
       }
       if (this.monthlyQuotaExhausted && !ingestWithoutAiConfirmed) {
         if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
@@ -685,7 +713,7 @@ export class HistoricalFetchService {
         return {
           relevant: false,
           reason:
-            'Inbox AI unavailable: Gemini API quota or rate limit reached. Non-direct historical mail skipped without writing skip rows.',
+            'Inbox AI unavailable: Gemini API quota or rate limit reached.',
           transientAiUnavailable: true,
         };
       }
@@ -702,7 +730,7 @@ export class HistoricalFetchService {
       return {
         relevant: false,
         reason:
-          'Inbox AI unavailable: Gemini did not return a usable verdict. Non-direct historical mail skipped without writing skip rows.',
+          'Inbox AI unavailable: Gemini did not return a usable verdict.',
         transientAiUnavailable: true,
       };
     }

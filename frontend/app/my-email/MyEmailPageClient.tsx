@@ -882,6 +882,7 @@ type AiSkippedMailItem = {
 
 function skipKindShortLabel(kind: string): string {
   if (kind === 'ai_irrelevant') return 'Inbox AI';
+  if (kind === 'quota_exceeded') return 'Gemini quota';
   if (kind === 'before_tracking') return 'Before tracking';
   if (kind === 'legacy') return 'Older skip';
   return kind;

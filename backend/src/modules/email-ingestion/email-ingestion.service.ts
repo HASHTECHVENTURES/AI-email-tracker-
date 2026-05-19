@@ -27,9 +27,10 @@ import { buildSharedIngestRelevancePrompt } from './relevance-prompt.builder';
 import {
   ingestForceRelevantCalendarOrMeeting,
   ingestSkipReasonForInboundNoise,
-  looksLikeMeetingOrEventMail,
   looksLikeDirectHumanMail,
+  finalizeIngestRelevanceFromAi,
 } from './relevance-guards';
+import { RELEVANCE_MODEL_TEMPERATURE } from './relevance-prompt.builder';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { getGeminiApiKeyFromEnv } from '../common/env';
 import {
@@ -151,7 +152,7 @@ export class EmailIngestionService {
     this.relevanceModel = genAI.getGenerativeModel({
       model: modelName,
       generationConfig: {
-        temperature: 0.2,
+        temperature: RELEVANCE_MODEL_TEMPERATURE,
         responseMimeType: 'application/json',
       },
     });
@@ -764,6 +765,19 @@ export class EmailIngestionService {
           skippedFiltered += 1;
           skippedByAiDecision += 1;
           if (decision.transientAiUnavailable) {
+            const transientReason =
+              decision.reason?.trim() ||
+              'Inbox AI temporarily unavailable — retry when quota resets or use Reanalyze.';
+            const isQuota = /quota|rate limit|\b429\b/i.test(transientReason);
+            await this.recordIngestionSkip(employee.id, msg.providerMessageId, {
+              skip_kind: isQuota ? 'quota_exceeded' : 'ai_irrelevant',
+              skip_reason: transientReason,
+              classification_status: 'failed',
+              subject: msg.subject,
+              from_email: msg.fromEmail,
+              sent_at: msg.sentAt,
+              provider_thread_id: msg.providerThreadId,
+            });
             continue;
           }
           const reasonText =
@@ -1012,26 +1026,17 @@ export class EmailIngestionService {
       const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
       const parsed = await this.callGeminiIngestRelevance(prompt, target.fromEmail);
       if (parsed) {
-        const postAiNoise = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
-        if (parsed.relevant && postAiNoise && !looksLikeMeetingOrEventMail(target)) {
-          return { relevant: false, reason: postAiNoise, confidence: parsed.confidence };
-        }
-        if (!parsed.relevant && looksLikeMeetingOrEventMail(target)) {
-          return {
-            relevant: true,
-            reason: 'Calendar or meeting invite kept for Need your reply.',
-            confidence: parsed.confidence,
-          };
-        }
-        if (!parsed.relevant && looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
-          return {
-            relevant: true,
-            reason:
-              'Safety override: direct human mailbox message kept even though Inbox AI marked it not relevant.',
-            confidence: parsed.confidence,
-          };
-        }
-        return { relevant: parsed.relevant, reason: parsed.reason, confidence: parsed.confidence };
+        const finalized = finalizeIngestRelevanceFromAi(
+          target,
+          employeeEmail,
+          hasNoiseGmailLabel,
+          parsed,
+        );
+        return {
+          relevant: finalized.relevant,
+          reason: finalized.reason,
+          confidence: finalized.confidence,
+        };
       }
       if (ingestWithoutAiConfirmed) {
         return {
@@ -1148,7 +1153,7 @@ export class EmailIngestionService {
     employeeId: string,
     providerMessageId: string,
     meta?: {
-      skip_kind: 'before_tracking' | 'ai_irrelevant' | 'legacy';
+      skip_kind: 'before_tracking' | 'ai_irrelevant' | 'quota_exceeded' | 'legacy';
       skip_reason?: string | null;
       skip_reason_code?: SkipReasonCode | null;
       classification_status?: 'skipped' | 'classified' | 'pending' | 'failed' | null;

@@ -55,6 +55,34 @@ export function buildGmailHistoricalWindowQuery(afterDate: Date, beforeDate: Dat
   return parts.join(' ');
 }
 
+/**
+ * Thread context for Gemini: first message + message before target + target (deduped).
+ * Ensures long threads still show the relationship origin, not only the last 3 messages.
+ */
+export function pickThreadMessageIdsForRelevance(
+  sortedOldestFirst: gmail_v1.Schema$Message[],
+  targetMessageId: string,
+  maxMessages = 3,
+): string[] {
+  if (sortedOldestFirst.length === 0) return [targetMessageId];
+
+  const targetIdx = sortedOldestFirst.findIndex((m) => m.id === targetMessageId);
+  const firstId = sortedOldestFirst[0]?.id;
+  const beforeId = targetIdx > 0 ? sortedOldestFirst[targetIdx - 1]?.id : null;
+  const targetId = targetIdx >= 0 ? sortedOldestFirst[targetIdx]?.id : targetMessageId;
+
+  const candidates = [firstId, beforeId, targetId].filter((id): id is string => Boolean(id));
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const id of candidates) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids.slice(0, maxMessages);
+}
+
 @Injectable()
 export class GmailService {
   private readonly logger = new Logger(GmailService.name);
@@ -309,11 +337,9 @@ export class GmailService {
       }
     }
 
-    const slice = sorted.slice(-maxMessages);
+    const messageIds = pickThreadMessageIdsForRelevance(sorted, current.providerMessageId, maxMessages);
     const out: EmailMessage[] = [];
-    for (const ref of slice) {
-      const id = ref.id;
-      if (!id) continue;
+    for (const id of messageIds) {
       if (id === current.providerMessageId) {
         out.push(current);
         continue;

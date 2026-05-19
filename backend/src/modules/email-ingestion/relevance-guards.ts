@@ -1,4 +1,5 @@
 import type { EmailMessage } from '../common/types';
+import { PROMO_CONFIDENCE_THRESHOLD } from './relevance-prompt.builder';
 
 /** Minimal fields for noise heuristics (ingest + conversation recompute). */
 export type InboundNoiseFields = {
@@ -177,11 +178,58 @@ export function ingestSkipReasonForInboundNoise(
   return 'Promotional or marketing mail — not a customer reply thread.';
 }
 
+/** @deprecated Use PROMO_CONFIDENCE_THRESHOLD from relevance-prompt.builder */
+export const CONFIDENCE_PROMO_OVERRIDE_THRESHOLD = PROMO_CONFIDENCE_THRESHOLD;
+
 /**
  * Guardrail for false negatives: if Inbox AI says "irrelevant" but this looks like
  * a direct human thread to the tracked mailbox, keep it in the portal.
  * Shared by live ingestion and historical backfill.
  */
+
+export type IngestRelevanceAiVerdict = {
+  relevant: boolean;
+  reason: string | null;
+  confidence: number | null;
+};
+
+/**
+ * Post-Gemini overrides: confidence-gated promo skip, calendar force-in, direct-human safety.
+ */
+export function finalizeIngestRelevanceFromAi(
+  target: EmailMessage,
+  employeeEmail: string,
+  hasNoiseGmailLabel: boolean,
+  parsed: IngestRelevanceAiVerdict,
+): IngestRelevanceAiVerdict {
+  if (parsed.relevant) {
+    const postAiNoise = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
+    if (postAiNoise && !looksLikeMeetingOrEventMail(target)) {
+      const confidence = parsed.confidence ?? 0.5;
+      if (confidence >= PROMO_CONFIDENCE_THRESHOLD) {
+        return { relevant: true, reason: parsed.reason, confidence: parsed.confidence };
+      }
+      return { relevant: false, reason: postAiNoise, confidence: parsed.confidence };
+    }
+  }
+  if (!parsed.relevant && looksLikeMeetingOrEventMail(target)) {
+    return {
+      relevant: true,
+      reason: 'Calendar or meeting invite kept for Need your reply.',
+      confidence: parsed.confidence,
+    };
+  }
+  if (!parsed.relevant && looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+    return {
+      relevant: true,
+      reason:
+        'Safety override: direct human mailbox message kept even though Inbox AI marked it not relevant.',
+      confidence: parsed.confidence,
+    };
+  }
+  return parsed;
+}
+
 export function looksLikeDirectHumanMail(
   target: EmailMessage,
   employeeEmail: string,
