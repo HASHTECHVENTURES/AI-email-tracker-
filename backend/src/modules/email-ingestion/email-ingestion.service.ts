@@ -5,7 +5,6 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  forwardRef,
 } from '@nestjs/common';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SupabaseClient } from '@supabase/supabase-js';
@@ -14,7 +13,6 @@ import { Employee, EmailMessage } from '../common/types';
 import { EmployeesService } from '../employees/employees.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { SettingsService, type SystemSettings } from '../settings/settings.service';
-import { DashboardService } from '../dashboard/dashboard.service';
 import { CompanyPolicyService } from '../company-policy/company-policy.service';
 import { AiEnrichmentService } from '../ai-enrichment/ai-enrichment.service';
 import type { gmail_v1 } from 'googleapis';
@@ -136,8 +134,6 @@ export class EmailIngestionService {
     private readonly oauthTokenService: OauthTokenService,
     private readonly conversationsService: ConversationsService,
     private readonly settingsService: SettingsService,
-    @Inject(forwardRef(() => DashboardService))
-    private readonly dashboardService: DashboardService,
     private readonly companyPolicyService: CompanyPolicyService,
     private readonly aiEnrichmentService: AiEnrichmentService,
   ) {
@@ -286,17 +282,6 @@ export class EmailIngestionService {
               conversationsUpdated: 0,
               error: (err as Error).message,
             });
-          }
-        }
-
-        if (cycleSettings.ai_enabled) {
-          const aiOn = await this.companyPolicyService.isAiEnabledForCompany(companyId);
-          if (aiOn) {
-            void this.dashboardService
-              .generateAiReport(companyId, { minCooldownMs: 3_600_000, scope: 'EXECUTIVE' })
-              .catch((err) => {
-                this.logger.warn(`Auto AI report failed for ${companyId}: ${(err as Error).message}`);
-              });
           }
         }
       }

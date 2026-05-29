@@ -634,7 +634,7 @@ function KillSwitchesView({
       <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-900">
         <p className="font-semibold">How kill switches work</p>
         <p className="mt-1 text-amber-800/90">
-          Disabling <strong>AI</strong> stops AI enrichment and scheduled executive reports for that tenant.
+          Disabling <strong>AI</strong> stops AI enrichment and manual executive reports for that tenant.
           Disabling <strong>Email crawl</strong> stops Gmail sync for all mailboxes in that company.
           Company-level CEO Settings still apply on top of these platform overrides.
         </p>

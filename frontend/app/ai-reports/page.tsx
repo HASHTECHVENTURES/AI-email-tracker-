@@ -277,7 +277,7 @@ export default function AiReportsPage() {
       companyName={me.company_name ?? null}
       userDisplayName={me.full_name?.trim() || me.email}
       title="Reports"
-      subtitle="Executive briefings — generated on the company schedule or on demand."
+      subtitle="Executive briefings — generate on demand only (no automatic scheduled runs)."
       lastSyncLabel={lastSyncLabel}
       nextIngestionCountdownLabel={null}
       nextReportCountdownLabel={aiBriefingsOn ? reportCountdownLabel : null}

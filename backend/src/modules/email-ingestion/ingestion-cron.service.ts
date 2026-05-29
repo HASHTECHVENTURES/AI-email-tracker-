@@ -8,7 +8,7 @@ export class IngestionCronService {
 
   constructor(private readonly emailIngestionService: EmailIngestionService) {}
 
-  /** Every 2 minutes at second 0 (UTC even minutes) — Gmail fetch, conversations, AI enrichment, reports. */
+  /** Every 2 minutes at second 0 (UTC even minutes) — Gmail fetch, conversations, AI enrichment. */
   @Cron('0 */2 * * * *', {
     name: 'gmail-ingestion',
     timeZone: 'UTC',

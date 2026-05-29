@@ -1,9 +1,8 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { EmployeesModule } from '../employees/employees.module';
 import { ConversationsModule } from '../conversations/conversations.module';
 import { SettingsModule } from '../settings/settings.module';
-import { DashboardModule } from '../dashboard/dashboard.module';
 import { CompanyPolicyModule } from '../company-policy/company-policy.module';
 import { AiEnrichmentModule } from '../ai-enrichment/ai-enrichment.module';
 import { supabaseProvider } from '../common/supabase.provider';
@@ -18,7 +17,6 @@ import { IngestionCronService } from './ingestion-cron.service';
     EmployeesModule,
     ConversationsModule,
     SettingsModule,
-    forwardRef(() => DashboardModule),
     CompanyPolicyModule,
     AiEnrichmentModule,
   ],

@@ -238,16 +238,6 @@ export class SettingsService {
     const map = new Map((data ?? []).map((r: { key: string; value: string }) => [r.key, r.value]));
 
     const lastFinished = map.get('last_ingestion_finished_at') ?? null;
-    /** Next tick strictly after `now` so the UI always gets a positive countdown. */
-    const alignNext = (anchorIso: string, intervalSec: number): string => {
-      const stepMs = intervalSec * 1000;
-      if (stepMs <= 0) return new Date(Date.now() + 60_000).toISOString();
-      let t = new Date(anchorIso).getTime() + stepMs;
-      const now = Date.now();
-      let guard = 0;
-      while (t <= now && guard++ < 5000) t += stepMs;
-      return new Date(t).toISOString();
-    };
 
     const cronDisabled = process.env.DISABLE_INGESTION_CRON === 'true';
     const emailCrawlOn = map.get('email_crawl_enabled') !== 'false';
@@ -263,16 +253,9 @@ export class SettingsService {
     const lastReportAt = companyId
       ? map.get(`last_ai_report_at_${companyId}`) ?? map.get('last_ai_report_at') ?? null
       : map.get('last_ai_report_at') ?? null;
-    // No report yet -> start hourly window from "now"; else hourly from last report (rolled forward)
-    const nextReportAt = lastReportAt
-      ? alignNext(lastReportAt, REPORT_INTERVAL_SECONDS)
-      : alignNext(new Date().toISOString(), REPORT_INTERVAL_SECONDS);
-
-    const nextReportMs = nextReportAt ? new Date(nextReportAt).getTime() : NaN;
-    const secondsUntilNextReport =
-      nextReportAt != null && !Number.isNaN(nextReportMs)
-        ? Math.max(0, Math.ceil((nextReportMs - serverNow) / 1000))
-        : null;
+    // Executive AI reports are manual-only (no scheduled Gemini runs during ingestion).
+    const nextReportAt: string | null = null;
+    const secondsUntilNextReport: number | null = null;
 
     const lastIngestionStartedAt = map.get('last_ingestion_started_at') ?? null;
     const rawIngestionRunning = map.get('ingestion_running') === 'true';
