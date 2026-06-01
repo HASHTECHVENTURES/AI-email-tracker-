@@ -355,8 +355,9 @@ export class SelfTrackingService {
     const needs_attention = conversationsWithSubjects.filter(
       (c) =>
         !c.user_cc_only &&
+        c.follow_up_status !== 'DONE' &&
         (c.follow_up_status === 'MISSED' ||
-          (c.priority === 'HIGH' && c.follow_up_status !== 'DONE')),
+          (c.priority === 'HIGH' && c.follow_up_required !== false)),
     );
 
     const stats = {

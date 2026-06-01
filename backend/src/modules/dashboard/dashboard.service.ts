@@ -352,7 +352,8 @@ export class DashboardService {
   }
 
   private static needsAttentionConv(c: ConversationListItem): boolean {
-    return c.follow_up_status === 'MISSED' || (c.priority === 'HIGH' && c.follow_up_status !== 'DONE');
+    if (c.follow_up_status === 'DONE' || c.follow_up_required === false) return false;
+    return c.follow_up_status === 'MISSED' || c.priority === 'HIGH';
   }
 
   /**
@@ -679,8 +680,10 @@ export class DashboardService {
       };
     });
 
-    const needsAttentionRow = (c: Row) =>
-      c.follow_up_status === 'MISSED' || (c.priority === 'HIGH' && c.follow_up_status !== 'DONE');
+    const needsAttentionRow = (c: Row) => {
+      if (c.follow_up_status === 'DONE') return false;
+      return c.follow_up_status === 'MISSED' || c.priority === 'HIGH';
+    };
 
     const byDept = new Map<string, Row[]>();
     for (const c of rows) {
@@ -924,8 +927,9 @@ export class DashboardService {
       .filter(
         (c) =>
           !c.user_cc_only &&
-          (c.follow_up_status === 'MISSED' ||
-            (c.priority === 'HIGH' && c.follow_up_status !== 'DONE')),
+          c.follow_up_status !== 'DONE' &&
+          c.follow_up_required !== false &&
+          (c.follow_up_status === 'MISSED' || c.priority === 'HIGH'),
       )
       .slice(0, attentionCap);
 

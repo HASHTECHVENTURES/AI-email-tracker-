@@ -111,7 +111,9 @@ function isResolvedToday(row: ConversationRow): boolean {
 }
 
 function needsAttentionPredicate(c: ConversationRow): boolean {
-  return c.follow_up_status === 'MISSED' || (c.priority === 'HIGH' && c.follow_up_status !== 'DONE');
+  if ((c.follow_up_status ?? '').toUpperCase() === 'DONE') return false;
+  if (c.follow_up_required === false) return false;
+  return c.follow_up_status === 'MISSED' || c.priority === 'HIGH';
 }
 
 type TeamHealth = 'at_risk' | 'watch' | 'steady';

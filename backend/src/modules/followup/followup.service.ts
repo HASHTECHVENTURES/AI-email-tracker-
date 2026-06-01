@@ -106,6 +106,17 @@ export class FollowupService {
     slaHours: number,
     manuallyClosed: boolean,
   ): FollowUpResult {
+    if (manuallyClosed) {
+      const delayHours = this.computeDelayHours(lastClientMsgAt, lastEmployeeReplyAt);
+      return {
+        followUpRequired: false,
+        followUpStatus: 'DONE',
+        lifecycleStatus: 'RESOLVED',
+        delayHours,
+        shortReason: 'Manually closed — no follow-up needed.',
+      };
+    }
+
     const followUpRequired = this.detectFollowUpRequired(lastClientMsgAt, lastEmployeeReplyAt);
     const delayHours = this.computeDelayHours(lastClientMsgAt, lastEmployeeReplyAt);
     const followUpStatus = this.classifyStatus(followUpRequired, lastClientMsgAt, lastEmployeeReplyAt, slaHours);
@@ -113,6 +124,17 @@ export class FollowupService {
     const shortReason = this.generateShortReason(
       followUpRequired, followUpStatus, delayHours, slaHours, lastClientMsgAt, lastEmployeeReplyAt,
     );
+
+    if (followUpStatus === 'DONE') {
+      return {
+        followUpRequired: false,
+        followUpStatus: 'DONE',
+        lifecycleStatus: lifecycleStatus === 'NEEDS_ATTENTION' ? 'RESOLVED' : lifecycleStatus,
+        delayHours,
+        shortReason,
+      };
+    }
+
     return { followUpRequired, followUpStatus, lifecycleStatus, delayHours, shortReason };
   }
 

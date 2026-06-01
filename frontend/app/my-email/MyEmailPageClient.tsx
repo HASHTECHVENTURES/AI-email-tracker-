@@ -193,7 +193,9 @@ function inboxGeminiWillClassify(s: IngestAiSettings, mb: Mailbox): boolean {
 
 /** CEO owes a reply — prefer server `follow_up_required` when present (matches Nest follow-up engine). */
 function needsMyReply(c: ConversationRow): boolean {
-  if (c.follow_up_status === 'DONE') return false;
+  const status = (c.follow_up_status ?? '').toUpperCase();
+  if (status === 'DONE') return false;
+  if (c.follow_up_required === false) return false;
   if (typeof c.follow_up_required === 'boolean') {
     return c.follow_up_required;
   }
@@ -252,6 +254,7 @@ function isNoFollowUpNoise(c: ConversationRow): boolean {
 
 /** Need reply KPI/tab: hide stale *pending* threads, but never hide MISSED SLA rows (they were invisible before). */
 function passesNeedReplyVisibility(c: ConversationRow): boolean {
+  if ((c.follow_up_status ?? '').toUpperCase() === 'DONE') return false;
   if (c.user_cc_only === true) return false;
   if (isNoFollowUpNoise(c)) return false;
   if (!needsMyReply(c)) return false;

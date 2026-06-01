@@ -652,6 +652,13 @@ export class ConversationsService {
       updated_at: new Date().toISOString(),
     };
 
+    if (row.follow_up_status === 'DONE') {
+      row.follow_up_required = false;
+      if (row.lifecycle_status !== 'ARCHIVED') {
+        row.lifecycle_status = 'RESOLVED';
+      }
+    }
+
     const { error: upsertError } = await this.supabase
       .from('conversations')
       .upsert(row, { onConflict: 'conversation_id' });
