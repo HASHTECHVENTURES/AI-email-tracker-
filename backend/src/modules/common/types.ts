@@ -71,6 +71,7 @@ export interface AiOutput {
   confidence: number;
   contact_name?: string;
   is_automated?: boolean;
+  conversation_closed?: boolean;
 }
 
 export interface MailSyncState {

@@ -22,7 +22,8 @@ Analyze the email thread below and return ONLY a valid JSON object with no addit
   "summary": "A clear, actionable summary of what this email thread is about and what response is needed. Example: 'Client John asking about Q2 project timeline — needs delivery date confirmation' or 'Invoice #4521 from Acme Corp for $2,400 — payment due April 15'",
   "contact_name": "The real human name of the external person (client/vendor/partner), extracted from email signature, greeting, or From header. Use the actual name, not the email address.",
   "confidence": 0.0 to 1.0,
-  "is_automated": true | false
+  "is_automated": true | false,
+  "conversation_closed": true | false
 }
 
 Priority rules:
@@ -40,6 +41,11 @@ Contact name rules:
 - Extract the real person's name from the email content (signature block, greeting like "Hi, I'm John", From header name).
 - If it's an automated sender (noreply@, billing@, etc.), return the company name instead.
 - Never return just an email address if a real name is available.
+
+Conversation closed rules:
+- true: the latest message in the thread clearly signals the conversation is finished and no reply is expected. Examples: "ticket closed", "issue resolved", "thanks, all good", "no further action needed", "we're all set", "this has been taken care of", "consider it done", "problem fixed", status changed to closed/resolved.
+- false: the conversation is still active — the client is asking a question, requesting action, waiting for something, or the thread has open items.
+- When uncertain, default to false (safer to show as needing reply than to hide it).
 
 Return ONLY the JSON object. No markdown, no explanation.`;
 
@@ -199,7 +205,9 @@ export class AiEnrichmentService {
 
       const is_automated = typeof parsed.is_automated === 'boolean' ? parsed.is_automated : undefined;
 
-      return { priority, summary, confidence, contact_name, is_automated };
+      const conversation_closed = typeof parsed.conversation_closed === 'boolean' ? parsed.conversation_closed : undefined;
+
+      return { priority, summary, confidence, contact_name, is_automated, conversation_closed };
     } catch {
       this.logger.warn('Failed to parse Gemini response, using fallback');
       return this.fallback();
@@ -216,6 +224,14 @@ export class AiEnrichmentService {
 
     if (output.contact_name) {
       updatePayload.client_name = output.contact_name;
+    }
+
+    if (output.conversation_closed === true) {
+      updatePayload.follow_up_required = false;
+      updatePayload.follow_up_status = 'DONE';
+      updatePayload.lifecycle_status = 'RESOLVED';
+      updatePayload.short_reason = 'AI detected conversation closed by client — no reply needed.';
+      updatePayload.reason = 'AI detected conversation closed by client — no reply needed.';
     }
 
     const { error } = await this.supabase

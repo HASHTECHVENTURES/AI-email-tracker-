@@ -13,6 +13,7 @@ import { isMigration026ColumnError, stripConversations026Fields } from '../commo
 import {
   looksLikeInboundNoReplyNoise,
   looksLikeMeetingOrEventMail,
+  looksLikeConversationClosure,
 } from '../email-ingestion/relevance-guards';
 
 /** Skip-ledger marker so Gmail sync does not recreate a user-resolved thread. */
@@ -563,19 +564,20 @@ export class ConversationsService {
 
     const result = this.followupService.analyze(lastClientMsgAt, lastEmployeeReplyAt, slaHours, manuallyClosed);
 
-    const latestInboundIsNoise = lastInbound
-      ? looksLikeInboundNoReplyNoise({
-          direction: 'INBOUND',
-          from_email: lastInbound.from_email,
-          subject: lastInbound.subject,
-          body_text: lastInbound.body_text,
-        }) &&
-        !looksLikeMeetingOrEventMail({
-          direction: 'INBOUND',
-          from_email: lastInbound.from_email,
-          subject: lastInbound.subject,
-          body_text: lastInbound.body_text,
-        })
+    const inboundFields = lastInbound
+      ? { direction: 'INBOUND' as const, from_email: lastInbound.from_email, subject: lastInbound.subject, body_text: lastInbound.body_text }
+      : null;
+
+    const latestInboundIsCalendar = inboundFields
+      ? looksLikeMeetingOrEventMail(inboundFields)
+      : false;
+
+    const latestInboundIsNoise = inboundFields
+      ? looksLikeInboundNoReplyNoise(inboundFields) && !latestInboundIsCalendar
+      : false;
+
+    const latestInboundIsClosure = inboundFields
+      ? looksLikeConversationClosure(inboundFields)
       : false;
 
     const contactEmail = (
@@ -614,22 +616,30 @@ export class ConversationsService {
       last_client_msg_at: lastClientMsgAt?.toISOString() ?? null,
       last_employee_reply_at: lastEmployeeReplyAt?.toISOString() ?? null,
       follow_up_required:
-        userCcOnly || latestInboundIsNoise ? false : result.followUpRequired,
+        userCcOnly || latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? false : result.followUpRequired,
       follow_up_status:
-        userCcOnly || latestInboundIsNoise ? 'DONE' : result.followUpStatus,
+        userCcOnly || latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? 'DONE' : result.followUpStatus,
       delay_hours: result.delayHours,
       lifecycle_status:
-        userCcOnly || latestInboundIsNoise ? 'RESOLVED' : result.lifecycleStatus,
-      short_reason: latestInboundIsNoise
-        ? 'Promotional mail — no reply needed.'
-        : result.shortReason,
-      reason: latestInboundIsNoise
-        ? 'Promotional mail — no reply needed.'
-        : result.shortReason,
+        userCcOnly || latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? 'RESOLVED' : result.lifecycleStatus,
+      short_reason: latestInboundIsClosure
+        ? 'Client indicated the conversation is closed — no reply needed.'
+        : latestInboundIsCalendar
+          ? 'Calendar/meeting invite — no reply needed.'
+          : latestInboundIsNoise
+            ? 'Promotional mail — no reply needed.'
+            : result.shortReason,
+      reason: latestInboundIsClosure
+        ? 'Client indicated the conversation is closed — no reply needed.'
+        : latestInboundIsCalendar
+          ? 'Calendar/meeting invite — no reply needed.'
+          : latestInboundIsNoise
+            ? 'Promotional mail — no reply needed.'
+            : result.shortReason,
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,
       user_cc_only: userCcOnly,
-      priority: looksAutomated || latestInboundIsNoise ? 'LOW' : (existing?.priority ?? 'MEDIUM'),
+      priority: looksAutomated || latestInboundIsNoise ? 'LOW' : latestInboundIsCalendar ? (existing?.priority ?? 'LOW') : (existing?.priority ?? 'MEDIUM'),
       summary: summaryForRow,
       confidence: existing ? Number(existing.confidence) : 0,
       classification_status: 'classified',

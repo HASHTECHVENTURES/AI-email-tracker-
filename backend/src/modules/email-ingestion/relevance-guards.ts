@@ -98,6 +98,46 @@ export function looksLikeCalendarNotification(msg: InboundNoiseFields): boolean 
   return looksLikeMeetingOrEventMail(msg);
 }
 
+/**
+ * Detects when the latest inbound message signals the conversation is closed/resolved
+ * by the other party — e.g. "ticket closed", "issue resolved", "thanks, all good".
+ * When true, the thread should auto-mark as DONE (no follow-up needed).
+ */
+export function looksLikeConversationClosure(msg: InboundNoiseFields): boolean {
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+
+  const { subject, body } = readInboundFields(msg);
+  const sub = subject.toLowerCase();
+  const b = body.toLowerCase().slice(0, 3_000);
+
+  const closurePhrases =
+    /\b(?:ticket|issue|case|request|bug|incident|query|complaint|task)\s+(?:is\s+)?(?:closed|resolved|completed|fixed|done|sorted|addressed)\b/i;
+
+  const statusLine =
+    /\bstatus\s*:\s*(?:closed|resolved|completed|fixed|done)\b/i;
+
+  const conversationEnd =
+    /\b(?:no\s+further\s+action|no\s+action\s+(?:needed|required)|no\s+reply\s+(?:needed|required)|nothing\s+else\s+needed|no\s+response\s+(?:needed|required))\b/i;
+
+  const clientClosing =
+    /\b(?:we(?:'re| are)\s+(?:all\s+set|good|done|sorted)|that(?:'s|s)\s+(?:all|it)|all\s+(?:good|set|done|sorted)|consider\s+(?:this|it)\s+(?:closed|resolved|done))\b/i;
+
+  const thanksClosure =
+    /\bthanks?,?\s+(?:that(?:'s|s)\s+all|we(?:'re| are)\s+good|no\s+need|all\s+good|all\s+set|nothing\s+else|no\s+further)\b/i;
+
+  const resolvedStandalone =
+    /(?:^|\.\s*|\n\s*)(?:resolved|completed|closed|fixed|sorted)\s*[.!]?\s*$/im;
+
+  return (
+    closurePhrases.test(sub) || closurePhrases.test(b) ||
+    statusLine.test(sub) || statusLine.test(b) ||
+    conversationEnd.test(b) ||
+    clientClosing.test(b) ||
+    thanksClosure.test(b) ||
+    resolvedStandalone.test(b)
+  );
+}
+
 /** Marketing / promo / newsletter-style mail (Gmail Promotions label is a strong signal). */
 export function looksLikePromotionalMail(
   msg: InboundNoiseFields,

@@ -218,18 +218,28 @@ function isStaleNeedReplyByClientMessage(c: ConversationRow, staleDays: number):
   return Date.now() - t > staleDays * 86_400_000;
 }
 
-/** Promotional/newsletter mail only — calendar invites and events stay in Need your reply. */
-function isPromoNeedReplyNoise(c: ConversationRow): boolean {
+/** Promotional/newsletter mail, calendar invites, and client-closed threads — none need follow-up. */
+function isNoFollowUpNoise(c: ConversationRow): boolean {
   const subject = (c.thread_subject ?? '').trim().toLowerCase();
   if (
-    /^invitation:|^invitation\b|^meeting prep:/i.test(subject) ||
+    /^invitation:|^invitation\b|^meeting prep:|^updated invitation:|^accepted:|^declined:|^tentative:|^canceled:/i.test(subject) ||
     /\s@\s+(?:mon|tue|wed|thu|fri|sat|sun)\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}/i.test(
       subject,
     )
   ) {
-    return false;
+    return true;
   }
   const text = `${c.thread_subject ?? ''} ${c.summary ?? ''} ${c.short_reason ?? ''}`.toLowerCase();
+  if (
+    /(calendar\/meeting invite|calendar or meeting)/i.test(text)
+  ) {
+    return true;
+  }
+  if (
+    /(conversation.?(?:is\s+)?closed|no reply needed|no further action|client indicated.*closed|ai detected.*closed)/i.test(text)
+  ) {
+    return true;
+  }
   if (
     /(unsubscribe|view in browser|promo code|flash sale|limited time offer|\d+%\s*off|marketing newsletter)/i.test(
       text,
@@ -243,7 +253,7 @@ function isPromoNeedReplyNoise(c: ConversationRow): boolean {
 /** Need reply KPI/tab: hide stale *pending* threads, but never hide MISSED SLA rows (they were invisible before). */
 function passesNeedReplyVisibility(c: ConversationRow): boolean {
   if (c.user_cc_only === true) return false;
-  if (isPromoNeedReplyNoise(c)) return false;
+  if (isNoFollowUpNoise(c)) return false;
   if (!needsMyReply(c)) return false;
   if (c.follow_up_status === 'MISSED') return true;
   return !HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS);
