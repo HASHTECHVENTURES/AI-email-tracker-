@@ -1,11 +1,7 @@
 import {
   Controller,
-  Delete,
   ForbiddenException,
   Get,
-  NotFoundException,
-  Param,
-  Post,
   Query,
   Req,
 } from '@nestjs/common';
@@ -13,14 +9,6 @@ import { Request } from 'express';
 import { getRequestContext } from '../common/request-context';
 import { DashboardService } from './dashboard.service';
 import { EmployeesService } from '../employees/employees.service';
-
-const emptyAiReport = {
-  generated_at: null as string | null,
-  key_issues: [] as string[],
-  employee_insights: [] as string[],
-  patterns: [] as string[],
-  recommendation: '',
-};
 
 @Controller('dashboard')
 export class DashboardController {
@@ -123,71 +111,6 @@ export class DashboardController {
       total: conversations.length,
       conversations,
     };
-  }
-
-  @Get('ai-report')
-  async getLastAiReport(@Req() req: Request) {
-    const ctx = getRequestContext(req);
-    if (ctx.role === 'HEAD') {
-      return emptyAiReport;
-    }
-    const report =
-      ctx.role === 'CEO'
-        ? await this.dashboardService.getLastAiReport(ctx.companyId, { scope: 'EXECUTIVE' })
-        : null;
-    return report ?? emptyAiReport;
-  }
-
-  /** POST avoids accidental double-fetch / CDN caching of a mutating operation. */
-  @Post('ai-report/generate')
-  async generateAiReportNow(@Req() req: Request) {
-    const ctx = getRequestContext(req);
-    if (ctx.role === 'HEAD') {
-      throw new ForbiddenException('Executive AI reports are only available to the CEO.');
-    }
-    if (ctx.role !== 'CEO') {
-      throw new ForbiddenException('Only the CEO can generate AI executive reports.');
-    }
-    return this.dashboardService.generateAiReport(ctx.companyId, {
-      force: true,
-      minCooldownMs: 0,
-      scope: 'EXECUTIVE',
-    });
-  }
-
-  @Get('ai-reports')
-  async getAiReportArchive(@Req() req: Request, @Query('limit') limit?: string) {
-    const ctx = getRequestContext(req);
-    const n = Number(limit ?? '50');
-    const lim = Number.isFinite(n) ? n : 50;
-    if (ctx.role === 'HEAD') {
-      return { total: 0, items: [] };
-    }
-    if (ctx.role === 'CEO') {
-      const items = await this.dashboardService.getAiReportArchive(ctx.companyId, lim, { scope: 'EXECUTIVE' });
-      return { total: items.length, items };
-    }
-    return { total: 0, items: [] };
-  }
-
-  @Delete('ai-reports/:id')
-  async deleteAiReport(@Req() req: Request, @Param('id') id: string) {
-    const ctx = getRequestContext(req);
-    const reportId = id?.trim() ?? '';
-
-    if (ctx.role === 'HEAD') {
-      throw new ForbiddenException('Only the CEO can delete executive report archives.');
-    }
-
-    if (ctx.role === 'CEO') {
-      const ok = await this.dashboardService.deleteExecutiveAiReport(ctx.companyId, reportId);
-      if (!ok) {
-        throw new NotFoundException('Report not found or you cannot delete it');
-      }
-      return { ok: true };
-    }
-
-    throw new ForbiddenException('You cannot delete this report');
   }
 
   /** Ingested mail archive (same data as legacy GET /employees/mail-archive). */

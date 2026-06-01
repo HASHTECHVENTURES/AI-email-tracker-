@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { retryWithBackoff } from '../common/retry.util';
-import { AiReport } from '../dashboard/dashboard.service';
 
 export interface MissedFollowUpPayload {
   employeeName: string;
@@ -68,42 +67,6 @@ export class TelegramService {
       this.logger.error(`Telegram request failed: ${(err as Error).message}`);
       return false;
     }
-  }
-
-  async sendAiReport(report: AiReport): Promise<boolean> {
-    if (!this.isConfigured()) return false;
-
-    const time = new Date(report.generated_at!).toLocaleTimeString('en-US', {
-      hour: '2-digit', minute: '2-digit', hour12: true,
-    });
-
-    const lines: string[] = [`📊 AI Report — ${time}`, ''];
-
-    if (report.key_issues.length > 0) {
-      lines.push('🔴 Key Issues');
-      report.key_issues.forEach((i) => lines.push(`  • ${i}`));
-      lines.push('');
-    }
-
-    if (report.employee_insights.length > 0) {
-      lines.push('👤 Employee Insights');
-      report.employee_insights.forEach((i) => lines.push(`  • ${i}`));
-      lines.push('');
-    }
-
-    if (report.patterns.length > 0) {
-      lines.push('🧠 Patterns');
-      report.patterns.forEach((p) => lines.push(`  • ${p}`));
-      lines.push('');
-    }
-
-    if (report.recommendation) {
-      lines.push(`📈 ${report.recommendation}`);
-    }
-
-    const sent = await this.sendRaw(lines.join('\n'));
-    if (sent) this.logger.log('AI report sent to Telegram');
-    return sent;
   }
 
   async sendMissedFollowUp(p: MissedFollowUpPayload): Promise<boolean> {

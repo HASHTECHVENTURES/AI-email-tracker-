@@ -1,11 +1,6 @@
 import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
-import { TelegramService } from '../alerts/telegram.service';
-import { EmailService } from '../email/email.service';
-import { SettingsService } from '../settings/settings.service';
-import { CompanyPolicyService } from '../company-policy/company-policy.service';
 import type { EmployeeRole } from '../common/types';
 import { RequestContext } from '../common/request-context';
 import type { HistoricalSearchRunListItem } from '../self-tracking/self-tracking.service';
@@ -105,19 +100,6 @@ export interface ConversationFilters {
   lifecycle?: string;
 }
 
-export interface AiReport {
-  generated_at: string;
-  key_issues: string[];
-  employee_insights: string[];
-  patterns: string[];
-  recommendation: string;
-}
-
-export interface AiReportArchiveItem extends AiReport {
-  id: string;
-  created_at: string;
-}
-
 /** CEO dashboard: per-department health with manager identity (no client PII). */
 export interface CeoDepartmentRollup {
   department_id: string;
@@ -145,15 +127,6 @@ export interface CeoEmployeeMailboxRollup {
 
 export interface SimplifiedDashboardResponse {
   needs_attention: ConversationListItem[];
-  ai_insights: {
-    /** @deprecated prefer structured fields */
-    lines: string[];
-    key_issues: string[];
-    employee_insights: string[];
-    patterns: string[];
-    recommendation: string | null;
-    last_updated_at: string | null;
-  };
   conversations: ConversationListItem[];
   onboarding: {
     show: boolean;
@@ -181,26 +154,17 @@ export interface SimplifiedDashboardResponse {
 @Injectable()
 export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
-  private readonly aiModel;
   /** Cached default SLA hours — refreshed every 5 min to avoid a per-request DB read. */
   private slaHoursCache: { value: number; expiresAt: number } | null = null;
   private readonly SLA_CACHE_TTL_MS = 5 * 60_000;
 
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
-    private readonly telegramService: TelegramService,
-    private readonly emailService: EmailService,
-    private readonly settingsService: SettingsService,
-    private readonly companyPolicyService: CompanyPolicyService,
     private readonly employeesService: EmployeesService,
     @Inject(forwardRef(() => SelfTrackingService))
     private readonly selfTrackingService: SelfTrackingService,
     private readonly conversationsService: ConversationsService,
-  ) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    const genAI = new GoogleGenerativeAI(apiKey ?? '');
-    this.aiModel = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash' });
-  }
+  ) {}
 
   async getGlobalMetrics(companyId: string, departmentId?: string): Promise<GlobalMetrics> {
     const { data: rpcData, error: rpcError } = await this.supabase.rpc('company_conversation_metrics', {
@@ -561,399 +525,6 @@ export class DashboardService {
     return this.conversationsService.attachThreadSubjects(mapped);
   }
 
-  /** Executive = company-wide CEO; department = manager’s team only. */
-  async generateAiReport(
-    companyId: string,
-    options?: {
-      force?: boolean;
-      minCooldownMs?: number;
-      scope?: 'EXECUTIVE' | 'DEPARTMENT_HEAD';
-      departmentId?: string;
-    },
-  ): Promise<AiReport> {
-    const force = options?.force === true;
-    const minCooldownMs = force ? 0 : (options?.minCooldownMs ?? 3600_000);
-    const scope = options?.scope ?? 'EXECUTIVE';
-    const departmentId = options?.departmentId;
-
-    const fallback: AiReport = {
-      generated_at: new Date().toISOString(),
-      key_issues: ['Unable to generate AI report — check GEMINI_API_KEY'],
-      employee_insights: [],
-      patterns: [],
-      recommendation: '',
-    };
-
-    const sys = await this.settingsService.getAll();
-    if (!sys.ai_enabled) {
-      return {
-        generated_at: new Date().toISOString(),
-        key_issues: ['AI operations are off in Settings (CEO). Turn them on to generate reports.'],
-        employee_insights: [],
-        patterns: [],
-        recommendation: '',
-      };
-    }
-
-    const companyAiOn = await this.companyPolicyService.isAiEnabledForCompany(companyId);
-    if (!companyAiOn) {
-      return {
-        generated_at: new Date().toISOString(),
-        key_issues: ['AI is disabled for this organization by the platform administrator.'],
-        employee_insights: [],
-        patterns: [],
-        recommendation: '',
-      };
-    }
-
-    if (scope === 'DEPARTMENT_HEAD' && !sys.ai_for_managers_enabled) {
-      return {
-        generated_at: new Date().toISOString(),
-        key_issues: ['AI for department managers is off in Settings (CEO).'],
-        employee_insights: [],
-        patterns: [],
-        recommendation: '',
-      };
-    }
-
-    if (!process.env.GEMINI_API_KEY) return fallback;
-
-    if (scope === 'DEPARTMENT_HEAD' && !departmentId) {
-      this.logger.warn('generateAiReport: DEPARTMENT_HEAD requires departmentId');
-      return fallback;
-    }
-
-    if (minCooldownMs > 0) {
-      const existing = await this.getLastAiReport(companyId, { scope, departmentId });
-      if (existing?.generated_at) {
-        const ageMs = Date.now() - new Date(existing.generated_at).getTime();
-        if (ageMs < minCooldownMs) {
-          this.logger.debug(
-            `Skipping AI report (${scope}) — last generated ${Math.round(ageMs / 60_000)}m ago (cooldown: ${Math.round(minCooldownMs / 60_000)}m)`,
-          );
-          return existing;
-        }
-      }
-    }
-
-    const deptFilter = scope === 'DEPARTMENT_HEAD' ? departmentId : undefined;
-
-    try {
-      const metrics = await this.getGlobalMetrics(companyId, deptFilter);
-      const employees = await this.getEmployeePerformance(companyId, deptFilter);
-      const attentionFilters: ConversationFilters = {
-        companyId,
-        lifecycle: 'NEEDS_ATTENTION',
-      };
-      if (deptFilter) attentionFilters.departmentId = deptFilter;
-      const attention = await this.getConversationsList(attentionFilters);
-
-      let dataBlock: string;
-      let prompt: string;
-
-      if (scope === 'EXECUTIVE') {
-        const attentionAnon = attention.slice(0, 12).map((c) => ({
-          priority: c.priority,
-          status: c.follow_up_status,
-          delay_hours: Number(Number(c.delay_hours).toFixed(1)),
-          lifecycle: c.lifecycle_status,
-        }));
-        dataBlock = [
-          `Org metrics (all teams): ${JSON.stringify(metrics)}`,
-          `Team load summary (names only, no client PII): ${JSON.stringify(
-            employees.map((e) => ({
-              team_member: e.employee_name,
-              threads: e.total,
-              missed: e.missed,
-              pending: e.pending,
-              avg_delay_h: e.avg_delay_hours,
-            })),
-          )}`,
-          `Needs-attention threads (counts only, no client emails): ${JSON.stringify(attentionAnon)}`,
-        ].join('\n');
-
-        prompt = `You are an executive / CEO analyst for company-wide follow-up health.
-The input intentionally excludes external client email addresses and message content.
-Return ONLY valid JSON (no markdown):
-
-{
-  "key_issues": ["up to 3 bullets: strategic or org-wide risks and SLA exposure"],
-  "employee_insights": ["up to 2 bullets: cross-team performance themes — you may refer to internal employee names from the data"],
-  "patterns": ["up to 2 bullets: trends across the organization"],
-  "recommendation": "one sentence strategic recommendation for leadership"
-}
-
-Tone: board-level, concise. Do NOT invent client or sender identities.
-Keep each bullet under 18 words.
-
---- DATA ---
-${dataBlock}`;
-      } else {
-        const teamMailboxRows = employees.map((e) => ({
-          employee_id: e.employee_id,
-          name: e.employee_name,
-          email: e.employee_email,
-          total: e.total,
-          missed: e.missed,
-          pending: e.pending,
-          avg_delay: e.avg_delay_hours,
-        }));
-        const canonicalNames = employees.map((e) => e.employee_name).filter((n) => n.trim().length > 0);
-        dataBlock = [
-          `Department metrics: ${JSON.stringify(metrics)}`,
-          `Team mailboxes (authoritative spellings for people on this team): ${JSON.stringify(teamMailboxRows)}`,
-          `canonical_team_names_only: ${JSON.stringify(canonicalNames)}`,
-          `Needs attention (${attention.length}) — use assigned_to / employee_id only for names; short_reason text is omitted because it may contain errors: ${JSON.stringify(
-            attention.slice(0, 12).map((c) => ({
-              employee_id: c.employee_id,
-              assigned_to: c.employee_name,
-              client: c.client_email,
-              status: c.follow_up_status,
-              priority: c.priority,
-              delay_hours: Number(Number(c.delay_hours).toFixed(2)),
-            })),
-          )}`,
-        ].join('\n');
-
-        prompt = `You are a department manager's AI assistant for follow-up monitoring.
-Focus ONLY on this department's team and their live threads. Be practical and actionable.
-Return ONLY valid JSON (no markdown):
-
-{
-  "key_issues": ["up to 3 bullets: urgent team or client follow-up issues"],
-  "employee_insights": ["up to 3 bullets: coaching-style notes — name people when helpful"],
-  "patterns": ["up to 2 bullets: what this team repeats or struggles with"],
-  "recommendation": "one sentence next step for the manager"
-}
-
-Keep bullets under 20 words.
-
-STRICT RULES FOR NAMES:
-- The ONLY valid internal teammate names are the strings in JSON key "canonical_team_names_only" and the "name" / "assigned_to" fields in the data above. Copy spelling and capitalization EXACTLY (e.g. "josh" stays "josh").
-- Do NOT invent, substitute, or "normalize" names (no "John" if the data says "josh"). Do NOT use placeholder names.
-- If you mention a teammate, they MUST appear in canonical_team_names_only or as assigned_to for a row.
-
---- DATA ---
-${dataBlock}`;
-      }
-
-      const result = await this.aiModel.generateContent(prompt);
-      const text = result.response
-        .text()
-        .replace(/```json\s*/gi, '')
-        .replace(/```\s*/g, '')
-        .trim();
-
-      const parsed = JSON.parse(text);
-
-      const report: AiReport = {
-        generated_at: new Date().toISOString(),
-        key_issues: Array.isArray(parsed.key_issues) ? parsed.key_issues.slice(0, 4) : [],
-        employee_insights: Array.isArray(parsed.employee_insights) ? parsed.employee_insights.slice(0, 4) : [],
-        patterns: Array.isArray(parsed.patterns) ? parsed.patterns.slice(0, 3) : [],
-        recommendation: typeof parsed.recommendation === 'string' ? parsed.recommendation.slice(0, 280) : '',
-      };
-
-      const insertRow: Record<string, unknown> = {
-        company_id: companyId,
-        content: report,
-        created_at: report.generated_at,
-        report_scope: scope,
-      };
-      if (scope === 'DEPARTMENT_HEAD' && departmentId) {
-        insertRow.department_id = departmentId;
-      } else {
-        insertRow.department_id = null;
-      }
-
-      await this.supabase.from('dashboard_reports').insert(insertRow);
-
-      const settingsKey =
-        scope === 'DEPARTMENT_HEAD' && departmentId
-          ? `last_ai_report_at_${companyId}_dept_${departmentId}`
-          : `last_ai_report_at_${companyId}`;
-      await this.supabase.from('system_settings').upsert(
-        {
-          key: settingsKey,
-          value: report.generated_at,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'key' },
-      );
-
-      if (scope === 'EXECUTIVE') {
-        if (this.telegramService.isConfigured()) {
-          this.telegramService.sendAiReport(report).catch((err) => {
-            this.logger.warn(`Failed to send AI report to Telegram: ${(err as Error).message}`);
-          });
-        }
-
-        void this.emailService.maybeSendReportAfterGeneration(companyId, report, {
-          total: metrics.total_conversations,
-          pending: metrics.pending,
-          missed: metrics.missed,
-          avg_delay: metrics.avg_delay_hours,
-        });
-      }
-
-      return report;
-    } catch (err) {
-      this.logger.error('AI report generation failed', (err as Error).message);
-      return fallback;
-    }
-  }
-
-  async getLastAiReport(
-    companyId: string,
-    opts?: { scope?: 'EXECUTIVE' | 'DEPARTMENT_HEAD'; departmentId?: string | null },
-  ): Promise<AiReport | null> {
-    const scope = opts?.scope ?? 'EXECUTIVE';
-    let q = this.supabase
-      .from('dashboard_reports')
-      .select('content, created_at, report_scope, department_id')
-      .eq('company_id', companyId);
-
-    if (scope === 'DEPARTMENT_HEAD') {
-      if (!opts?.departmentId) return null;
-      q = q.eq('report_scope', scope).eq('department_id', opts.departmentId);
-    } else {
-      q = q
-        .is('department_id', null)
-        .or('report_scope.eq.EXECUTIVE,report_scope.is.null');
-    }
-
-    const { data, error } = await q.order('created_at', { ascending: false }).limit(1).maybeSingle();
-
-    if (error) {
-      this.logger.warn(`getLastAiReport (${scope}): ${error.message}`);
-      if (scope !== 'EXECUTIVE') {
-        return null;
-      }
-      const { data: legacy } = await this.supabase
-        .from('dashboard_reports')
-        .select('content, created_at')
-        .eq('company_id', companyId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (!legacy) return null;
-      try {
-        return (legacy as { content: AiReport }).content;
-      } catch {
-        return null;
-      }
-    }
-
-    if (!data) return null;
-    try {
-      return (data as { content: AiReport }).content;
-    } catch {
-      return null;
-    }
-  }
-
-  async getAiReportArchive(
-    companyId: string,
-    limit = 50,
-    opts?: { scope?: 'EXECUTIVE' | 'DEPARTMENT_HEAD'; departmentId?: string | null },
-  ): Promise<AiReportArchiveItem[]> {
-    const safeLimit = Math.min(200, Math.max(1, Math.trunc(limit)));
-    const scope = opts?.scope ?? 'EXECUTIVE';
-
-    let q = this.supabase
-      .from('dashboard_reports')
-      .select('id, content, created_at, report_scope, department_id')
-      .eq('company_id', companyId);
-
-    if (scope === 'DEPARTMENT_HEAD') {
-      if (!opts?.departmentId) return [];
-      q = q.eq('report_scope', scope).eq('department_id', opts.departmentId);
-    } else {
-      q = q
-        .is('department_id', null)
-        .or('report_scope.eq.EXECUTIVE,report_scope.is.null');
-    }
-
-    const { data, error } = await q.order('created_at', { ascending: false }).limit(safeLimit);
-
-    if (error) {
-      this.logger.error('Failed to load AI report archive', error.message);
-      if (scope === 'DEPARTMENT_HEAD') {
-        return [];
-      }
-      // Pre-migration DBs only have id, company_id, content, created_at — scoped columns are missing.
-      const { data: legacy, error: legacyErr } = await this.supabase
-        .from('dashboard_reports')
-        .select('id, content, created_at')
-        .eq('company_id', companyId)
-        .order('created_at', { ascending: false })
-        .limit(safeLimit);
-      if (legacyErr) {
-        this.logger.error('Failed to load AI report archive (legacy fallback)', legacyErr.message);
-        return [];
-      }
-      const rows = (legacy ?? []) as Array<{
-        id: string;
-        content: Partial<AiReport> | null;
-        created_at: string;
-      }>;
-      return rows.map((r) => ({
-        id: r.id,
-        created_at: r.created_at,
-        generated_at: r.content?.generated_at ?? r.created_at,
-        key_issues: Array.isArray(r.content?.key_issues) ? r.content!.key_issues!.slice(0, 6) : [],
-        employee_insights: Array.isArray(r.content?.employee_insights)
-          ? r.content!.employee_insights!.slice(0, 6)
-          : [],
-        patterns: Array.isArray(r.content?.patterns) ? r.content!.patterns!.slice(0, 6) : [],
-        recommendation: typeof r.content?.recommendation === 'string' ? r.content.recommendation : '',
-      }));
-    }
-
-    const rows = (data ?? []) as Array<{
-      id: string;
-      content: Partial<AiReport> | null;
-      created_at: string;
-    }>;
-    return rows.map((r) => ({
-      id: r.id,
-      created_at: r.created_at,
-      generated_at: r.content?.generated_at ?? r.created_at,
-      key_issues: Array.isArray(r.content?.key_issues) ? r.content!.key_issues!.slice(0, 6) : [],
-      employee_insights: Array.isArray(r.content?.employee_insights)
-        ? r.content!.employee_insights!.slice(0, 6)
-        : [],
-      patterns: Array.isArray(r.content?.patterns) ? r.content!.patterns!.slice(0, 6) : [],
-      recommendation: typeof r.content?.recommendation === 'string' ? r.content.recommendation : '',
-    }));
-  }
-
-  /** CEO: delete one executive archived report. */
-  async deleteExecutiveAiReport(companyId: string, reportId: string): Promise<boolean> {
-    const id = reportId.trim();
-    // Accept any hyphenated 128-bit UUID string (Postgres/Supabase may emit v4, v7, etc.).
-    const uuidLoose = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidLoose.test(id)) {
-      this.logger.warn(`deleteExecutiveAiReport: rejected id format (len=${id.length})`);
-      return false;
-    }
-
-    // Company-wide (CEO) reports always use department_id = NULL; scoped manager reports set department_id.
-    // Do not require report_scope here so deletes stay aligned with listed rows if scope values differ in legacy data.
-    const { data, error } = await this.supabase
-      .from('dashboard_reports')
-      .delete()
-      .eq('id', id)
-      .eq('company_id', companyId)
-      .is('department_id', null)
-      .select('id');
-
-    if (error) {
-      this.logger.error('deleteExecutiveAiReport', error.message);
-      return false;
-    }
-    return (data?.length ?? 0) > 0;
-  }
 
   /**
    * Aggregates conversations by department with HEAD manager from `users`.
@@ -1280,9 +851,6 @@ ${dataBlock}`;
 
     const scopedDepartmentIdHead = scope.role === 'HEAD' ? scope.departmentId : undefined;
 
-    const reportPromise =
-      scope.role === 'CEO' ? this.getLastAiReport(companyId, { scope: 'EXECUTIVE' }) : Promise.resolve(null);
-
     const rollupsPromise =
       scope.role === 'CEO'
         ? this.getCeoDepartmentRollups(companyId, ceoDeptIdsRaw, ceoEmployeeIds)
@@ -1319,8 +887,7 @@ ${dataBlock}`;
         ? this.selfTrackingService.listHistoricalSearchRuns(ctx, actorEmail, 8)
         : Promise.resolve<HistoricalSearchRunListItem[] | undefined>(undefined);
 
-    const [report, all, onboarding, employeeFilterOptions, ceo_department_rollups, actorEmployeeId, historicalSearchRuns] = await Promise.all([
-      reportPromise,
+    const [all, onboarding, employeeFilterOptions, ceo_department_rollups, actorEmployeeId, historicalSearchRuns] = await Promise.all([
       conversationsPromise,
       this.getOnboardingSnapshot(companyId),
       scope.role === 'EMPLOYEE'
@@ -1362,22 +929,8 @@ ${dataBlock}`;
       )
       .slice(0, attentionCap);
 
-    const keyIssues = scope.role === 'EMPLOYEE' ? [] : (report?.key_issues ?? []);
-    const employeeInsights = scope.role === 'EMPLOYEE' ? [] : (report?.employee_insights ?? []);
-    const patterns = scope.role === 'EMPLOYEE' ? [] : (report?.patterns ?? []);
-    const recommendation = scope.role === 'EMPLOYEE' ? null : (report?.recommendation?.trim() || null);
-    const insightLines = [...keyIssues, ...employeeInsights, ...patterns];
-
     const out: SimplifiedDashboardResponse = {
       needs_attention,
-      ai_insights: {
-        lines: insightLines,
-        key_issues: keyIssues,
-        employee_insights: employeeInsights,
-        patterns,
-        recommendation,
-        last_updated_at: scope.role === 'EMPLOYEE' ? null : (report?.generated_at ?? null),
-      },
       conversations: visibleConversations,
       onboarding,
       employee_filter_options: visibleEmployeeFilterOptions,

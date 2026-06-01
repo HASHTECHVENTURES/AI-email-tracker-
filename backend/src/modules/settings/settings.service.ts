@@ -253,7 +253,6 @@ export class SettingsService {
     const lastReportAt = companyId
       ? map.get(`last_ai_report_at_${companyId}`) ?? map.get('last_ai_report_at') ?? null
       : map.get('last_ai_report_at') ?? null;
-    // Executive AI reports are manual-only (no scheduled Gemini runs during ingestion).
     const nextReportAt: string | null = null;
     const secondsUntilNextReport: number | null = null;
 

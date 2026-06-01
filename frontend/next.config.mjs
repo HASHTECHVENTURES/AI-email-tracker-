@@ -20,7 +20,6 @@ const devDocumentNoStore = [
   '/departments/:path*',
   '/employees',
   '/employees/:path*',
-  '/ai-reports/:path*',
   '/settings',
   '/settings/:path*',
   '/messages/:path*',

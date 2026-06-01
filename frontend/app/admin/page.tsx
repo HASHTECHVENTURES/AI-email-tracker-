@@ -69,8 +69,8 @@ type AiUsage = {
   ai_classified_messages: number;
   ai_enriched_conversations: number;
   ai_quota_fallback_messages: number;
-  executive_reports_generated: number;
-  last_executive_report_at: string | null;
+  historical_search_runs: number;
+  last_historical_search_at: string | null;
 };
 
 type CompanyDetail = {
@@ -383,13 +383,13 @@ function CompanyDetailPanel({ detail, loading: detailLoading }: { detail: Compan
           <MiniStatCard label="AI classified emails" value={ai.ai_classified_messages} accent="text-blue-700" />
           <MiniStatCard label="AI enriched convos" value={ai.ai_enriched_conversations} accent="text-violet-700" />
           <MiniStatCard label="Quota fallback" value={ai.ai_quota_fallback_messages} accent={ai.ai_quota_fallback_messages > 0 ? 'text-amber-700' : 'text-slate-700'} />
-          <MiniStatCard label="Exec reports" value={ai.executive_reports_generated} accent="text-emerald-700" />
+          <MiniStatCard label="Historical searches" value={ai.historical_search_runs} accent="text-emerald-700" />
         </div>
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <div className="rounded-xl border border-slate-200/60 bg-white px-3 py-2.5">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Last executive report</p>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Last historical search</p>
             <p className="mt-0.5 text-sm font-medium text-slate-700">
-              {ai.last_executive_report_at ? new Date(ai.last_executive_report_at).toLocaleString() : 'Never'}
+              {ai.last_historical_search_at ? new Date(ai.last_historical_search_at).toLocaleString() : 'Never'}
             </p>
           </div>
         </div>
@@ -634,7 +634,7 @@ function KillSwitchesView({
       <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-900">
         <p className="font-semibold">How kill switches work</p>
         <p className="mt-1 text-amber-800/90">
-          Disabling <strong>AI</strong> stops AI enrichment and manual executive reports for that tenant.
+          Disabling <strong>AI</strong> stops inbox classification and conversation enrichment for that tenant.
           Disabling <strong>Email crawl</strong> stops Gmail sync for all mailboxes in that company.
           Company-level CEO Settings still apply on top of these platform overrides.
         </p>

@@ -58,9 +58,7 @@ export interface CompanyAiUsage {
   ai_classified_messages: number;
   ai_enriched_conversations: number;
   ai_quota_fallback_messages: number;
-  executive_reports_generated: number;
   historical_search_runs: number;
-  last_executive_report_at: string | null;
   last_historical_search_at: string | null;
 }
 
@@ -417,15 +415,7 @@ export class PlatformAdminService {
       message_count: msgCounts.get(e.id) ?? 0,
     }));
 
-    const [
-      aiClassifiedRes,
-      aiQuotaFallbackRes,
-      aiEnrichedRes,
-      execReportsRes,
-      histRunsRes,
-      lastReportRes,
-      lastHistRes,
-    ] = await Promise.all([
+    const [aiClassifiedRes, aiQuotaFallbackRes, aiEnrichedRes, histRunsRes, lastHistRes] = await Promise.all([
       this.supabase
         .from('email_messages')
         .select('*', { count: 'exact', head: true })
@@ -442,20 +432,9 @@ export class PlatformAdminService {
         .eq('company_id', companyId)
         .neq('summary', ''),
       this.supabase
-        .from('dashboard_reports')
-        .select('*', { count: 'exact', head: true })
-        .eq('company_id', companyId),
-      this.supabase
         .from('historical_search_runs')
         .select('*', { count: 'exact', head: true })
         .eq('company_id', companyId),
-      this.supabase
-        .from('dashboard_reports')
-        .select('created_at')
-        .eq('company_id', companyId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
       this.supabase
         .from('historical_search_runs')
         .select('created_at')
@@ -469,9 +448,7 @@ export class PlatformAdminService {
       ai_classified_messages: aiClassifiedRes.count ?? 0,
       ai_enriched_conversations: aiEnrichedRes.count ?? 0,
       ai_quota_fallback_messages: aiQuotaFallbackRes.count ?? 0,
-      executive_reports_generated: execReportsRes.count ?? 0,
       historical_search_runs: histRunsRes.count ?? 0,
-      last_executive_report_at: (lastReportRes.data as { created_at: string } | null)?.created_at ?? null,
       last_historical_search_at: (lastHistRes.data as { created_at: string } | null)?.created_at ?? null,
     };
 

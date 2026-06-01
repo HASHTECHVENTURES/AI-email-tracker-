@@ -26,8 +26,6 @@ type SystemStatus = {
   ai_status: boolean;
   email_crawl_enabled?: boolean;
   seconds_until_next_ingestion?: number | null;
-  last_report_at?: string | null;
-  seconds_until_next_report?: number | null;
   smtp_configured?: boolean;
   ai_model_configured?: boolean;
 };
@@ -73,14 +71,6 @@ type CeoEmployeeMailboxRollup = {
 
 type DashboardPayload = {
   needs_attention: ConversationRow[];
-  ai_insights: {
-    lines: string[];
-    key_issues: string[];
-    employee_insights: string[];
-    patterns: string[];
-    recommendation: string | null;
-    last_updated_at: string | null;
-  };
   conversations: ConversationRow[];
   onboarding: {
     show: boolean;
@@ -714,17 +704,6 @@ export default function DashboardPage() {
   const resolvedTodayCount = kpi.resolvedToday;
   const conversations = dash.conversations ?? [];
   const needsAttentionRows = dash.needs_attention ?? [];
-  const aiKeyIssues = dash.ai_insights.key_issues ?? [];
-  const aiPatterns = dash.ai_insights.patterns ?? [];
-  const aiPeopleLines = dash.ai_insights.employee_insights ?? [];
-  const aiRecommendation = dash.ai_insights.recommendation?.trim() || null;
-  const aiLegacyLines = dash.ai_insights.lines ?? [];
-  const hasAiInsights =
-    aiKeyIssues.length > 0 ||
-    aiPatterns.length > 0 ||
-    aiPeopleLines.length > 0 ||
-    Boolean(aiRecommendation) ||
-    aiLegacyLines.length > 0;
 
   const cardClass =
     'rounded-2xl border border-slate-200/60 bg-surface-card p-6 shadow-card';
@@ -1213,94 +1192,6 @@ export default function DashboardPage() {
                       })}
                     </tbody>
                   </table>
-                </div>
-              )}
-            </section>
-
-            <section className={`${cardClass} border-slate-300/80 bg-gradient-to-b from-slate-50/80 to-white`}>
-              <div className="mb-6 border-b border-slate-200/80 pb-5">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">AI insights</p>
-                <h2 className="mt-1 text-xl font-bold text-slate-950">Executive briefing signals</h2>
-                <p className="mt-1 text-sm text-slate-600">
-                  Pulled from your latest saved executive report. Update via{' '}
-                  <Link href="/ai-reports" className="font-semibold text-brand-600 hover:text-brand-700">
-                    Reports
-                  </Link>
-                  .
-                </p>
-                {dash.ai_insights.last_updated_at ? (
-                  <p className="mt-2 text-xs text-slate-400">
-                    Last model run: {new Date(dash.ai_insights.last_updated_at).toLocaleString()}
-                  </p>
-                ) : null}
-              </div>
-              {!hasAiInsights ? (
-                <p className="text-sm text-slate-500">
-                  No briefing on file yet. Turn AI on in Settings and generate a report, or run one from Reports.
-                </p>
-              ) : (
-                <div className="grid gap-8 lg:grid-cols-2">
-                  <div className="space-y-4">
-                    <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Key issues and risks</h3>
-                    {aiKeyIssues.length > 0 ? (
-                      <ul className="space-y-3">
-                        {aiKeyIssues.map((line, i) => (
-                          <li
-                            key={`ki-${i}`}
-                            className="flex gap-3 rounded-xl border border-red-100 bg-red-50/40 px-4 py-3 text-sm leading-relaxed text-slate-800"
-                          >
-                            <span className="mt-0.5 font-mono text-xs font-bold text-red-500">{i + 1}</span>
-                            <span>{line}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : aiLegacyLines.length > 0 ? (
-                      <ul className="space-y-2 text-sm text-slate-700">
-                        {aiLegacyLines.slice(0, 6).map((line, i) => (
-                          <li key={`leg-${i}`} className="flex gap-2">
-                            <span className="text-slate-300">·</span>
-                            {line}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-sm text-slate-500">No key issues listed.</p>
-                    )}
-                    {aiPatterns.length > 0 ? (
-                      <div className="pt-2">
-                        <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Patterns</h4>
-                        <ul className="space-y-2 text-sm text-slate-700">
-                          {aiPatterns.map((line, i) => (
-                            <li key={`pat-${i}`} className="rounded-lg bg-slate-100/80 px-3 py-2">
-                              {line}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {aiPeopleLines.length > 0 ? (
-                      <div className="pt-2">
-                        <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">People and teams</h4>
-                        <ul className="space-y-2 text-sm text-slate-700">
-                          {aiPeopleLines.map((line, i) => (
-                            <li key={`peo-${i}`} className="rounded-lg border border-slate-100 bg-white px-3 py-2">
-                              {line}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Recommendation</h3>
-                    {aiRecommendation ? (
-                      <p className="mt-3 rounded-2xl border border-violet-200 bg-violet-50/60 p-5 text-base font-medium leading-relaxed text-slate-900">
-                        {aiRecommendation}
-                      </p>
-                    ) : (
-                      <p className="mt-3 text-sm text-slate-500">No recommendation in the latest briefing.</p>
-                    )}
-                  </div>
                 </div>
               )}
             </section>

@@ -21,7 +21,6 @@ type AppShellProps = {
   subtitle: string;
   lastSyncLabel?: string | null;
   nextIngestionCountdownLabel?: string | null;
-  nextReportCountdownLabel?: string | null;
   isActive?: boolean;
   /**
    * My Email: before the user links Gmail, show a neutral strip instead of red «Sync issue».
@@ -100,7 +99,6 @@ function ShellStatusStrip({
   aiBriefingsEnabled,
   lastSyncLabel,
   nextIngestionCountdownLabel,
-  nextReportCountdownLabel,
   onRefresh,
 }: {
   mailboxCrawlEnabled?: boolean;
@@ -109,7 +107,6 @@ function ShellStatusStrip({
   aiBriefingsEnabled?: boolean;
   lastSyncLabel?: string | null;
   nextIngestionCountdownLabel?: string | null;
-  nextReportCountdownLabel?: string | null;
   onRefresh?: () => void;
 }) {
   const strip =
@@ -137,11 +134,6 @@ function ShellStatusStrip({
       {nextIngestionCountdownLabel ? (
         <span className="text-xs tabular-nums text-slate-400">· Next {nextIngestionCountdownLabel}</span>
       ) : null}
-      {nextReportCountdownLabel ? (
-        <span className="text-xs tabular-nums text-slate-400" title="Time until the next scheduled executive report">
-          · Report {nextReportCountdownLabel}
-        </span>
-      ) : null}
       {onRefresh ? (
         <button
           type="button"
@@ -164,7 +156,6 @@ export function AppShell({
   subtitle,
   lastSyncLabel,
   nextIngestionCountdownLabel,
-  nextReportCountdownLabel,
   isActive = true,
   syncStripKind = 'default',
   aiBriefingsEnabled,
@@ -388,9 +379,6 @@ export function AppShell({
                   <SafeLink href="/employees" className={navItemClass(pathname === '/employees')}>
                     Employees
                   </SafeLink>
-                  <SafeLink href="/ai-reports" className={navItemClass(pathname === '/ai-reports')}>
-                    Reports
-                  </SafeLink>
                 </>
               ) : null}
 
@@ -570,9 +558,6 @@ export function AppShell({
                   <SafeLink href="/employees" className={navMobileClass(pathname === '/employees')}>
                     Employees
                   </SafeLink>
-                  <SafeLink href="/ai-reports" className={navMobileClass(pathname === '/ai-reports')}>
-                    Reports
-                  </SafeLink>
                 </>
               ) : null}
               {showOrg && managerNavVisible ? (
@@ -629,7 +614,6 @@ export function AppShell({
                 aiBriefingsEnabled={aiBriefingsEnabled}
                 lastSyncLabel={lastSyncLabel}
                 nextIngestionCountdownLabel={nextIngestionCountdownLabel}
-                nextReportCountdownLabel={nextReportCountdownLabel}
                 onRefresh={onRefresh}
               />
             </header>
