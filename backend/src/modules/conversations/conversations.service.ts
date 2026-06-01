@@ -14,6 +14,7 @@ import {
   looksLikeInboundNoReplyNoise,
   looksLikeMeetingOrEventMail,
   looksLikeConversationClosure,
+  looksLikeShortAcknowledgment,
 } from '../email-ingestion/relevance-guards';
 
 /** Skip-ledger marker so Gmail sync does not recreate a user-resolved thread. */
@@ -577,7 +578,11 @@ export class ConversationsService {
       : false;
 
     const latestInboundIsClosure = inboundFields
-      ? looksLikeConversationClosure(inboundFields)
+      ? looksLikeConversationClosure(inboundFields) ||
+        (lastEmployeeReplyAt !== null &&
+          lastClientMsgAt !== null &&
+          lastClientMsgAt > lastEmployeeReplyAt &&
+          looksLikeShortAcknowledgment(inboundFields))
       : false;
 
     const contactEmail = (
@@ -639,7 +644,7 @@ export class ConversationsService {
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,
       user_cc_only: userCcOnly,
-      priority: looksAutomated || latestInboundIsNoise ? 'LOW' : latestInboundIsCalendar ? (existing?.priority ?? 'LOW') : (existing?.priority ?? 'MEDIUM'),
+      priority: looksAutomated || latestInboundIsNoise || latestInboundIsClosure ? 'LOW' : latestInboundIsCalendar ? (existing?.priority ?? 'LOW') : (existing?.priority ?? 'MEDIUM'),
       summary: summaryForRow,
       confidence: existing ? Number(existing.confidence) : 0,
       classification_status: 'classified',

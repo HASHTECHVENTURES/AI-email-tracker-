@@ -43,9 +43,17 @@ Contact name rules:
 - Never return just an email address if a real name is available.
 
 Conversation closed rules:
-- true: the latest message in the thread clearly signals the conversation is finished and no reply is expected. Examples: "ticket closed", "issue resolved", "thanks, all good", "no further action needed", "we're all set", "this has been taken care of", "consider it done", "problem fixed", status changed to closed/resolved.
-- false: the conversation is still active — the client is asking a question, requesting action, waiting for something, or the thread has open items.
-- When uncertain, default to false (safer to show as needing reply than to hide it).
+- true: the latest message in the thread clearly signals the conversation is finished and no reply is expected.
+  Examples that MUST be marked closed:
+  • "ticket closed", "issue resolved", "thanks, all good", "no further action needed"
+  • "we're all set", "this has been taken care of", "consider it done", "problem fixed"
+  • Status changed to closed/resolved
+  • Short acknowledgment after the employee already replied: "Got it", "Thanks!", "Perfect", "Noted", "Received", "Sounds good", "Looks good", "Great, thanks", "Works for me", "Will do", "Awesome", "Appreciate it", "No worries", "Cool", "OK"
+  • The employee (outbound) sent the LAST message in the thread AND no open question was posed back to the client — this means the ball is NOT in the employee's court, conversation is closed.
+- false: the conversation is still active — the client is asking a question, requesting action, waiting for something, or the thread has open items that have NOT been addressed.
+- When uncertain: if the employee already replied to the main ask and the client's latest message contains no new question or request, default to true.
+
+IMPORTANT: If conversation_closed is true, priority MUST be LOW — a closed conversation is never urgent.
 
 Return ONLY the JSON object. No markdown, no explanation.`;
 
@@ -230,6 +238,7 @@ export class AiEnrichmentService {
       updatePayload.follow_up_required = false;
       updatePayload.follow_up_status = 'DONE';
       updatePayload.lifecycle_status = 'RESOLVED';
+      updatePayload.priority = 'LOW';
       updatePayload.short_reason = 'AI detected conversation closed by client — no reply needed.';
       updatePayload.reason = 'AI detected conversation closed by client — no reply needed.';
     }

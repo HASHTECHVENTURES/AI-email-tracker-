@@ -120,10 +120,10 @@ export function looksLikeConversationClosure(msg: InboundNoiseFields): boolean {
     /\b(?:no\s+further\s+action|no\s+action\s+(?:needed|required)|no\s+reply\s+(?:needed|required)|nothing\s+else\s+needed|no\s+response\s+(?:needed|required))\b/i;
 
   const clientClosing =
-    /\b(?:we(?:'re| are)\s+(?:all\s+set|good|done|sorted)|that(?:'s|s)\s+(?:all|it)|all\s+(?:good|set|done|sorted)|consider\s+(?:this|it)\s+(?:closed|resolved|done))\b/i;
+    /\b(?:we(?:'re| are)\s+(?:all\s+set|good|done|sorted)|that(?:'s|s)\s+(?:all|it)|all\s+(?:good|set|done|sorted)|consider\s+(?:this|it)\s+(?:closed|resolved|done)|got\s+it|noted|received|perfect|works?\s+for\s+(?:me|us)|looks?\s+good|sounds?\s+good|great,?\s+thanks?|no\s+(?:worries|problem))\b/i;
 
   const thanksClosure =
-    /\bthanks?,?\s+(?:that(?:'s|s)\s+all|we(?:'re| are)\s+good|no\s+need|all\s+good|all\s+set|nothing\s+else|no\s+further)\b/i;
+    /\bthanks?,?\s+(?:that(?:'s|s)\s+all|we(?:'re| are)\s+good|no\s+need|all\s+good|all\s+set|nothing\s+else|no\s+further|so\s+much|a\s+lot|for\s+(?:the\s+)?(?:update|info|help|clarification|confirmation|quick|prompt))\b/i;
 
   const resolvedStandalone =
     /(?:^|\.\s*|\n\s*)(?:resolved|completed|closed|fixed|sorted)\s*[.!]?\s*$/im;
@@ -136,6 +136,30 @@ export function looksLikeConversationClosure(msg: InboundNoiseFields): boolean {
     thanksClosure.test(b) ||
     resolvedStandalone.test(b)
   );
+}
+
+/**
+ * Short acknowledgment messages (under ~60 chars of meaningful text) that signal
+ * the client is done — especially after the employee already replied.
+ * Use with timestamp context: only treat as closure when employee replied BEFORE this message.
+ */
+export function looksLikeShortAcknowledgment(msg: InboundNoiseFields): boolean {
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+
+  const { body } = readInboundFields(msg);
+  const stripped = body
+    .replace(/[-–—]+\s*(?:forwarded|original)\s+message.*$/is, '')
+    .replace(/^>.*$/gm, '')
+    .replace(/on\s+.{5,80}\s+wrote:.*$/is, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (stripped.length > 120) return false;
+
+  const shortAck =
+    /^(?:thanks?!?|thank\s+you!?|thx!?|ty!?|got\s+it!?|perfect!?|great!?|ok(?:ay)?!?|cool!?|noted!?|received!?|awesome!?|wonderful!?|sounds?\s+good!?|looks?\s+good!?|works?\s+for\s+(?:me|us)!?|will\s+do!?|on\s+it!?|done!?|sure!?|confirmed!?|no\s+(?:worries|problem)!?|all\s+(?:good|set|done)!?|we(?:'re| are)\s+(?:good|set|done)!?|much\s+appreciated!?|appreciate\s+it!?)[.!,]?\s*$/i;
+
+  return shortAck.test(stripped);
 }
 
 /** Marketing / promo / newsletter-style mail (Gmail Promotions label is a strong signal). */
