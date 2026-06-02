@@ -8,6 +8,14 @@ import {
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { isPlatformAdminEmail } from './platform-admin.guard';
+import {
+  ACTIVITY_TIMEZONE,
+  istDayBoundsFromToday,
+  istLastNDays,
+  istMonthStartIso,
+  istWeekStartIso,
+  type IstDayBounds,
+} from './activity-ist';
 
 /** Counts of `public.users` rows per role for one company (portal logins, not org chart). */
 export interface PortalLoginRoleCounts {
@@ -320,29 +328,97 @@ export class PlatformAdminService {
     }
   }
 
+  private async countMessagesInRange(startIso: string, endIso?: string, employeeId?: string) {
+    let q = this.supabase
+      .from('email_messages')
+      .select('*', { count: 'exact', head: true })
+      .gte('sent_at', startIso);
+    if (endIso) q = q.lt('sent_at', endIso);
+    if (employeeId) q = q.eq('employee_id', employeeId);
+    const { count } = await q;
+    return count ?? 0;
+  }
+
+  private async countSkipsInRange(startIso: string, endIso?: string) {
+    let q = this.supabase
+      .from('email_ingestion_skips')
+      .select('*', { count: 'exact', head: true })
+      .gte('sent_at', startIso);
+    if (endIso) q = q.lt('sent_at', endIso);
+    const { count } = await q;
+    return count ?? 0;
+  }
+
+  private async countClassifiedInRange(startIso: string, endIso?: string) {
+    let q = this.supabase
+      .from('email_messages')
+      .select('*', { count: 'exact', head: true })
+      .gte('sent_at', startIso)
+      .not('relevance_reason', 'is', null);
+    if (endIso) q = q.lt('sent_at', endIso);
+    const { count } = await q;
+    return count ?? 0;
+  }
+
+  private async buildDailyTrend(days: IstDayBounds[]) {
+    return Promise.all(
+      days.map(async (day) => {
+        const [ingested, classified, skipped] = await Promise.all([
+          this.countMessagesInRange(day.start_iso, day.end_iso),
+          this.countClassifiedInRange(day.start_iso, day.end_iso),
+          this.countSkipsInRange(day.start_iso, day.end_iso),
+        ]);
+        return {
+          date: day.date_key,
+          ingested,
+          classified,
+          skipped,
+        };
+      }),
+    );
+  }
+
   async getActivityStats() {
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-    const weekStart = new Date(now.getTime() - 7 * 86_400_000).toISOString();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const today = istDayBoundsFromToday(0);
+    const yesterday = istDayBoundsFromToday(1);
+    const weekStart = istWeekStartIso();
+    const monthStart = istMonthStartIso();
+    const trendDays = istLastNDays(14);
 
     const [
-      msgTodayRes, msgWeekRes, msgMonthRes, msgTotalRes,
-      skipTodayRes, skipWeekRes, skipMonthRes, skipTotalRes,
-      aiClassTodayRes, aiClassWeekRes, aiClassMonthRes, aiClassTotalRes,
+      msgToday,
+      msgYesterday,
+      msgWeek,
+      msgMonth,
+      msgTotalRes,
+      skipToday,
+      skipYesterday,
+      skipWeek,
+      skipMonth,
+      skipTotalRes,
+      aiClassToday,
+      aiClassYesterday,
+      aiClassWeek,
+      aiClassMonth,
+      aiClassTotalRes,
+      dailyTrend,
     ] = await Promise.all([
-      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', todayStart),
-      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', weekStart),
-      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', monthStart),
+      this.countMessagesInRange(today.start_iso, today.end_iso),
+      this.countMessagesInRange(yesterday.start_iso, yesterday.end_iso),
+      this.countMessagesInRange(weekStart),
+      this.countMessagesInRange(monthStart),
       this.supabase.from('email_messages').select('*', { count: 'exact', head: true }),
-      this.supabase.from('email_ingestion_skips').select('*', { count: 'exact', head: true }).gte('skipped_at', todayStart),
-      this.supabase.from('email_ingestion_skips').select('*', { count: 'exact', head: true }).gte('skipped_at', weekStart),
-      this.supabase.from('email_ingestion_skips').select('*', { count: 'exact', head: true }).gte('skipped_at', monthStart),
+      this.countSkipsInRange(today.start_iso, today.end_iso),
+      this.countSkipsInRange(yesterday.start_iso, yesterday.end_iso),
+      this.countSkipsInRange(weekStart),
+      this.countSkipsInRange(monthStart),
       this.supabase.from('email_ingestion_skips').select('*', { count: 'exact', head: true }),
-      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', todayStart).not('relevance_reason', 'is', null),
-      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', weekStart).not('relevance_reason', 'is', null),
-      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', monthStart).not('relevance_reason', 'is', null),
+      this.countClassifiedInRange(today.start_iso, today.end_iso),
+      this.countClassifiedInRange(yesterday.start_iso, yesterday.end_iso),
+      this.countClassifiedInRange(weekStart),
+      this.countClassifiedInRange(monthStart),
       this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).not('relevance_reason', 'is', null),
+      this.buildDailyTrend(trendDays),
     ]);
 
     const { data: empRows } = await this.supabase
@@ -369,13 +445,15 @@ export class PlatformAdminService {
 
     const employeeBreakdown = await Promise.all(
       employees.map(async (e) => {
-        const [totalRes, todayRes, weekRes, monthRes, convoRes] = await Promise.all([
-          this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('employee_id', e.id),
-          this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('employee_id', e.id).gte('ingested_at', todayStart),
-          this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('employee_id', e.id).gte('ingested_at', weekStart),
-          this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('employee_id', e.id).gte('ingested_at', monthStart),
-          this.supabase.from('conversations').select('*', { count: 'exact', head: true }).eq('employee_id', e.id),
-        ]);
+        const [totalRes, todayCount, yesterdayCount, weekCount, monthCount, convoRes] =
+          await Promise.all([
+            this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('employee_id', e.id),
+            this.countMessagesInRange(today.start_iso, today.end_iso, e.id),
+            this.countMessagesInRange(yesterday.start_iso, yesterday.end_iso, e.id),
+            this.countMessagesInRange(weekStart, undefined, e.id),
+            this.countMessagesInRange(monthStart, undefined, e.id),
+            this.supabase.from('conversations').select('*', { count: 'exact', head: true }).eq('employee_id', e.id),
+          ]);
         return {
           employee_id: e.id,
           employee_name: e.name,
@@ -384,9 +462,10 @@ export class PlatformAdminService {
           is_active: e.is_active,
           gmail_status: e.gmail_status,
           total_messages: totalRes.count ?? 0,
-          messages_today: todayRes.count ?? 0,
-          messages_week: weekRes.count ?? 0,
-          messages_month: monthRes.count ?? 0,
+          messages_today: todayCount,
+          messages_yesterday: yesterdayCount,
+          messages_week: weekCount,
+          messages_month: monthCount,
           conversations: convoRes.count ?? 0,
           last_synced_at: e.last_synced_at,
         };
@@ -394,22 +473,27 @@ export class PlatformAdminService {
     );
 
     return {
+      timezone: ACTIVITY_TIMEZONE,
       email_volume: {
-        today: msgTodayRes.count ?? 0,
-        this_week: msgWeekRes.count ?? 0,
-        this_month: msgMonthRes.count ?? 0,
+        today: msgToday,
+        yesterday: msgYesterday,
+        this_week: msgWeek,
+        this_month: msgMonth,
         total: msgTotalRes.count ?? 0,
       },
       ai_usage: {
-        classified_today: aiClassTodayRes.count ?? 0,
-        classified_week: aiClassWeekRes.count ?? 0,
-        classified_month: aiClassMonthRes.count ?? 0,
+        classified_today: aiClassToday,
+        classified_yesterday: aiClassYesterday,
+        classified_week: aiClassWeek,
+        classified_month: aiClassMonth,
         classified_total: aiClassTotalRes.count ?? 0,
-        skipped_today: skipTodayRes.count ?? 0,
-        skipped_week: skipWeekRes.count ?? 0,
-        skipped_month: skipMonthRes.count ?? 0,
+        skipped_today: skipToday,
+        skipped_yesterday: skipYesterday,
+        skipped_week: skipWeek,
+        skipped_month: skipMonth,
         skipped_total: skipTotalRes.count ?? 0,
       },
+      daily_trend: dailyTrend,
       employee_breakdown: employeeBreakdown,
     };
   }

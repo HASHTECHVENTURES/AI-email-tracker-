@@ -94,18 +94,83 @@ type CompanyDetail = {
 };
 
 type ActivityData = {
-  email_volume: { today: number; this_week: number; this_month: number; total: number };
-  ai_usage: {
-    classified_today: number; classified_week: number; classified_month: number; classified_total: number;
-    skipped_today: number; skipped_week: number; skipped_month: number; skipped_total: number;
+  timezone?: string;
+  email_volume: {
+    today: number;
+    yesterday: number;
+    this_week: number;
+    this_month: number;
+    total: number;
   };
+  ai_usage: {
+    classified_today: number;
+    classified_yesterday: number;
+    classified_week: number;
+    classified_month: number;
+    classified_total: number;
+    skipped_today: number;
+    skipped_yesterday: number;
+    skipped_week: number;
+    skipped_month: number;
+    skipped_total: number;
+  };
+  daily_trend: Array<{
+    date: string;
+    ingested: number;
+    classified: number;
+    skipped: number;
+  }>;
   employee_breakdown: Array<{
-    employee_id: string; employee_name: string; employee_email: string; company_name: string;
-    is_active: boolean; gmail_status: string | null;
-    total_messages: number; messages_today: number; messages_week: number; messages_month: number;
-    conversations: number; last_synced_at: string | null;
+    employee_id: string;
+    employee_name: string;
+    employee_email: string;
+    company_name: string;
+    is_active: boolean;
+    gmail_status: string | null;
+    total_messages: number;
+    messages_today: number;
+    messages_yesterday: number;
+    messages_week: number;
+    messages_month: number;
+    conversations: number;
+    last_synced_at: string | null;
   }>;
 };
+
+const ACTIVITY_TZ = 'Asia/Kolkata';
+
+function formatIstDate(iso: string | null | undefined): string {
+  if (!iso) return 'Never';
+  try {
+    return new Date(iso).toLocaleString('en-IN', {
+      timeZone: ACTIVITY_TZ,
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function formatIstDayKey(dateKey: string): string {
+  try {
+    const [y, m, d] = dateKey.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    return dt.toLocaleDateString('en-IN', {
+      timeZone: ACTIVITY_TZ,
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  } catch {
+    return dateKey;
+  }
+}
 
 type AdminView = 'dashboard' | 'companies' | 'add-company' | 'kill-switches' | 'activity';
 
@@ -723,23 +788,37 @@ function KillSwitchesView({
 
 /* ───────── view: Activity & Usage ───────── */
 
-type TimePeriod = 'today' | 'week' | 'month' | 'total';
+type TimePeriod = 'today' | 'yesterday' | 'week' | 'month' | 'total';
 
 function periodLabel(p: TimePeriod): string {
-  return p === 'today' ? 'Today' : p === 'week' ? 'Last 7 days' : p === 'month' ? 'This month' : 'All time';
+  if (p === 'today') return 'Today (IST)';
+  if (p === 'yesterday') return 'Yesterday (IST)';
+  if (p === 'week') return 'Last 7 days (IST)';
+  if (p === 'month') return 'This month (IST)';
+  return 'All time';
 }
 
 function getVolume(v: ActivityData['email_volume'], p: TimePeriod): number {
-  return p === 'today' ? v.today : p === 'week' ? v.this_week : p === 'month' ? v.this_month : v.total;
+  if (p === 'today') return v.today;
+  if (p === 'yesterday') return v.yesterday ?? 0;
+  if (p === 'week') return v.this_week;
+  if (p === 'month') return v.this_month;
+  return v.total;
 }
 
 function getAi(a: ActivityData['ai_usage'], field: 'classified' | 'skipped', p: TimePeriod): number {
-  const key = `${field}_${p === 'today' ? 'today' : p === 'week' ? 'week' : p === 'month' ? 'month' : 'total'}` as keyof ActivityData['ai_usage'];
-  return a[key];
+  const suffix =
+    p === 'today' ? 'today' : p === 'yesterday' ? 'yesterday' : p === 'week' ? 'week' : p === 'month' ? 'month' : 'total';
+  const key = `${field}_${suffix}` as keyof ActivityData['ai_usage'];
+  return (a[key] as number) ?? 0;
 }
 
 function getEmpMessages(e: ActivityData['employee_breakdown'][number], p: TimePeriod): number {
-  return p === 'today' ? e.messages_today : p === 'week' ? e.messages_week : p === 'month' ? e.messages_month : e.total_messages;
+  if (p === 'today') return e.messages_today;
+  if (p === 'yesterday') return e.messages_yesterday ?? 0;
+  if (p === 'week') return e.messages_week;
+  if (p === 'month') return e.messages_month;
+  return e.total_messages;
 }
 
 function ActivityView({ data, loading: actLoading }: { data: ActivityData | null; loading: boolean }) {
@@ -769,10 +848,17 @@ function ActivityView({ data, loading: actLoading }: { data: ActivityData | null
         : b.conversations - a.conversations,
     );
 
-  const periods: TimePeriod[] = ['today', 'week', 'month', 'total'];
+  const periods: TimePeriod[] = ['today', 'yesterday', 'week', 'month', 'total'];
+  const trend = data.daily_trend ?? [];
+  const maxTrendIngested = trend.length > 0 ? Math.max(...trend.map((d) => d.ingested), 1) : 1;
 
   return (
     <div className="space-y-8">
+      <p className="text-xs text-slate-500">
+        All day boundaries use <strong className="font-medium text-slate-700">{data.timezone ?? ACTIVITY_TZ}</strong> (India time).
+        Counts are based on each mail's actual sent date (not sync time). &quot;Yesterday&quot; is the previous IST calendar day — e.g. 1 Jun when today is 2 Jun.
+      </p>
+
       {/* Period toggle */}
       <div className="flex flex-wrap items-center gap-2">
         {periods.map((p) => (
@@ -789,6 +875,45 @@ function ActivityView({ data, loading: actLoading }: { data: ActivityData | null
           </button>
         ))}
       </div>
+
+      {/* Daily trend (last 14 IST days) */}
+      {trend.length > 0 && (
+        <section>
+          <h2 className="mb-2 text-lg font-bold text-slate-900">Daily trend (last 14 days, IST)</h2>
+          <p className="mb-4 text-xs text-slate-500">One row per calendar day in India time — includes yesterday and today.</p>
+          <div className="overflow-x-auto rounded-2xl border border-slate-200/60 bg-white shadow-card">
+            <table className="w-full min-w-[520px] text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  <th className="px-4 py-3">Date (IST)</th>
+                  <th className="px-4 py-3 text-right">Ingested</th>
+                  <th className="px-4 py-3 text-right">AI classified</th>
+                  <th className="px-4 py-3 text-right">AI skipped</th>
+                  <th className="px-4 py-3 w-32" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {[...trend].reverse().map((row) => (
+                  <tr key={row.date} className="hover:bg-slate-50/50">
+                    <td className="px-4 py-2.5 font-medium text-slate-800">{formatIstDayKey(row.date)}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-slate-900">{row.ingested}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-violet-700">{row.classified}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-amber-700">{row.skipped}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-brand-500"
+                          style={{ width: `${Math.round((row.ingested / maxTrendIngested) * 100)}%` }}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {/* Email volume + AI usage cards */}
       <section>
@@ -884,7 +1009,7 @@ function ActivityView({ data, loading: actLoading }: { data: ActivityData | null
                     <td className="px-4 py-3 text-right tabular-nums text-slate-600">{e.total_messages.toLocaleString()}</td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-600">{e.conversations}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">
-                      {e.last_synced_at ? new Date(e.last_synced_at).toLocaleString() : 'Never'}
+                      {formatIstDate(e.last_synced_at)}
                     </td>
                   </tr>
                 );
