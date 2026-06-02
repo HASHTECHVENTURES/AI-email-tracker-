@@ -688,9 +688,13 @@ export class ConversationsService {
       throw upsertFinal;
     }
 
-    // Product policy: any DONE / RESOLVED thread should be removed from DB.
-    // Keep a resolved skip marker so Gmail sync does not recreate the thread.
-    if (row.follow_up_status === 'DONE' || row.lifecycle_status === 'RESOLVED') {
+    // Product policy: DONE / RESOLVED threads are removed from DB, except calendar/event
+    // invites which remain visible in the dedicated Calendar tab.
+    // Keep a resolved skip marker so Gmail sync does not recreate removed threads.
+    if (
+      (row.follow_up_status === 'DONE' || row.lifecycle_status === 'RESOLVED') &&
+      !latestInboundIsCalendar
+    ) {
       await this.permanentlyRemoveConversation(companyId, conversationId);
       return { action: existing ? 'updated' : 'created', enriched: false };
     }

@@ -126,7 +126,7 @@ type ConversationRow = {
 
 const MAIL_PAGE_SIZE = 50;
 
-type MailTab = 'action' | 'waiting' | 'cc' | 'closed' | 'noise' | 'all' | 'skipped';
+type MailTab = 'action' | 'waiting' | 'cc' | 'calendar' | 'closed' | 'noise' | 'all' | 'skipped';
 
 /** Mirrors GET /settings (includes company_admin_ai_enabled). Used before Start to gate ingest without Inbox AI. */
 type IngestAiSettings = {
@@ -250,6 +250,23 @@ function isNoFollowUpNoise(c: ConversationRow): boolean {
     return true;
   }
   return false;
+}
+
+/** Calendar/event invite style thread (auto invite / RSVP / calendar notification). */
+function isCalendarEventConversation(c: ConversationRow): boolean {
+  const subject = (c.thread_subject ?? '').trim().toLowerCase();
+  if (
+    /^invitation:|^invitation\b|^meeting prep:|^updated invitation:|^accepted:|^declined:|^tentative:|^canceled:/i.test(subject) ||
+    /\s@\s+(?:mon|tue|wed|thu|fri|sat|sun)\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}/i.test(
+      subject,
+    )
+  ) {
+    return true;
+  }
+  const text = `${c.thread_subject ?? ''} ${c.summary ?? ''} ${c.short_reason ?? ''} ${c.reason ?? ''}`.toLowerCase();
+  return /(calendar\/meeting invite|calendar or meeting|calendar invitation|rsvp|accepted your invitation|declined your invitation|tentatively accepted)/i.test(
+    text,
+  );
 }
 
 /** Need reply KPI/tab: hide stale *pending* threads, but never hide MISSED SLA rows (they were invisible before). */
@@ -3646,6 +3663,12 @@ function MyEmailPageInner() {
     [scopedConversations],
   );
 
+  /** Calendar/event conversations (auto invites + RSVP style updates). */
+  const calendarScopedRows = useMemo(
+    () => scopedConversations.filter((c) => isCalendarEventConversation(c)),
+    [scopedConversations],
+  );
+
   /** Matches the All threads tab row count (respects hide-low setting). */
   const kpiAllThreadsTabCount = useMemo(
     () =>
@@ -3723,6 +3746,8 @@ function MyEmailPageInner() {
         return withoutLowScoped.filter((c) => isWaitingOnThem(c));
       case 'cc':
         return ccScopedRows;
+      case 'calendar':
+        return calendarScopedRows;
       case 'closed':
         return scopedConversations.filter((c) => c.follow_up_status === 'DONE');
       case 'all': {
@@ -3742,6 +3767,7 @@ function MyEmailPageInner() {
     withoutLowScoped,
     scopedExcludingLowUnlessMissed,
     ccScopedRows,
+    calendarScopedRows,
     hideLowPriority,
     allTabStatus,
     allTabPriority,
@@ -3839,6 +3865,8 @@ function MyEmailPageInner() {
         ? 'Conversations where you already replied.'
         : mailTab === 'cc'
           ? 'Conversations where you were included for awareness.'
+          : mailTab === 'calendar'
+            ? 'Google Calendar invites and RSVP/event notifications.'
           : mailTab === 'closed'
             ? 'Conversations already handled.'
             : mailTab === 'noise'
@@ -5302,6 +5330,11 @@ function MyEmailPageInner() {
                     'Conversations where you were included for awareness.',
                   ],
                   [
+                    'calendar',
+                    'Calendar',
+                    'Google Calendar invites and RSVP/event notifications.',
+                  ],
+                  [
                     'closed',
                     'Done',
                     'Conversations already handled.',
@@ -5342,6 +5375,9 @@ function MyEmailPageInner() {
                   ) : null}
                   {id === 'cc' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({ccScopedRows.length})</span>
+                  ) : null}
+                  {id === 'calendar' ? (
+                    <span className="ml-1.5 tabular-nums opacity-80">({calendarScopedRows.length})</span>
                   ) : null}
                   {id === 'closed' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({scopedStats.done})</span>
