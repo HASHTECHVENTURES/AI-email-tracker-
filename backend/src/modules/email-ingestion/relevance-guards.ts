@@ -26,6 +26,10 @@ function readInboundFields(msg: InboundNoiseFields): {
 /**
  * Calendar invites & meeting events from any sender (not only marketing@).
  * Covers Gmail "Invitation: … @ Mon May 18, 2026 5pm", Fireflies prep, ICS bodies, etc.
+ *
+ * Weak signals (meeting links, "when:/where:" fields) are NOT enough on their own —
+ * a human-written email that just pastes a Meet/Zoom/Teams link should flow through
+ * normal Gemini classification, not be auto-resolved as a calendar invite.
  */
 export function looksLikeMeetingOrEventMail(msg: InboundNoiseFields): boolean {
   const { from, subject, body } = readInboundFields(msg);
@@ -70,7 +74,7 @@ export function looksLikeMeetingOrEventMail(msg: InboundNoiseFields): boolean {
     /\bmeeting (update|reminder|scheduled|cancelled|canceled|prep)\b/i.test(sub) ||
     (/\binvitation\b/i.test(sub) && /\d{1,2}:\d{2}\s*(?:am|pm)?/i.test(sub) && /\d{4}/.test(sub));
 
-  const bodyHit =
+  const strongBodyHit =
     /begin:vcalendar/i.test(b) ||
     /content-type:\s*text\/calendar/i.test(b) ||
     /\bmethod:\s*request\b/i.test(b) ||
@@ -81,16 +85,27 @@ export function looksLikeMeetingOrEventMail(msg: InboundNoiseFields): boolean {
     /view on google calendar/i.test(b) ||
     /invitation from google calendar/i.test(b) ||
     /rsvp to this event/i.test(b) ||
-    /organizer:\s*\S+@/i.test(b) ||
+    /organizer:\s*\S+@/i.test(b);
+
+  if (subjectHit || strongBodyHit) return true;
+
+  const hasMeetingLink =
     /https?:\/\/[^\s]*meet\.google\.com/i.test(b) ||
     /https?:\/\/[^\s]*zoom\.us\/(?:j|my)\//i.test(b) ||
-    /https?:\/\/[^\s]*teams\.microsoft\.com/i.test(b) ||
+    /https?:\/\/[^\s]*teams\.microsoft\.com/i.test(b);
+  const hasStructuredFields =
     /\bwhen:\s*.{3,120}/i.test(b) ||
-    /\bwhere:\s*.{3,120}/i.test(b) ||
+    /\bwhere:\s*.{3,120}/i.test(b);
+  const hasInvitationPhrase =
     /\bhas invited you to\b/i.test(b) ||
     /\byou have been invited\b/i.test(b);
 
-  return subjectHit || bodyHit;
+  const weakSignalCount =
+    (hasMeetingLink ? 1 : 0) +
+    (hasStructuredFields ? 1 : 0) +
+    (hasInvitationPhrase ? 1 : 0);
+
+  return weakSignalCount >= 2;
 }
 
 /** @deprecated Use looksLikeMeetingOrEventMail — kept for existing imports. */
