@@ -627,12 +627,12 @@ export class ConversationsService {
       last_client_msg_at: lastClientMsgAt?.toISOString() ?? null,
       last_employee_reply_at: lastEmployeeReplyAt?.toISOString() ?? null,
       follow_up_required:
-        userCcOnly || latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? false : result.followUpRequired,
+        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? false : result.followUpRequired,
       follow_up_status:
-        userCcOnly || latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? 'DONE' : result.followUpStatus,
+        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? 'DONE' : result.followUpStatus,
       delay_hours: result.delayHours,
       lifecycle_status:
-        userCcOnly || latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? 'RESOLVED' : result.lifecycleStatus,
+        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? 'RESOLVED' : result.lifecycleStatus,
       short_reason: latestInboundIsClosure
         ? 'Client indicated the conversation is closed — no reply needed.'
         : latestInboundIsCalendar
