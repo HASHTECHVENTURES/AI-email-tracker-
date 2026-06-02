@@ -126,7 +126,7 @@ type ConversationRow = {
 
 const MAIL_PAGE_SIZE = 50;
 
-type MailTab = 'action' | 'waiting' | 'cc' | 'calendar' | 'closed' | 'noise' | 'all' | 'skipped';
+type MailTab = 'action' | 'cc' | 'calendar' | 'closed' | 'noise' | 'all' | 'skipped';
 
 /** Mirrors GET /settings (includes company_admin_ai_enabled). Used before Start to gate ingest without Inbox AI. */
 type IngestAiSettings = {
@@ -277,15 +277,6 @@ function passesNeedReplyVisibility(c: ConversationRow): boolean {
   if (!needsMyReply(c)) return false;
   if (c.follow_up_status === 'MISSED') return true;
   return !HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS);
-}
-
-/** Ball in their court: we replied at or after their last message. */
-function isWaitingOnThem(c: ConversationRow): boolean {
-  if (c.follow_up_status === 'DONE' || c.follow_up_status === 'MISSED') return false;
-  const lc = c.last_client_msg_at ? new Date(c.last_client_msg_at).getTime() : 0;
-  const lr = c.last_employee_reply_at ? new Date(c.last_employee_reply_at).getTime() : 0;
-  if (lr === 0) return false;
-  return lr >= lc;
 }
 
 function slaChipLabel(c: ConversationRow): { text: string; className: string } {
@@ -3652,11 +3643,6 @@ function MyEmailPageInner() {
       scopedExcludingLowUnlessMissed.filter((c) => passesNeedReplyVisibility(c)).length,
     [scopedExcludingLowUnlessMissed],
   );
-  const kpiWaitingCount = useMemo(
-    () => withoutLowScoped.filter((c) => isWaitingOnThem(c)).length,
-    [withoutLowScoped],
-  );
-
   /** Matches the Low / noise tab (priority LOW in this mailbox scope). */
   const kpiLowNoiseTabCount = useMemo(
     () => scopedConversations.filter((c) => c.priority === 'LOW').length,
@@ -3742,8 +3728,6 @@ function MyEmailPageInner() {
         return scopedConversations.filter((c) => c.priority === 'LOW');
       case 'action':
         return scopedExcludingLowUnlessMissed.filter((c) => passesNeedReplyVisibility(c));
-      case 'waiting':
-        return withoutLowScoped.filter((c) => isWaitingOnThem(c));
       case 'cc':
         return ccScopedRows;
       case 'calendar':
@@ -3861,9 +3845,7 @@ function MyEmailPageInner() {
   const activeTabExplanation =
     mailTab === 'action'
       ? 'Conversations waiting for your response.'
-      : mailTab === 'waiting'
-        ? 'Conversations where you already replied.'
-        : mailTab === 'cc'
+      : mailTab === 'cc'
           ? 'Conversations where you were included for awareness.'
           : mailTab === 'calendar'
             ? 'Google Calendar invites and RSVP/event notifications.'
@@ -4937,7 +4919,7 @@ function MyEmailPageInner() {
           ) : null}
 
           {/* ── KPI strip — follow-up command center (scoped to tab) ── */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
             {[
               {
                 label: 'Need your reply',
@@ -4945,11 +4927,6 @@ function MyEmailPageInner() {
                 color: 'text-red-600',
                 hint:
                   'Threads the app says still need follow-up (`follow_up_required`). Missed SLA always lists here even if old. Low / noise is hidden except missed SLA. “Will track” counts Inbox AI–accepted messages while that inbox pull is running, not threads.',
-              },
-              {
-                label: 'Waiting on them',
-                value: kpiWaitingCount,
-                color: 'text-slate-700',
               },
               {
                 label: "CC'd (FYI)",
@@ -5320,11 +5297,6 @@ function MyEmailPageInner() {
                     'Conversations waiting for your response.',
                   ],
                   [
-                    'waiting',
-                    'Waiting on them',
-                    'Conversations where you already replied.',
-                  ],
-                  [
                     'cc',
                     "CC'd",
                     'Conversations where you were included for awareness.',
@@ -5369,9 +5341,6 @@ function MyEmailPageInner() {
                   {label}
                   {id === 'action' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({kpiNeedReplyCount})</span>
-                  ) : null}
-                  {id === 'waiting' ? (
-                    <span className="ml-1.5 tabular-nums opacity-80">({kpiWaitingCount})</span>
                   ) : null}
                   {id === 'cc' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({ccScopedRows.length})</span>
