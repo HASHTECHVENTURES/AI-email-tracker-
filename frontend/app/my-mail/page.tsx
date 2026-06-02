@@ -45,6 +45,7 @@ type ConversationRow = {
   employee_name: string;
   provider_thread_id: string;
   client_email: string | null;
+  follow_up_required?: boolean;
   follow_up_status: string;
   priority: string;
   delay_hours: number;
