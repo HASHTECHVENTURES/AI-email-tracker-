@@ -93,7 +93,21 @@ type CompanyDetail = {
   };
 };
 
-type AdminView = 'dashboard' | 'companies' | 'add-company' | 'kill-switches';
+type ActivityData = {
+  email_volume: { today: number; this_week: number; this_month: number; total: number };
+  ai_usage: {
+    classified_today: number; classified_week: number; classified_month: number; classified_total: number;
+    skipped_today: number; skipped_week: number; skipped_month: number; skipped_total: number;
+  };
+  employee_breakdown: Array<{
+    employee_id: string; employee_name: string; employee_email: string; company_name: string;
+    is_active: boolean; gmail_status: string | null;
+    total_messages: number; messages_today: number; messages_week: number; messages_month: number;
+    conversations: number; last_synced_at: string | null;
+  }>;
+};
+
+type AdminView = 'dashboard' | 'companies' | 'add-company' | 'kill-switches' | 'activity';
 
 /* ───────── small UI atoms ───────── */
 
@@ -707,12 +721,192 @@ function KillSwitchesView({
   );
 }
 
+/* ───────── view: Activity & Usage ───────── */
+
+type TimePeriod = 'today' | 'week' | 'month' | 'total';
+
+function periodLabel(p: TimePeriod): string {
+  return p === 'today' ? 'Today' : p === 'week' ? 'Last 7 days' : p === 'month' ? 'This month' : 'All time';
+}
+
+function getVolume(v: ActivityData['email_volume'], p: TimePeriod): number {
+  return p === 'today' ? v.today : p === 'week' ? v.this_week : p === 'month' ? v.this_month : v.total;
+}
+
+function getAi(a: ActivityData['ai_usage'], field: 'classified' | 'skipped', p: TimePeriod): number {
+  const key = `${field}_${p === 'today' ? 'today' : p === 'week' ? 'week' : p === 'month' ? 'month' : 'total'}` as keyof ActivityData['ai_usage'];
+  return a[key];
+}
+
+function getEmpMessages(e: ActivityData['employee_breakdown'][number], p: TimePeriod): number {
+  return p === 'today' ? e.messages_today : p === 'week' ? e.messages_week : p === 'month' ? e.messages_month : e.total_messages;
+}
+
+function ActivityView({ data, loading: actLoading }: { data: ActivityData | null; loading: boolean }) {
+  const [period, setPeriod] = useState<TimePeriod>('today');
+  const [sortBy, setSortBy] = useState<'messages' | 'conversations'>('messages');
+  const [searchTerm, setSearchTerm] = useState('');
+
+  if (actLoading) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-16 text-sm text-slate-500">
+        <svg className="h-4 w-4 animate-spin text-brand-500" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" /></svg>
+        Loading activity data...
+      </div>
+    );
+  }
+  if (!data) return null;
+
+  const employees = [...data.employee_breakdown]
+    .filter((e) => {
+      if (!searchTerm.trim()) return true;
+      const q = searchTerm.toLowerCase();
+      return e.employee_name.toLowerCase().includes(q) || e.employee_email.toLowerCase().includes(q) || e.company_name.toLowerCase().includes(q);
+    })
+    .sort((a, b) =>
+      sortBy === 'messages'
+        ? getEmpMessages(b, period) - getEmpMessages(a, period)
+        : b.conversations - a.conversations,
+    );
+
+  const periods: TimePeriod[] = ['today', 'week', 'month', 'total'];
+
+  return (
+    <div className="space-y-8">
+      {/* Period toggle */}
+      <div className="flex flex-wrap items-center gap-2">
+        {periods.map((p) => (
+          <button
+            key={p}
+            onClick={() => setPeriod(p)}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+              period === p
+                ? 'bg-brand-600 text-white shadow-sm'
+                : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            {periodLabel(p)}
+          </button>
+        ))}
+      </div>
+
+      {/* Email volume + AI usage cards */}
+      <section>
+        <h2 className="mb-4 text-lg font-bold text-slate-900">Email volume — {periodLabel(period).toLowerCase()}</h2>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <StatCard label="Emails ingested" value={getVolume(data.email_volume, period)} accent="text-brand-600" />
+          <StatCard label="AI classified" value={getAi(data.ai_usage, 'classified', period)} accent="text-violet-600" />
+          <StatCard label="AI skipped" value={getAi(data.ai_usage, 'skipped', period)} accent="text-amber-600" />
+          <StatCard
+            label="Pass rate"
+            value={
+              getVolume(data.email_volume, period) + getAi(data.ai_usage, 'skipped', period) > 0
+                ? `${Math.round((getVolume(data.email_volume, period) / (getVolume(data.email_volume, period) + getAi(data.ai_usage, 'skipped', period))) * 100)}%`
+                : '—'
+            }
+            accent="text-emerald-600"
+          />
+        </div>
+      </section>
+
+      {/* All-time totals row */}
+      {period !== 'total' && (
+        <section>
+          <h2 className="mb-4 text-lg font-bold text-slate-900">All-time totals</h2>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <MiniStatCard label="Total emails" value={data.email_volume.total.toLocaleString()} />
+            <MiniStatCard label="Total AI classified" value={data.ai_usage.classified_total.toLocaleString()} />
+            <MiniStatCard label="Total AI skipped" value={data.ai_usage.skipped_total.toLocaleString()} />
+            <MiniStatCard label="Employees tracked" value={data.employee_breakdown.length} />
+          </div>
+        </section>
+      )}
+
+      {/* Per-employee table */}
+      <section>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-bold text-slate-900">Per-employee breakdown</h2>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="Search name, email, company..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+            />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as 'messages' | 'conversations')}
+              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-700 shadow-sm"
+            >
+              <option value="messages">Sort by emails</option>
+              <option value="conversations">Sort by conversations</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-2xl border border-slate-200/60 bg-white shadow-card">
+          <table className="w-full min-w-[800px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-slate-100 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <th className="px-4 py-3">Employee</th>
+                <th className="px-4 py-3">Company</th>
+                <th className="px-4 py-3">Gmail</th>
+                <th className="px-4 py-3 text-right">Emails ({periodLabel(period).toLowerCase()})</th>
+                <th className="px-4 py-3 text-right">Total emails</th>
+                <th className="px-4 py-3 text-right">Conversations</th>
+                <th className="px-4 py-3">Last sync</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {employees.map((e) => {
+                const msgCount = getEmpMessages(e, period);
+                const maxMsg = employees.length > 0 ? Math.max(...employees.map((x) => getEmpMessages(x, period)), 1) : 1;
+                return (
+                  <tr key={e.employee_id} className={`hover:bg-slate-50/50 ${!e.is_active ? 'opacity-50' : ''}`}>
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-slate-900">{e.employee_name}</div>
+                      <div className="text-xs text-slate-500">{e.employee_email}</div>
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">{e.company_name}</td>
+                    <td className="px-4 py-3">{gmailStatusBadge(e.gmail_status)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <div className="h-2 w-16 overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className="h-full rounded-full bg-brand-500 transition-all"
+                            style={{ width: `${Math.round((msgCount / maxMsg) * 100)}%` }}
+                          />
+                        </div>
+                        <span className="min-w-[2.5rem] tabular-nums font-medium text-slate-900">{msgCount}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-slate-600">{e.total_messages.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-slate-600">{e.conversations}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">
+                      {e.last_synced_at ? new Date(e.last_synced_at).toLocaleString() : 'Never'}
+                    </td>
+                  </tr>
+                );
+              })}
+              {employees.length === 0 && (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-500">No employees match your search.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 /* ───────── main page ───────── */
 
 function hashToView(hash: string): AdminView {
   if (hash === '#companies') return 'companies';
   if (hash === '#add-company') return 'add-company';
   if (hash === '#kill-switches') return 'kill-switches';
+  if (hash === '#activity') return 'activity';
   return 'dashboard';
 }
 
@@ -721,6 +915,7 @@ const VIEW_TITLES: Record<AdminView, { title: string; subtitle: string }> = {
   companies: { title: 'Companies', subtitle: 'All registered companies with detailed breakdowns.' },
   'add-company': { title: 'Add company', subtitle: 'Register a new organization in the system.' },
   'kill-switches': { title: 'Kill switches', subtitle: 'Per-tenant AI and email ingestion overrides.' },
+  activity: { title: 'Activity & Usage', subtitle: 'Real-time email volume, AI consumption, and per-employee breakdowns.' },
 };
 
 export default function PlatformAdminPage() {
@@ -737,6 +932,8 @@ export default function PlatformAdminPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingFlagPatch, setPendingFlagPatch] = useState<{ id: string; field: 'ai' | 'email' } | null>(null);
   const savingFlagKeysRef = useRef<Set<string>>(new Set());
+  const [activityData, setActivityData] = useState<ActivityData | null>(null);
+  const [activityLoading, setActivityLoading] = useState(false);
 
   const [activeView, setActiveView] = useState<AdminView>('dashboard');
 
@@ -747,6 +944,23 @@ export default function PlatformAdminPage() {
     window.addEventListener('hashchange', sync);
     return () => window.removeEventListener('hashchange', sync);
   }, []);
+
+  const loadActivity = useCallback(async () => {
+    if (!token) return;
+    setActivityLoading(true);
+    try {
+      const res = await apiFetch('/platform-admin/activity', token);
+      if (res.ok) setActivityData((await res.json()) as ActivityData);
+    } finally {
+      setActivityLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (activeView === 'activity' && token && allowed) {
+      void loadActivity();
+    }
+  }, [activeView, token, allowed, loadActivity]);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -944,6 +1158,10 @@ export default function PlatformAdminPage() {
           onPatchFlags={(id, patch) => void patchFlags(id, patch)}
           onRemoveCompany={(id, name) => void removeCompany(id, name)}
         />
+      )}
+
+      {activeView === 'activity' && (
+        <ActivityView data={activityData} loading={activityLoading} />
       )}
     </AppShell>
   );

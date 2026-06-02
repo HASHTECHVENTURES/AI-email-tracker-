@@ -597,18 +597,24 @@ export class ConversationsService {
     const looksAutomated =
       /^(no-?reply|noreply|notifications?|mailer-daemon|bounce|donotreply|automated|system|support\+?|notify|alerts?|updates?-noreply|billing|invoices?|receipts?|orders?|payments?|accounts?|marketing|newsletter|webmaster|postmaster)$/i.test(senderLocal);
 
-    /** Latest non-empty inbound subject so the UI shows a real thread title when AI summary is still empty. */
     const inboundSubjectLine =
       [...inbound]
         .reverse()
         .map((m) => (m.subject ?? '').trim())
         .find((s) => s.length > 0) ?? '';
 
-    const existingSummary = (existing?.summary ?? '').trim();
-    const summaryForRow =
-      existingSummary.length >= 12
-        ? existingSummary
-        : inboundSubjectLine || existingSummary;
+    const latestBody = (lastInbound?.body_text ?? '').trim();
+    const bodySnippet = latestBody
+      .replace(/[-–—]+\s*(?:forwarded|original)\s+message.*$/is, '')
+      .replace(/^>.*$/gm, '')
+      .replace(/on\s+.{5,80}\s+wrote:.*$/is, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 200);
+
+    const summaryForRow = inboundSubjectLine
+      ? (bodySnippet.length > 20 ? `${inboundSubjectLine} — ${bodySnippet}` : inboundSubjectLine)
+      : bodySnippet || (existing?.summary ?? '').trim() || '';
 
     const row = {
       conversation_id: conversationId,
@@ -710,22 +716,26 @@ export class ConversationsService {
       }, conversationId);
     }
 
-    let enriched = false;
-    let platformAiEnabled = companyAiAllowed.get(companyId);
-    if (platformAiEnabled === undefined) {
-      platformAiEnabled = await this.companyPolicyService.isAiEnabledForCompany(companyId);
-      companyAiAllowed.set(companyId, platformAiEnabled);
-    }
-    if (settingsAiEnabled && platformAiEnabled && this.aiEnrichmentService.isAvailable) {
-      try {
-        const out = await this.aiEnrichmentService.enrichConversation(conversationId, employeeId, threadId);
-        enriched = out !== null;
-      } catch (err) {
-        this.logger.warn(`AI enrichment failed for ${conversationId}: ${(err as Error).message}`);
-      }
-    }
+    // AI enrichment (Gemini summary/priority) disabled to reduce API costs.
+    // Summaries are now built from the original email subject + body snippet above.
+    // To re-enable: uncomment the block below and remove this comment.
+    //
+    // let enriched = false;
+    // let platformAiEnabled = companyAiAllowed.get(companyId);
+    // if (platformAiEnabled === undefined) {
+    //   platformAiEnabled = await this.companyPolicyService.isAiEnabledForCompany(companyId);
+    //   companyAiAllowed.set(companyId, platformAiEnabled);
+    // }
+    // if (settingsAiEnabled && platformAiEnabled && this.aiEnrichmentService.isAvailable) {
+    //   try {
+    //     const out = await this.aiEnrichmentService.enrichConversation(conversationId, employeeId, threadId);
+    //     enriched = out !== null;
+    //   } catch (err) {
+    //     this.logger.warn(`AI enrichment failed for ${conversationId}: ${(err as Error).message}`);
+    //   }
+    // }
 
-    return { action: existing ? 'updated' : 'created', enriched };
+    return { action: existing ? 'updated' : 'created', enriched: false };
   }
 
   private async getConversation(companyId: string, conversationId: string): Promise<ConversationRow | null> {

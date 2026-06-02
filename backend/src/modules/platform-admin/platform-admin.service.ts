@@ -320,6 +320,100 @@ export class PlatformAdminService {
     }
   }
 
+  async getActivityStats() {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    const weekStart = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+    const [
+      msgTodayRes, msgWeekRes, msgMonthRes, msgTotalRes,
+      skipTodayRes, skipWeekRes, skipMonthRes, skipTotalRes,
+      aiClassTodayRes, aiClassWeekRes, aiClassMonthRes, aiClassTotalRes,
+    ] = await Promise.all([
+      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', todayStart),
+      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', weekStart),
+      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', monthStart),
+      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }),
+      this.supabase.from('email_ingestion_skips').select('*', { count: 'exact', head: true }).gte('skipped_at', todayStart),
+      this.supabase.from('email_ingestion_skips').select('*', { count: 'exact', head: true }).gte('skipped_at', weekStart),
+      this.supabase.from('email_ingestion_skips').select('*', { count: 'exact', head: true }).gte('skipped_at', monthStart),
+      this.supabase.from('email_ingestion_skips').select('*', { count: 'exact', head: true }),
+      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', todayStart).not('relevance_reason', 'is', null),
+      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', weekStart).not('relevance_reason', 'is', null),
+      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).gte('ingested_at', monthStart).not('relevance_reason', 'is', null),
+      this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).not('relevance_reason', 'is', null),
+    ]);
+
+    const { data: empRows } = await this.supabase
+      .from('employees')
+      .select('id, name, email, company_id, is_active, gmail_status, last_synced_at')
+      .order('name');
+
+    const employees = (empRows ?? []) as Array<{
+      id: string; name: string; email: string; company_id: string;
+      is_active: boolean; gmail_status: string | null; last_synced_at: string | null;
+    }>;
+
+    const companyIds = [...new Set(employees.map((e) => e.company_id))];
+    const companyNames = new Map<string, string>();
+    if (companyIds.length > 0) {
+      const { data: cRows } = await this.supabase
+        .from('companies')
+        .select('id, name')
+        .in('id', companyIds);
+      for (const c of (cRows ?? []) as { id: string; name: string }[]) {
+        companyNames.set(c.id, c.name);
+      }
+    }
+
+    const employeeBreakdown = await Promise.all(
+      employees.map(async (e) => {
+        const [totalRes, todayRes, weekRes, monthRes, convoRes] = await Promise.all([
+          this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('employee_id', e.id),
+          this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('employee_id', e.id).gte('ingested_at', todayStart),
+          this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('employee_id', e.id).gte('ingested_at', weekStart),
+          this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('employee_id', e.id).gte('ingested_at', monthStart),
+          this.supabase.from('conversations').select('*', { count: 'exact', head: true }).eq('employee_id', e.id),
+        ]);
+        return {
+          employee_id: e.id,
+          employee_name: e.name,
+          employee_email: e.email,
+          company_name: companyNames.get(e.company_id) ?? '—',
+          is_active: e.is_active,
+          gmail_status: e.gmail_status,
+          total_messages: totalRes.count ?? 0,
+          messages_today: todayRes.count ?? 0,
+          messages_week: weekRes.count ?? 0,
+          messages_month: monthRes.count ?? 0,
+          conversations: convoRes.count ?? 0,
+          last_synced_at: e.last_synced_at,
+        };
+      }),
+    );
+
+    return {
+      email_volume: {
+        today: msgTodayRes.count ?? 0,
+        this_week: msgWeekRes.count ?? 0,
+        this_month: msgMonthRes.count ?? 0,
+        total: msgTotalRes.count ?? 0,
+      },
+      ai_usage: {
+        classified_today: aiClassTodayRes.count ?? 0,
+        classified_week: aiClassWeekRes.count ?? 0,
+        classified_month: aiClassMonthRes.count ?? 0,
+        classified_total: aiClassTotalRes.count ?? 0,
+        skipped_today: skipTodayRes.count ?? 0,
+        skipped_week: skipWeekRes.count ?? 0,
+        skipped_month: skipMonthRes.count ?? 0,
+        skipped_total: skipTotalRes.count ?? 0,
+      },
+      employee_breakdown: employeeBreakdown,
+    };
+  }
+
   async getCompanyDetail(companyId: string): Promise<CompanyDetail> {
     const { data: company, error: cErr } = await this.supabase
       .from('companies')

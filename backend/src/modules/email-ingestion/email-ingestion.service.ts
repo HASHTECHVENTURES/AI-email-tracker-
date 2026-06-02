@@ -287,7 +287,8 @@ export class EmailIngestionService {
       }
 
       await this.conversationsService.autoArchiveResolved();
-      await this.repairConversationsWithMissingSummaries();
+      // Repair loop disabled — summaries now come from email data, not Gemini.
+      // await this.repairConversationsWithMissingSummaries();
 
       await this.settingsService.markIngestionFinished({
         status: 'success',
@@ -415,7 +416,8 @@ export class EmailIngestionService {
       }
 
       await this.conversationsService.autoArchiveResolved();
-      await this.repairConversationsWithMissingSummaries();
+      // Repair loop disabled — summaries now come from email data, not Gemini.
+      // await this.repairConversationsWithMissingSummaries();
 
       await this.settingsService.markIngestionFinished({
         status: 'success',

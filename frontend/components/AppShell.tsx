@@ -308,6 +308,9 @@ export function AppShell({
                   <a href="/admin#add-company" className={navItemClass(pathname === '/admin' && locHash === '#add-company')}>
                     Add company
                   </a>
+                  <a href="/admin#activity" className={navItemClass(pathname === '/admin' && locHash === '#activity')}>
+                    Activity
+                  </a>
                   <a href="/admin#kill-switches" className={navItemClass(pathname === '/admin' && locHash === '#kill-switches')}>
                     Kill switches
                   </a>
@@ -490,6 +493,9 @@ export function AppShell({
                   </a>
                   <a href="/admin#add-company" className={navMobileClass(pathname === '/admin' && locHash === '#add-company')}>
                     Add company
+                  </a>
+                  <a href="/admin#activity" className={navMobileClass(pathname === '/admin' && locHash === '#activity')}>
+                    Activity
                   </a>
                   <a href="/admin#kill-switches" className={navMobileClass(pathname === '/admin' && locHash === '#kill-switches')}>
                     Kill switches

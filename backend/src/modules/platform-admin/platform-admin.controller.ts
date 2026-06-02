@@ -72,6 +72,13 @@ export class PlatformAdminController {
     return { ok: true };
   }
 
+  @Get('activity')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(PlatformAdminGuard)
+  activity() {
+    return this.platformAdminService.getActivityStats();
+  }
+
   @Get('companies/:id/detail')
   @Header('Cache-Control', 'no-store')
   @UseGuards(PlatformAdminGuard)
