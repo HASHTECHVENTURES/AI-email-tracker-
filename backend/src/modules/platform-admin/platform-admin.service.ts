@@ -454,6 +454,13 @@ export class PlatformAdminService {
             this.countMessagesInRange(monthStart, undefined, e.id),
             this.supabase.from('conversations').select('*', { count: 'exact', head: true }).eq('employee_id', e.id),
           ]);
+        const { data: latestMailRow } = await this.supabase
+          .from('email_messages')
+          .select('sent_at')
+          .eq('employee_id', e.id)
+          .order('sent_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
         return {
           employee_id: e.id,
           employee_name: e.name,
@@ -468,6 +475,8 @@ export class PlatformAdminService {
           messages_month: monthCount,
           conversations: convoRes.count ?? 0,
           last_synced_at: e.last_synced_at,
+          latest_mail_sent_at:
+            ((latestMailRow as { sent_at?: string | null } | null)?.sent_at ?? null),
         };
       }),
     );

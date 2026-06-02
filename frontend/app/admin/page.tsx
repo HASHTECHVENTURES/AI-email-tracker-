@@ -134,6 +134,7 @@ type ActivityData = {
     messages_month: number;
     conversations: number;
     last_synced_at: string | null;
+    latest_mail_sent_at?: string | null;
   }>;
 };
 
@@ -980,7 +981,7 @@ function ActivityView({ data, loading: actLoading }: { data: ActivityData | null
                 <th className="px-4 py-3 text-right">Emails ({periodLabel(period).toLowerCase()})</th>
                 <th className="px-4 py-3 text-right">Total emails</th>
                 <th className="px-4 py-3 text-right">Conversations</th>
-                <th className="px-4 py-3">Last sync</th>
+                <th className="px-4 py-3">Latest mail (actual)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -1009,7 +1010,7 @@ function ActivityView({ data, loading: actLoading }: { data: ActivityData | null
                     <td className="px-4 py-3 text-right tabular-nums text-slate-600">{e.total_messages.toLocaleString()}</td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-600">{e.conversations}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">
-                      {formatIstDate(e.last_synced_at)}
+                      {formatIstDate(e.latest_mail_sent_at ?? null)}
                     </td>
                   </tr>
                 );
