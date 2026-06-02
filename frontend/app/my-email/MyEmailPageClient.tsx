@@ -3660,7 +3660,7 @@ function MyEmailPageInner() {
       (hideLowPriority
         ? scopedConversations.filter((c) => c.priority !== 'LOW')
         : scopedConversations
-      ).filter((c) => c.user_cc_only === true),
+      ).filter((c) => c.user_cc_only === true && (c.follow_up_status ?? '').toUpperCase() !== 'DONE'),
     [hideLowPriority, scopedConversations],
   );
 
