@@ -13,10 +13,14 @@ import {
 import { Request } from 'express';
 import { PlatformAdminGuard, isPlatformAdminUser } from './platform-admin.guard';
 import { PlatformAdminService } from './platform-admin.service';
+import { SettingsService } from '../settings/settings.service';
 
 @Controller('platform-admin')
 export class PlatformAdminController {
-  constructor(private readonly platformAdminService: PlatformAdminService) {}
+  constructor(
+    private readonly platformAdminService: PlatformAdminService,
+    private readonly settingsService: SettingsService,
+  ) {}
 
   /** Any authenticated user: whether they may use platform admin APIs. */
   @Get('me')
@@ -92,5 +96,23 @@ export class PlatformAdminController {
   async deleteCompany(@Param('id') id: string) {
     await this.platformAdminService.deleteCompany(id);
     return { ok: true };
+  }
+
+  @Post('reset-api-quota')
+  @UseGuards(PlatformAdminGuard)
+  async resetApiQuota() {
+    await this.settingsService.resetApiQuotaExhausted();
+    return { ok: true, message: 'API quota flag cleared — sync and alerts will resume on the next cycle.' };
+  }
+
+  @Get('api-quota-status')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(PlatformAdminGuard)
+  async getApiQuotaStatus() {
+    const settings = await this.settingsService.getAll();
+    return {
+      api_quota_exhausted: settings.api_quota_exhausted,
+      api_quota_exhausted_at: settings.api_quota_exhausted_at,
+    };
   }
 }

@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Put, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Post, Put, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { getRequestContext } from '../common/request-context';
 import { CompanyPolicyService } from '../company-policy/company-policy.service';
@@ -54,5 +54,26 @@ export class SettingsController {
     }
     await this.settingsService.setCompanyMasters({ email: body.email, ai: body.ai });
     return { status: 'ok' };
+  }
+
+  /** CEO only: clear the API quota exhausted flag after credits are renewed. */
+  @Post('reset-api-quota')
+  async resetApiQuota(@Req() req: Request) {
+    const ctx = getRequestContext(req);
+    if (ctx.role !== 'CEO') {
+      throw new ForbiddenException('Only the CEO can reset the API quota flag');
+    }
+    await this.settingsService.resetApiQuotaExhausted();
+    return { status: 'ok', message: 'API quota flag cleared — sync and alerts will resume on the next cycle.' };
+  }
+
+  @Get('api-quota-status')
+  async getApiQuotaStatus(@Req() req: Request) {
+    getRequestContext(req);
+    const settings = await this.settingsService.getAll();
+    return {
+      api_quota_exhausted: settings.api_quota_exhausted,
+      api_quota_exhausted_at: settings.api_quota_exhausted_at,
+    };
   }
 }

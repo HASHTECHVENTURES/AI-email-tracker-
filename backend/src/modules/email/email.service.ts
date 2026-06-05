@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import nodemailer from 'nodemailer';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
+import { SettingsService } from '../settings/settings.service';
 
 const ALERT_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 
@@ -17,7 +18,10 @@ export class EmailService {
   private readonly logger = new Logger(EmailService.name);
   private readonly transporter: nodemailer.Transporter | null;
 
-  constructor(@Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient) {
+  constructor(
+    @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
+    private readonly settingsService: SettingsService,
+  ) {
     const host = process.env.SMTP_HOST?.trim();
     const port = Number(process.env.SMTP_PORT ?? '587');
     const user = process.env.SMTP_USER?.trim();
@@ -122,12 +126,17 @@ View dashboard: ${this.dashboardLink()}
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  /** MISSED / SLA alerts — max once per 2h per company. */
+  /** MISSED / SLA alerts — max once per 2h per company. Suppressed when API quota is exhausted. */
   async maybeSendMissedAlert(
     companyId: string,
     line: AlertEmailLine,
     conversationId?: string,
   ): Promise<void> {
+    if (await this.settingsService.isApiQuotaExhausted()) {
+      this.logger.debug('Alert email suppressed — API credits exhausted, all notifications halted');
+      return;
+    }
+
     if (conversationId) {
       const { data: c } = await this.supabase
         .from('conversations')

@@ -24,8 +24,16 @@ type Settings = {
   email_crawl_team_mailboxes_enabled: boolean;
   email_crawl_employee_mailboxes_enabled: boolean;
   default_sla_hours: number;
+  api_quota_exhausted?: boolean;
+  api_quota_exhausted_at?: string | null;
 };
-type Runtime = { ingestionRunning: boolean; lastIngestionStatus: string; lastIngestionFinishedAt: string | null };
+type Runtime = {
+  ingestionRunning: boolean;
+  lastIngestionStatus: string;
+  lastIngestionFinishedAt: string | null;
+  apiQuotaExhausted?: boolean;
+  apiQuotaExhaustedAt?: string | null;
+};
 type SystemStatusLite = {
   is_active: boolean;
   ai_status: boolean;
@@ -98,6 +106,7 @@ export default function SettingsPage() {
   const [diagError, setDiagError] = useState<string | null>(null);
   const [purgeLegacyLoading, setPurgeLegacyLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
+  const [resetQuotaLoading, setResetQuotaLoading] = useState(false);
   const [platformAdmin, setPlatformAdmin] = useState(false);
   /** Avoids showing master toggles as OFF before GET /settings returns (was a visible flash). */
   const [settingsLoadState, setSettingsLoadState] = useState<'pending' | 'ready' | 'failed'>('pending');
@@ -354,6 +363,25 @@ export default function SettingsPage() {
     }
   }
 
+  async function resetApiQuota() {
+    if (!me || me.role !== 'CEO' || !token) return;
+    setError(null);
+    setNotice(null);
+    setResetQuotaLoading(true);
+    try {
+      const res = await apiFetch('/settings/reset-api-quota', token, { method: 'POST' });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { message?: string };
+        setError(body.message || 'Failed to reset API quota');
+        return;
+      }
+      setNotice('API quota flag cleared — sync and alerts will resume on the next cycle.');
+      await load(token);
+    } finally {
+      setResetQuotaLoading(false);
+    }
+  }
+
   if (!me || authLoading) {
     return (
       <AppShell
@@ -490,6 +518,38 @@ export default function SettingsPage() {
           )}
         </div>
       </section>
+
+      {(settings?.api_quota_exhausted || runtime?.apiQuotaExhausted) && (
+        <section className="rounded-xl border-2 border-red-300 bg-red-50 p-6 shadow-sm">
+          <h2 className="flex items-center gap-2 text-base font-semibold text-red-800">
+            <span className="h-3 w-3 rounded-full bg-red-500 animate-pulse" />
+            API Credits Exhausted — All Operations Halted
+          </h2>
+          <p className="mt-2 text-sm text-red-700">
+            The Gemini AI API quota has been reached. All email sync, email storage, alert emails,
+            and Telegram notifications are completely stopped.
+            {runtime?.apiQuotaExhaustedAt
+              ? ` Exhausted since: ${new Date(runtime.apiQuotaExhaustedAt).toLocaleString()}.`
+              : ''}
+          </p>
+          <p className="mt-1 text-sm text-red-700">
+            No new emails will be fetched, stored, or processed until credits are renewed and this flag is reset.
+          </p>
+          {isCeo && (
+            <button
+              type="button"
+              onClick={() => void resetApiQuota()}
+              disabled={resetQuotaLoading}
+              className="mt-3 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {resetQuotaLoading ? 'Resetting…' : 'Reset API Quota Flag'}
+            </button>
+          )}
+          {!isCeo && (
+            <p className="mt-2 text-xs text-red-600">Contact your CEO or admin to reset this flag after renewing API credits.</p>
+          )}
+        </section>
+      )}
 
       <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
         <h2 className="text-base font-semibold text-slate-900">Ingestion</h2>

@@ -51,6 +51,14 @@ export interface SystemSettings {
   email_crawl_employee_mailboxes_enabled: boolean;
   /** Fallback SLA (hours) when an employee has no personal override */
   default_sla_hours: number;
+  /**
+   * Hard stop: set to true when Gemini API quota/credits are exhausted.
+   * While true, ALL operations halt: sync, email storage, alerts, Telegram, historical fetch.
+   * Must be manually reset via the admin endpoint once credits are renewed.
+   */
+  api_quota_exhausted: boolean;
+  /** ISO timestamp when api_quota_exhausted was last set to true. */
+  api_quota_exhausted_at: string | null;
 }
 
 export interface RuntimeStatus {
@@ -72,6 +80,10 @@ export interface RuntimeStatus {
   nextReportAt: string | null;
   /** Seconds until next report window (server clock); UI decrements locally between polls. */
   secondsUntilNextReport: number | null;
+  /** True when Gemini API credits are exhausted — all operations halted. */
+  apiQuotaExhausted: boolean;
+  /** ISO timestamp when the quota was flagged as exhausted. */
+  apiQuotaExhaustedAt: string | null;
 }
 
 @Injectable()
@@ -101,6 +113,8 @@ export class SettingsService {
         email_crawl_team_mailboxes_enabled: true,
         email_crawl_employee_mailboxes_enabled: true,
         default_sla_hours: 24,
+        api_quota_exhausted: false,
+        api_quota_exhausted_at: null,
       };
     }
 
@@ -121,6 +135,8 @@ export class SettingsService {
       email_crawl_team_mailboxes_enabled: map.get('email_crawl_team_mailboxes_enabled') !== 'false',
       email_crawl_employee_mailboxes_enabled: map.get('email_crawl_employee_mailboxes_enabled') !== 'false',
       default_sla_hours,
+      api_quota_exhausted: map.get('api_quota_exhausted') === 'true',
+      api_quota_exhausted_at: map.get('api_quota_exhausted_at')?.trim() || null,
     };
   }
 
@@ -128,6 +144,35 @@ export class SettingsService {
   async getDefaultSlaHours(): Promise<number> {
     const s = await this.getAll();
     return s.default_sla_hours;
+  }
+
+  async isApiQuotaExhausted(): Promise<boolean> {
+    const s = await this.getAll();
+    return s.api_quota_exhausted;
+  }
+
+  /**
+   * Persist that the Gemini API quota/credits are exhausted.
+   * Halts all sync, storage, alerts, and notifications until manually reset.
+   */
+  async setApiQuotaExhausted(): Promise<void> {
+    const already = await this.isApiQuotaExhausted();
+    if (already) return;
+    await this.setMany([
+      { key: 'api_quota_exhausted', value: 'true' },
+      { key: 'api_quota_exhausted_at', value: new Date().toISOString() },
+    ]);
+    this.logger.error(
+      '🛑 API quota exhausted — ALL operations halted (sync, storage, alerts). Reset via admin endpoint when credits are renewed.',
+    );
+  }
+
+  /** Admin action: clear the quota-exhausted flag after credits are renewed. */
+  async resetApiQuotaExhausted(): Promise<void> {
+    await this.setMany([
+      { key: 'api_quota_exhausted', value: 'false' },
+    ]);
+    this.logger.log('✅ API quota exhausted flag cleared — operations will resume on next cycle.');
   }
 
   async set(key: string, value: string): Promise<void> {
@@ -230,6 +275,8 @@ export class SettingsService {
         lastReportAt: null,
         nextReportAt: null,
         secondsUntilNextReport: null,
+        apiQuotaExhausted: false,
+        apiQuotaExhaustedAt: null,
       };
     }
 
@@ -276,6 +323,8 @@ export class SettingsService {
       lastReportAt,
       nextReportAt,
       secondsUntilNextReport,
+      apiQuotaExhausted: map.get('api_quota_exhausted') === 'true',
+      apiQuotaExhaustedAt: map.get('api_quota_exhausted_at')?.trim() || null,
     };
   }
 

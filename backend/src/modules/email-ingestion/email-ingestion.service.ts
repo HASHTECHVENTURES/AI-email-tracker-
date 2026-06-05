@@ -191,6 +191,15 @@ export class EmailIngestionService {
    */
   async runIncrementalCycle(options?: { force?: boolean }): Promise<IngestionResult[]> {
     const pre = await this.settingsService.getAll();
+
+    if (pre.api_quota_exhausted) {
+      this.logger.warn(
+        `\u{1F6D1} Ingestion cycle BLOCKED \u2014 API credits exhausted since ${pre.api_quota_exhausted_at ?? 'unknown'}. ` +
+          'All sync, storage, and alerts are halted. Reset via admin endpoint once credits are renewed.',
+      );
+      return [];
+    }
+
     if (!pre.email_crawl_enabled && !options?.force) {
       this.logger.debug('Ingestion skipped — mailbox crawl disabled in settings');
       return [];
@@ -329,6 +338,14 @@ export class EmailIngestionService {
     }
 
     const pre = await this.settingsService.getAll();
+
+    if (pre.api_quota_exhausted) {
+      this.logger.warn(
+        `\u{1F6D1} Scoped ingestion BLOCKED \u2014 API credits exhausted since ${pre.api_quota_exhausted_at ?? 'unknown'}. Reset via admin endpoint.`,
+      );
+      return [];
+    }
+
     if (pre.email_ai_relevance_enabled && !this.relevanceModel) {
       this.logger.warn(
         'Inbox AI relevance is enabled in Settings but no Gemini API key is configured on the server.',
@@ -953,8 +970,9 @@ export class EmailIngestionService {
 
         if (is429) {
           this.monthlyQuotaExhausted = true;
+          void this.settingsService.setApiQuotaExhausted();
           this.logger.error(
-            `Gemini API limit reached — switching inbound ingest to direct-human fallback for this cycle. ${msg.slice(0, 200)}`,
+            `Gemini API quota/credits exhausted — ALL operations halted (sync, storage, alerts). ${msg.slice(0, 200)}`,
           );
           return null;
         }
@@ -1025,6 +1043,14 @@ export class EmailIngestionService {
           confidence: finalized.confidence,
         };
       }
+      if (this.monthlyQuotaExhausted) {
+        return {
+          relevant: false,
+          reason: 'API credits exhausted — all ingestion halted. No emails will be stored or synced until credits are renewed.',
+          confidence: null,
+          inboundAiHardStop: true,
+        };
+      }
       if (ingestWithoutAiConfirmed) {
         return {
           relevant: true,
@@ -1040,12 +1066,12 @@ export class EmailIngestionService {
           confidence: null,
         };
       }
-      const reason = this.monthlyQuotaExhausted
-        ? 'Inbox AI unavailable: Gemini API quota or rate limit reached. Non-direct mail skipped for this cycle without writing skip rows.'
-        : 'Inbox AI unavailable: classification failed after retries. Inbound ingestion is paused until Inbox AI responds again.';
-      return this.monthlyQuotaExhausted
-        ? { relevant: false, reason, confidence: null, transientAiUnavailable: true }
-        : { relevant: false, reason, confidence: null, inboundAiHardStop: true };
+      return {
+        relevant: false,
+        reason: 'Inbox AI unavailable: classification failed after retries. Inbound ingestion is paused until Inbox AI responds again.',
+        confidence: null,
+        inboundAiHardStop: true,
+      };
     }
 
     if (ingestWithoutAiConfirmed) {
@@ -1205,6 +1231,9 @@ export class EmailIngestionService {
     employeeId: string,
     providerMessageId: string,
   ): Promise<{ outcome: 'classified' | 'skipped' | 'already_in_portal'; reason: string | null; confidence: number | null; conversationsUpdated: number }> {
+    if (await this.settingsService.isApiQuotaExhausted()) {
+      throw new BadRequestException('API credits are exhausted — all operations are halted. Reanalysis is not available until credits are renewed.');
+    }
     const employee = await this.employeesService.getById(companyId, employeeId);
     if (!employee) {
       throw new NotFoundException('Mailbox not found');
@@ -1303,6 +1332,9 @@ export class EmailIngestionService {
     employeeId: string,
     providerMessageId: string,
   ): Promise<{ outcome: 'imported' | 'already_in_portal'; conversationsUpdated: number }> {
+    if (await this.settingsService.isApiQuotaExhausted()) {
+      throw new BadRequestException('API credits are exhausted — all operations are halted. Manual import is not available until credits are renewed.');
+    }
     const employee = await this.employeesService.getById(companyId, employeeId);
     if (!employee) {
       throw new NotFoundException('Mailbox not found');

@@ -4,6 +4,7 @@ import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { FollowUpStatus } from '../common/types';
 import { TelegramService } from './telegram.service';
 import { EmailService } from '../email/email.service';
+import { SettingsService } from '../settings/settings.service';
 
 /** Stored in `alerts.status_transition`; must match dedupe lookup */
 export const STATUS_TRANSITION_PENDING_TO_MISSED = 'PENDING_TO_MISSED';
@@ -16,6 +17,7 @@ export class AlertsService {
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
     private readonly telegramService: TelegramService,
     private readonly emailService: EmailService,
+    private readonly settingsService: SettingsService,
   ) {}
 
   shouldTriggerTransitionAlert(
@@ -100,6 +102,11 @@ export class AlertsService {
     slaHours: number;
     shortReason: string;
   }): Promise<void> {
+    if (await this.settingsService.isApiQuotaExhausted()) {
+      this.logger.debug('Alert suppressed — API credits exhausted, all notifications halted');
+      return;
+    }
+
     const {
       companyId,
       conversationId,

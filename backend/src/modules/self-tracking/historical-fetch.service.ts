@@ -35,14 +35,13 @@ const MAX_HISTORICAL_RANGE_DAYS = 731;
 const MAX_HISTORICAL_MESSAGES = 500;
 const MAX_STORED_EMAIL_BODY_CHARS = 2_000_000;
 
-/** Inbound + mailbox only on Cc (not To) — matches Live “CC’d” chip semantics. */
+/** Inbound + mailbox not directly addressed (CC'd or BCC'd, not in To). */
 function employeeOnlyOnCc(msg: EmailMessage, employeeEmail: string): boolean {
   if (msg.direction !== 'INBOUND') return false;
   const n = (e: string) => e.trim().toLowerCase();
   const em = n(employeeEmail);
   const inTo = (msg.toEmails ?? []).some((t) => n(t) === em);
-  const inCc = (msg.ccEmails ?? []).some((c) => n(c) === em);
-  return !inTo && inCc;
+  return !inTo;
 }
 
 function clipStoredBody(bodyText: string | undefined): string {
@@ -131,6 +130,13 @@ export class HistoricalFetchService {
     onProgress?: HistoricalProgressFn,
     options?: { abortSignal?: AbortSignal; createdByUserId?: string },
   ): Promise<HistoricalFetchResult> {
+    if (await this.settingsService.isApiQuotaExhausted()) {
+      throw new BadRequestException(
+        'API credits are exhausted — all operations are halted (sync, storage, alerts). ' +
+          'Historical search is not available until credits are renewed and the quota flag is reset by an admin.',
+      );
+    }
+
     this.monthlyQuotaExhausted = false;
     this.aiEnrichmentService.resetMonthlyQuotaGate();
     const signal = options?.abortSignal;
@@ -635,8 +641,9 @@ export class HistoricalFetchService {
         const is429 = /\b429\b|quota|Quota|rate|Rate|resource_exhausted/i.test(msg);
         if (is429) {
           this.monthlyQuotaExhausted = true;
+          void this.settingsService.setApiQuotaExhausted();
           this.logger.error(
-            `Gemini API limit reached — switching historical ingest to direct-human fallback. ${msg.slice(0, 200)}`,
+            `Gemini API quota/credits exhausted — ALL operations halted (sync, storage, alerts). ${msg.slice(0, 200)}`,
           );
           return null;
         }

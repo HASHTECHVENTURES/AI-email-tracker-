@@ -548,9 +548,13 @@ export class ConversationsService {
     const lastClientMsgAt = lastInbound ? new Date(lastInbound.sent_at) : null;
     const lastEmployeeReplyAt = lastOutbound ? new Date(lastOutbound.sent_at) : null;
 
-    const userCcOnly = lastInbound
+    const userCcOnlyStrict = lastInbound
       ? ConversationsService.mailboxIsCcOnlyOnLatestInbound(employee.email, lastInbound.to_emails, lastInbound.cc_emails)
       : false;
+    const userBcc = lastInbound
+      ? ConversationsService.mailboxIsBccOnLatestInbound(employee.email, lastInbound.to_emails, lastInbound.cc_emails)
+      : false;
+    const userCcOnly = userCcOnlyStrict || userBcc;
 
     const slaHours = this.employeesService.getSlaHours(employee, globalSlaHours);
     const existing = await this.getConversation(companyId, `${employeeId}:${threadId}`);
@@ -627,30 +631,38 @@ export class ConversationsService {
       last_client_msg_at: lastClientMsgAt?.toISOString() ?? null,
       last_employee_reply_at: lastEmployeeReplyAt?.toISOString() ?? null,
       follow_up_required:
-        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? false : result.followUpRequired,
+        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || userCcOnly ? false : result.followUpRequired,
       follow_up_status:
-        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? 'DONE' : result.followUpStatus,
+        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || userCcOnly ? 'DONE' : result.followUpStatus,
       delay_hours: result.delayHours,
       lifecycle_status:
-        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure ? 'RESOLVED' : result.lifecycleStatus,
+        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || userCcOnly ? 'RESOLVED' : result.lifecycleStatus,
       short_reason: latestInboundIsClosure
         ? 'Client indicated the conversation is closed — no reply needed.'
         : latestInboundIsCalendar
           ? 'Calendar/meeting invite — no reply needed.'
           : latestInboundIsNoise
             ? 'Promotional mail — no reply needed.'
-            : result.shortReason,
+            : userBcc
+              ? 'You were BCC’d on this email — no reply needed.'
+              : userCcOnlyStrict
+                ? 'You were only CC’d on this email — no reply needed.'
+                : result.shortReason,
       reason: latestInboundIsClosure
         ? 'Client indicated the conversation is closed — no reply needed.'
         : latestInboundIsCalendar
           ? 'Calendar/meeting invite — no reply needed.'
           : latestInboundIsNoise
             ? 'Promotional mail — no reply needed.'
-            : result.shortReason,
+            : userBcc
+              ? 'You were BCC’d on this email — no reply needed.'
+              : userCcOnlyStrict
+                ? 'You were only CC’d on this email — no reply needed.'
+                : result.shortReason,
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,
       user_cc_only: userCcOnly,
-      priority: looksAutomated || latestInboundIsNoise || latestInboundIsClosure ? 'LOW' : latestInboundIsCalendar ? (existing?.priority ?? 'LOW') : (existing?.priority ?? 'MEDIUM'),
+      priority: looksAutomated || latestInboundIsNoise || latestInboundIsClosure || userCcOnly ? 'LOW' : latestInboundIsCalendar ? (existing?.priority ?? 'LOW') : (existing?.priority ?? 'MEDIUM'),
       summary: summaryForRow,
       confidence: existing ? Number(existing.confidence) : 0,
       classification_status: 'classified',
@@ -975,5 +987,25 @@ export class ConversationsService {
     if (inTo) return false;
     const inCc = (ccEmails ?? []).some((e) => e.trim().toLowerCase() === m);
     return inCc;
+  }
+
+  /**
+   * BCC detection: employee is NOT in To AND NOT in Cc on the latest inbound.
+   * Gmail doesn't expose the BCC header to recipients, so if the mailbox email
+   * isn't in either To or Cc, they were BCC'd (or the mail was forwarded).
+   * These threads should never appear in "Need Reply."
+   */
+  private static mailboxIsBccOnLatestInbound(
+    mailboxEmail: string,
+    toEmails: string[] | null | undefined,
+    ccEmails: string[] | null | undefined,
+  ): boolean {
+    const m = mailboxEmail.trim().toLowerCase();
+    if (!m) return false;
+    const inTo = (toEmails ?? []).some((e) => e.trim().toLowerCase() === m);
+    if (inTo) return false;
+    const inCc = (ccEmails ?? []).some((e) => e.trim().toLowerCase() === m);
+    if (inCc) return false;
+    return true;
   }
 }
