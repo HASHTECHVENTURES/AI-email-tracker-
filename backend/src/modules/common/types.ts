@@ -45,6 +45,8 @@ export interface EmailMessage {
   labelIds?: string[];
   /** Set after Gemini inbox relevance — persisted on `email_messages.relevance_reason`. */
   relevanceReason?: string | null;
+  /** AI classification action: NEED_REPLY, CC, LOW, SKIP. Set during ingestion. */
+  aiAction?: string | null;
 }
 
 export interface ConversationSnapshot {

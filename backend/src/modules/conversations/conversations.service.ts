@@ -43,6 +43,7 @@ interface EmailRow {
   subject: string;
   body_text: string | null;
   sent_at: string;
+  relevance_reason?: string | null;
 }
 
 interface ConversationRow {
@@ -527,7 +528,7 @@ export class ConversationsService {
     const { data: emails, error } = await this.supabase
       .from('email_messages')
       .select(
-        'provider_message_id, provider_thread_id, employee_id, direction, from_email, from_name, reply_to_email, to_emails, cc_emails, subject, body_text, sent_at',
+        'provider_message_id, provider_thread_id, employee_id, direction, from_email, from_name, reply_to_email, to_emails, cc_emails, subject, body_text, sent_at, relevance_reason',
       )
       .eq('company_id', companyId)
       .eq('employee_id', employeeId)
@@ -554,7 +555,9 @@ export class ConversationsService {
     const userBcc = lastInbound
       ? ConversationsService.mailboxIsBccOnLatestInbound(employee.email, lastInbound.to_emails, lastInbound.cc_emails)
       : false;
-    const userCcOnly = userCcOnlyStrict || userBcc;
+    const aiActionMatch = lastInbound?.relevance_reason?.match(/^\[(NEED_REPLY|CC|CALENDAR|LOW|SKIP)\]/);
+    const aiAction = aiActionMatch ? aiActionMatch[1] : null;
+    const userCcOnly = userCcOnlyStrict || userBcc || aiAction === 'CC';
 
     const slaHours = this.employeesService.getSlaHours(employee, globalSlaHours);
     const existing = await this.getConversation(companyId, `${employeeId}:${threadId}`);
@@ -574,8 +577,8 @@ export class ConversationsService {
       : null;
 
     const latestInboundIsCalendar = inboundFields
-      ? looksLikeMeetingOrEventMail(inboundFields)
-      : false;
+      ? looksLikeMeetingOrEventMail(inboundFields) || aiAction === 'CALENDAR'
+      : aiAction === 'CALENDAR';
 
     const latestInboundIsNoise = inboundFields
       ? looksLikeInboundNoReplyNoise(inboundFields) && !latestInboundIsCalendar
@@ -631,12 +634,24 @@ export class ConversationsService {
       last_client_msg_at: lastClientMsgAt?.toISOString() ?? null,
       last_employee_reply_at: lastEmployeeReplyAt?.toISOString() ?? null,
       follow_up_required:
-        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || userCcOnly ? false : result.followUpRequired,
+        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || userCcOnly || aiAction === 'LOW'
+          ? false
+          : result.followUpRequired,
       follow_up_status:
-        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || userCcOnly ? 'DONE' : result.followUpStatus,
+        aiAction === 'CC'
+          ? 'PENDING'
+          : latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || aiAction === 'LOW'
+            ? 'DONE'
+            : userCcOnly
+              ? 'PENDING'
+              : result.followUpStatus,
       delay_hours: result.delayHours,
       lifecycle_status:
-        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || userCcOnly ? 'RESOLVED' : result.lifecycleStatus,
+        aiAction === 'CC'
+          ? 'ACTIVE'
+          : latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || aiAction === 'LOW'
+            ? 'RESOLVED'
+            : result.lifecycleStatus,
       short_reason: latestInboundIsClosure
         ? 'Client indicated the conversation is closed — no reply needed.'
         : latestInboundIsCalendar
@@ -662,13 +677,27 @@ export class ConversationsService {
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,
       user_cc_only: userCcOnly,
-      priority: looksAutomated || latestInboundIsNoise || latestInboundIsClosure || userCcOnly ? 'LOW' : latestInboundIsCalendar ? (existing?.priority ?? 'LOW') : (existing?.priority ?? 'MEDIUM'),
+      priority:
+        looksAutomated || latestInboundIsNoise || latestInboundIsClosure || userCcOnly || aiAction === 'LOW' || aiAction === 'CC' || latestInboundIsCalendar
+          ? 'LOW'
+          : (existing?.priority ?? 'MEDIUM'),
       summary: summaryForRow,
       confidence: existing ? Number(existing.confidence) : 0,
       classification_status: 'classified',
       ai_confidence_score: existing ? Number(existing.confidence) : 0,
       updated_at: new Date().toISOString(),
     };
+
+    if (aiAction === 'CC' && !latestInboundIsClosure && !latestInboundIsNoise) {
+      row.short_reason = 'AI: CC\'d — no reply needed.';
+      row.reason = row.short_reason;
+    } else if (aiAction === 'CALENDAR' && !latestInboundIsClosure && !latestInboundIsNoise) {
+      row.short_reason = 'AI: Calendar/meeting invite.';
+      row.reason = row.short_reason;
+    } else if (aiAction === 'LOW' && !latestInboundIsClosure && !latestInboundIsNoise && !userCcOnlyStrict && !userBcc) {
+      row.short_reason = 'AI: Low priority — no reply needed.';
+      row.reason = row.short_reason;
+    }
 
     if (row.follow_up_status === 'DONE') {
       row.follow_up_required = false;
@@ -700,12 +729,14 @@ export class ConversationsService {
       throw upsertFinal;
     }
 
-    // Product policy: DONE / RESOLVED threads are removed from DB, except calendar/event
-    // invites which remain visible in the dedicated Calendar tab.
+    // Product policy: DONE / RESOLVED threads are removed from DB, except calendar,
+    // CC'd, and low-priority rows which must stay visible in their portal tabs.
     // Keep a resolved skip marker so Gmail sync does not recreate removed threads.
+    const keepForPortalTab =
+      latestInboundIsCalendar || row.user_cc_only || row.priority === 'LOW' || aiAction === 'LOW' || aiAction === 'CC';
     if (
       (row.follow_up_status === 'DONE' || row.lifecycle_status === 'RESOLVED') &&
-      !latestInboundIsCalendar
+      !keepForPortalTab
     ) {
       await this.permanentlyRemoveConversation(companyId, conversationId);
       return { action: existing ? 'updated' : 'created', enriched: false };

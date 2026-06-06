@@ -11,6 +11,7 @@ import { GmailService, buildGmailHistoricalWindowQuery } from '../email-ingestio
 import {
   buildSharedIngestRelevancePrompt,
   RELEVANCE_MODEL_TEMPERATURE,
+  RELEVANCE_SYSTEM_INSTRUCTION,
 } from '../email-ingestion/relevance-prompt.builder';
 import {
   ingestForceRelevantCalendarOrMeeting,
@@ -115,6 +116,7 @@ export class HistoricalFetchService {
     const modelName = process.env.GEMINI_RELEVANCE_MODEL?.trim() || 'gemini-2.5-flash';
     this.relevanceModel = genAI.getGenerativeModel({
       model: modelName,
+      systemInstruction: RELEVANCE_SYSTEM_INSTRUCTION,
       generationConfig: {
         temperature: RELEVANCE_MODEL_TEMPERATURE,
         responseMimeType: 'application/json',
@@ -381,7 +383,7 @@ export class HistoricalFetchService {
             employee.email,
             msg,
             threadMetaCache,
-            3,
+            2,
           );
         }
 
@@ -469,6 +471,7 @@ export class HistoricalFetchService {
         if (decision.reason) {
           msg.relevanceReason = decision.reason;
         }
+        msg.aiAction = decision.reason?.match(/^\[(NEED_REPLY|CC|CALENDAR|LOW|SKIP)\]/)?.[1] ?? null;
 
         messages.push(msg);
         affectedThreads.add(msg.providerThreadId);
@@ -616,16 +619,23 @@ export class HistoricalFetchService {
     if (this.monthlyQuotaExhausted) {
       return null;
     }
+    const VALID_ACTIONS = new Set(['NEED_REPLY', 'CC', 'CALENDAR', 'LOW', 'SKIP']);
     const retries = 2;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const result = await this.relevanceModel.generateContent(prompt);
         const text = result.response.text().replace(/```json\s*/gi, '').replace(/```/g, '').trim();
         const parsed = JSON.parse(text) as {
+          action?: string;
           relevant?: boolean;
           reason?: string;
           confidence?: number;
         };
+        const action = (parsed.action ?? '').toUpperCase();
+        if (VALID_ACTIONS.has(action)) {
+          const reason = typeof parsed.reason === 'string' ? `[${action}] ${parsed.reason.trim().slice(0, 500)}` : `[${action}]`;
+          return { relevant: action !== 'SKIP', reason, confidence: null };
+        }
         if (typeof parsed.relevant === 'boolean') {
           const confidence =
             typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)

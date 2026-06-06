@@ -108,11 +108,6 @@ export function looksLikeMeetingOrEventMail(msg: InboundNoiseFields): boolean {
   return weakSignalCount >= 2;
 }
 
-/** @deprecated Use looksLikeMeetingOrEventMail — kept for existing imports. */
-export function looksLikeCalendarNotification(msg: InboundNoiseFields): boolean {
-  return looksLikeMeetingOrEventMail(msg);
-}
-
 /**
  * Detects when the latest inbound message signals the conversation is closed/resolved
  * by the other party — e.g. "ticket closed", "issue resolved", "thanks, all good".
@@ -256,9 +251,6 @@ export function ingestSkipReasonForInboundNoise(
   if (!looksLikeInboundNoReplyNoise(msg, hasNoiseGmailLabel)) return null;
   return 'Promotional or marketing mail — not a customer reply thread.';
 }
-
-/** @deprecated Use PROMO_CONFIDENCE_THRESHOLD from relevance-prompt.builder */
-export const CONFIDENCE_PROMO_OVERRIDE_THRESHOLD = PROMO_CONFIDENCE_THRESHOLD;
 
 /**
  * Guardrail for false negatives: if Inbox AI says "irrelevant" but this looks like

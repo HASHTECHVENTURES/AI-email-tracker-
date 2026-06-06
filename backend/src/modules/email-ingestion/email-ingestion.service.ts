@@ -28,7 +28,7 @@ import {
   looksLikeDirectHumanMail,
   finalizeIngestRelevanceFromAi,
 } from './relevance-guards';
-import { RELEVANCE_MODEL_TEMPERATURE } from './relevance-prompt.builder';
+import { RELEVANCE_MODEL_TEMPERATURE, RELEVANCE_SYSTEM_INSTRUCTION } from './relevance-prompt.builder';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { getGeminiApiKeyFromEnv } from '../common/env';
 import {
@@ -147,6 +147,7 @@ export class EmailIngestionService {
       process.env.GEMINI_RELEVANCE_MODEL?.trim() || 'gemini-2.5-flash';
     this.relevanceModel = genAI.getGenerativeModel({
       model: modelName,
+      systemInstruction: RELEVANCE_SYSTEM_INSTRUCTION,
       generationConfig: {
         temperature: RELEVANCE_MODEL_TEMPERATURE,
         responseMimeType: 'application/json',
@@ -758,7 +759,7 @@ export class EmailIngestionService {
             employee.email,
             msg,
             threadMetaCache,
-            3,
+            2,
           );
         }
 
@@ -814,8 +815,13 @@ export class EmailIngestionService {
           continue;
         }
 
-        if (decision.reason) {
+        if (decision.aiAction && decision.reason) {
+          msg.relevanceReason = `[${decision.aiAction}] ${decision.reason}`;
+        } else if (decision.reason) {
           msg.relevanceReason = decision.reason;
+        }
+        if (decision.aiAction) {
+          msg.aiAction = decision.aiAction;
         }
 
         messages.push(msg);
@@ -948,6 +954,7 @@ export class EmailIngestionService {
     relevant: boolean;
     reason: string | null;
     confidence: number | null;
+    aiAction?: string;
   } | null> {
     if (!this.relevanceModel) return null;
 
@@ -955,25 +962,37 @@ export class EmailIngestionService {
       return null;
     }
 
+    const VALID_ACTIONS = new Set(['NEED_REPLY', 'CC', 'CALENDAR', 'LOW', 'SKIP']);
+
     const retries = 2;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const result = await this.relevanceModel.generateContent(prompt);
         const text = result.response.text().replace(/```json\s*/gi, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(text) as { relevant?: boolean; reason?: string; confidence?: number };
+        const parsed = JSON.parse(text) as { action?: string; relevant?: boolean; reason?: string; confidence?: number };
+
+        const action = (parsed.action ?? '').toUpperCase();
+        if (VALID_ACTIONS.has(action)) {
+          const relevant = action !== 'SKIP';
+          const reason = typeof parsed.reason === 'string' && parsed.reason.trim()
+            ? parsed.reason.trim().slice(0, 500)
+            : null;
+          this.logger.debug(`AI classify ${fromEmail}: ${action} — ${reason ?? ''}`);
+          return { relevant, reason, confidence: null, aiAction: action };
+        }
+
         if (typeof parsed.relevant === 'boolean') {
-          const reason =
-            typeof parsed.reason === 'string' && parsed.reason.trim()
-              ? parsed.reason.trim().slice(0, 500)
-              : null;
-          const confidence =
-            typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
-              ? Math.max(0, Math.min(1, parsed.confidence))
-              : null;
+          const reason = typeof parsed.reason === 'string' && parsed.reason.trim()
+            ? parsed.reason.trim().slice(0, 500)
+            : null;
+          const confidence = typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
+            ? Math.max(0, Math.min(1, parsed.confidence))
+            : null;
           this.logger.debug(`AI relevance for ${fromEmail}: ${parsed.relevant} — ${reason ?? ''}`);
           return { relevant: parsed.relevant, reason, confidence };
         }
-        this.logger.warn(`AI relevance JSON parse: missing relevant flag for ${fromEmail}`);
+
+        this.logger.warn(`AI relevance JSON parse: no valid action/relevant for ${fromEmail}`);
         return null;
       } catch (err) {
         const msg = (err as Error).message ?? String(err);
@@ -1015,6 +1034,7 @@ export class EmailIngestionService {
     relevant: boolean;
     reason: string | null;
     confidence: number | null;
+    aiAction?: string;
     inboundAiHardStop?: boolean;
     transientAiUnavailable?: boolean;
   }> {
@@ -1023,15 +1043,16 @@ export class EmailIngestionService {
         relevant: true,
         reason: 'Outbound — your sent message (reply detection / SLA)',
         confidence: 1,
+        aiAction: 'NEED_REPLY',
       };
     }
     const calendarIngest = ingestForceRelevantCalendarOrMeeting(target);
     if (calendarIngest) {
-      return calendarIngest;
+      return { ...calendarIngest, aiAction: 'CALENDAR' };
     }
     const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
     if (noiseSkip) {
-      return { relevant: false, reason: noiseSkip, confidence: 1 };
+      return { relevant: false, reason: noiseSkip, confidence: 1, aiAction: 'SKIP' };
     }
     if (allowGeminiRelevance && this.relevanceModel) {
       const sliceWithTarget = this.sortThreadChronological(
@@ -1052,6 +1073,7 @@ export class EmailIngestionService {
           relevant: finalized.relevant,
           reason: finalized.reason,
           confidence: finalized.confidence,
+          aiAction: parsed.aiAction,
         };
       }
       if (this.monthlyQuotaExhausted) {
@@ -1283,7 +1305,7 @@ export class EmailIngestionService {
             employee.email,
             msg,
             threadMetaCache,
-            3,
+            2,
           )
         : [msg];
     const decision = await this.classifyMessageForIngest(

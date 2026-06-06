@@ -28,6 +28,8 @@ const BASE_QUERY_FILTERS = [
   '-in:spam',
   '-in:trash',
   '-is:muted',
+  '-category:promotions',
+  '-category:social',
 ].join(' ');
 
 /** Gmail list query for inbox/sent incremental sync (shared by pagination + single-page fetch). */
