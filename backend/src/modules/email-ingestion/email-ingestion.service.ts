@@ -190,14 +190,18 @@ export class EmailIngestionService {
    * @param options.force Internal API only — run even when CEO turned mailbox crawl off.
    */
   async runIncrementalCycle(options?: { force?: boolean }): Promise<IngestionResult[]> {
-    const pre = await this.settingsService.getAll();
+    let pre = await this.settingsService.getAll();
 
     if (pre.api_quota_exhausted) {
-      this.logger.warn(
-        `\u{1F6D1} Ingestion cycle BLOCKED \u2014 API credits exhausted since ${pre.api_quota_exhausted_at ?? 'unknown'}. ` +
-          'All sync, storage, and alerts are halted. Reset via admin endpoint once credits are renewed.',
-      );
-      return [];
+      const recovered = await this.settingsService.tryAutoClearApiQuotaIfRenewed({ throttleMs: 90_000 });
+      if (!recovered) {
+        this.logger.warn(
+          `\u{1F6D1} Ingestion cycle BLOCKED \u2014 API credits exhausted since ${pre.api_quota_exhausted_at ?? 'unknown'}. ` +
+            'All sync, storage, and alerts are halted. Will auto-resume when Gemini accepts requests again.',
+        );
+        return [];
+      }
+      pre = await this.settingsService.getAll();
     }
 
     if (!pre.email_crawl_enabled && !options?.force) {
@@ -337,13 +341,18 @@ export class EmailIngestionService {
       throw new BadRequestException('At least one employee_id is required');
     }
 
-    const pre = await this.settingsService.getAll();
+    let pre = await this.settingsService.getAll();
 
     if (pre.api_quota_exhausted) {
-      this.logger.warn(
-        `\u{1F6D1} Scoped ingestion BLOCKED \u2014 API credits exhausted since ${pre.api_quota_exhausted_at ?? 'unknown'}. Reset via admin endpoint.`,
-      );
-      return [];
+      const recovered = await this.settingsService.tryAutoClearApiQuotaIfRenewed({ throttleMs: 90_000 });
+      if (!recovered) {
+        this.logger.warn(
+          `\u{1F6D1} Scoped ingestion BLOCKED \u2014 API credits exhausted since ${pre.api_quota_exhausted_at ?? 'unknown'}. ` +
+            'Will auto-resume when Gemini accepts requests again.',
+        );
+        return [];
+      }
+      pre = await this.settingsService.getAll();
     }
 
     if (pre.email_ai_relevance_enabled && !this.relevanceModel) {

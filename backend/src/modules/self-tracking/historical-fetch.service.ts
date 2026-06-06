@@ -131,10 +131,13 @@ export class HistoricalFetchService {
     options?: { abortSignal?: AbortSignal; createdByUserId?: string },
   ): Promise<HistoricalFetchResult> {
     if (await this.settingsService.isApiQuotaExhausted()) {
-      throw new BadRequestException(
-        'API credits are exhausted — all operations are halted (sync, storage, alerts). ' +
-          'Historical search is not available until credits are renewed and the quota flag is reset by an admin.',
-      );
+      const recovered = await this.settingsService.tryAutoClearApiQuotaIfRenewed({ throttleMs: 90_000 });
+      if (!recovered) {
+        throw new BadRequestException(
+          'API credits are exhausted — all operations are halted (sync, storage, alerts). ' +
+            'Sync will resume automatically when Google AI Studio accepts requests again.',
+        );
+      }
     }
 
     this.monthlyQuotaExhausted = false;

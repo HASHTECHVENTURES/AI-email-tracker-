@@ -56,7 +56,7 @@ export class SettingsController {
     return { status: 'ok' };
   }
 
-  /** CEO only: clear the API quota exhausted flag after credits are renewed. */
+  /** Platform admin only: clear the API quota exhausted flag (emergency override). */
   @Post('reset-api-quota')
   async resetApiQuota(@Req() req: Request) {
     const ctx = getRequestContext(req);

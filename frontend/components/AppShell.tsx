@@ -26,7 +26,7 @@ type AppShellProps = {
    * My Email: before the user links Gmail, show a neutral strip instead of red «Sync issue».
    * Other pages omit (default) and keep In sync / Sync issue from `isActive`.
    */
-  syncStripKind?: 'default' | 'gmail_not_linked';
+  syncStripKind?: 'default' | 'gmail_not_linked' | 'api_quota_exhausted';
   aiBriefingsEnabled?: boolean;
   mailboxCrawlEnabled?: boolean;
   onRefresh?: () => void;
@@ -103,14 +103,16 @@ function ShellStatusStrip({
 }: {
   mailboxCrawlEnabled?: boolean;
   isActive: boolean;
-  syncStripKind?: 'default' | 'gmail_not_linked';
+  syncStripKind?: 'default' | 'gmail_not_linked' | 'api_quota_exhausted';
   aiBriefingsEnabled?: boolean;
   lastSyncLabel?: string | null;
   nextIngestionCountdownLabel?: string | null;
   onRefresh?: () => void;
 }) {
   const strip =
-    mailboxCrawlEnabled === false
+    syncStripKind === 'api_quota_exhausted'
+      ? { dot: 'bg-red-500 animate-pulse', text: 'API halted' as const }
+      : mailboxCrawlEnabled === false
       ? { dot: 'bg-slate-300', text: 'Sync paused' as const }
       : syncStripKind === 'gmail_not_linked'
         ? { dot: 'bg-slate-400', text: 'Sync paused' as const }

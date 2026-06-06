@@ -106,7 +106,6 @@ export default function SettingsPage() {
   const [diagError, setDiagError] = useState<string | null>(null);
   const [purgeLegacyLoading, setPurgeLegacyLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
-  const [resetQuotaLoading, setResetQuotaLoading] = useState(false);
   const [platformAdmin, setPlatformAdmin] = useState(false);
   /** Avoids showing master toggles as OFF before GET /settings returns (was a visible flash). */
   const [settingsLoadState, setSettingsLoadState] = useState<'pending' | 'ready' | 'failed'>('pending');
@@ -363,25 +362,6 @@ export default function SettingsPage() {
     }
   }
 
-  async function resetApiQuota() {
-    if (!me || me.role !== 'CEO' || !token) return;
-    setError(null);
-    setNotice(null);
-    setResetQuotaLoading(true);
-    try {
-      const res = await apiFetch('/settings/reset-api-quota', token, { method: 'POST' });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { message?: string };
-        setError(body.message || 'Failed to reset API quota');
-        return;
-      }
-      setNotice('API quota flag cleared — sync and alerts will resume on the next cycle.');
-      await load(token);
-    } finally {
-      setResetQuotaLoading(false);
-    }
-  }
-
   if (!me || authLoading) {
     return (
       <AppShell
@@ -533,21 +513,9 @@ export default function SettingsPage() {
               : ''}
           </p>
           <p className="mt-1 text-sm text-red-700">
-            No new emails will be fetched, stored, or processed until credits are renewed and this flag is reset.
+            Top up Google AI Studio when ready — sync, storage, and alerts resume automatically within about a
+            minute. Nothing to configure here.
           </p>
-          {isCeo && (
-            <button
-              type="button"
-              onClick={() => void resetApiQuota()}
-              disabled={resetQuotaLoading}
-              className="mt-3 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
-            >
-              {resetQuotaLoading ? 'Resetting…' : 'Reset API Quota Flag'}
-            </button>
-          )}
-          {!isCeo && (
-            <p className="mt-2 text-xs text-red-600">Contact your CEO or admin to reset this flag after renewing API credits.</p>
-          )}
         </section>
       )}
 

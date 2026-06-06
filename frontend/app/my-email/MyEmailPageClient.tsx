@@ -336,6 +336,8 @@ type RuntimeStatus = {
   nextIngestionAt?: string | null;
   secondsUntilNextIngestion?: number | null;
   ingestionIntervalSeconds?: number;
+  apiQuotaExhausted?: boolean;
+  apiQuotaExhaustedAt?: string | null;
 };
 
 /** Parallel DELETEs (bounded) — faster than strict sequential; progress still updates per completion. */
@@ -1417,7 +1419,7 @@ function buildLiveMailCountdownCopy(opts: {
   liveIngestAwaitingServer: boolean;
   liveSyncStartedAtMs: number | null;
   awaitingAfterRun: boolean;
-}): { headline: string; detail: string; tone: 'active' | 'wait' | 'idle' } {
+}): { headline: string; detail: string; tone: 'active' | 'wait' | 'idle' | 'halted' } {
   const {
     nowMs,
     runtime,
@@ -1427,6 +1429,20 @@ function buildLiveMailCountdownCopy(opts: {
     liveSyncStartedAtMs,
     awaitingAfterRun,
   } = opts;
+
+  if (runtime?.apiQuotaExhausted) {
+    const since =
+      runtime.apiQuotaExhaustedAt != null
+        ? ` Flagged since ${new Date(runtime.apiQuotaExhaustedAt).toLocaleString()}.`
+        : '';
+    return {
+      tone: 'halted',
+      headline: 'Automatic Gmail checks stopped — API credits exhausted',
+      detail:
+        `All sync, storage, and alerts are paused.${since} ` +
+        'When you top up Google AI Studio, everything resumes on its own — usually within about a minute.',
+    };
+  }
 
   const serverRunning = runtime?.ingestionRunning === true;
   const active = syncBusy || liveIngestAwaitingServer || serverRunning || awaitingAfterRun;
@@ -1665,7 +1681,9 @@ function CeoLiveSyncStrip({
       <div
         aria-live="polite"
         className={`mb-4 rounded-xl border px-3 py-2.5 text-xs leading-relaxed ${
-          liveCountdown.tone === 'active'
+          liveCountdown.tone === 'halted'
+            ? 'border-red-200 bg-red-50/95 text-red-950'
+            : liveCountdown.tone === 'active'
             ? 'border-violet-200 bg-violet-50/90 text-violet-950'
             : liveCountdown.tone === 'wait'
               ? 'border-sky-200 bg-sky-50/90 text-sky-950'
@@ -4623,9 +4641,18 @@ function MyEmailPageInner() {
       userDisplayName={me.full_name?.trim() || me.email}
       title={pageTitle}
       subtitle={shellSubtitle}
-      isActive={headerInboxGmailConnected}
+      isActive={headerInboxGmailConnected && !liveRuntime?.apiQuotaExhausted}
+      syncStripKind={
+        liveRuntime?.apiQuotaExhausted
+          ? 'api_quota_exhausted'
+          : headerInboxGmailConnected
+            ? 'default'
+            : 'gmail_not_linked'
+      }
       mailboxCrawlEnabled={
-        liveRuntime == null ? undefined : liveRuntime.nextIngestionAt != null
+        liveRuntime == null
+          ? undefined
+          : !liveRuntime.apiQuotaExhausted && liveRuntime.nextIngestionAt != null
       }
       lastSyncLabel={headerOwnInboxLastSyncLabel}
       onSignOut={() => void ctxSignOut()}
@@ -4823,6 +4850,21 @@ function MyEmailPageInner() {
           </div>
         </div>
       )}
+      {liveRuntime?.apiQuotaExhausted ? (
+        <div
+          role="alert"
+          className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+        >
+          <p className="font-semibold">API credits exhausted — all operations halted</p>
+          <p className="mt-1 text-xs leading-relaxed text-red-700">
+            Sync, storage, and alerts are paused. Top up Google AI Studio when ready — everything resumes
+            automatically, usually within about a minute.
+            {liveRuntime.apiQuotaExhaustedAt
+              ? ` Paused since ${new Date(liveRuntime.apiQuotaExhaustedAt).toLocaleString()}.`
+              : ''}
+          </p>
+        </div>
+      ) : null}
       {error && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
@@ -4897,7 +4939,7 @@ function MyEmailPageInner() {
                       syncBusy={liveSyncBusy}
                       runtime={liveRuntime}
                       scheduleReady={liveRuntime != null}
-                      canManualSync={canRunMyMailboxSync}
+                      canManualSync={canRunMyMailboxSync && !liveRuntime?.apiQuotaExhausted}
                       recentManualSyncAtMs={liveSyncAwaitingTimestamp}
                       liveIngestAwaitingServer={liveIngestAwaitingServer}
                       liveSyncStartedAtMs={liveSyncStartedAtMs}

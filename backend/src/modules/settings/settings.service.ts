@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { isGeminiEnvConfigured } from '../common/env';
+import { probeGeminiQuotaAvailable } from '../common/gemini-quota-probe';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 
 const INGESTION_CRON_INTERVAL_SECONDS = 120;
@@ -54,7 +55,7 @@ export interface SystemSettings {
   /**
    * Hard stop: set to true when Gemini API quota/credits are exhausted.
    * While true, ALL operations halt: sync, email storage, alerts, Telegram, historical fetch.
-   * Must be manually reset via the admin endpoint once credits are renewed.
+   * Must be manually reset via the platform admin endpoint only (emergency). Normally auto-clears when Gemini accepts requests.
    */
   api_quota_exhausted: boolean;
   /** ISO timestamp when api_quota_exhausted was last set to true. */
@@ -175,6 +176,39 @@ export class SettingsService {
     this.logger.log('✅ API quota exhausted flag cleared — operations will resume on next cycle.');
   }
 
+  /**
+   * When the quota gate is set, ping Gemini. If credits were renewed, clear the gate automatically.
+   * Runs from ingestion cron and from GET /settings/runtime (throttled) — no manual reset required.
+   */
+  async tryAutoClearApiQuotaIfRenewed(opts?: { throttleMs?: number }): Promise<boolean> {
+    if (!(await this.isApiQuotaExhausted())) return false;
+
+    if (opts?.throttleMs != null && opts.throttleMs > 0) {
+      const { data } = await this.supabase
+        .from('system_settings')
+        .select('value')
+        .eq('key', 'api_quota_last_probe_at')
+        .maybeSingle();
+      const last = (data as { value?: string } | null)?.value?.trim();
+      if (last) {
+        const elapsed = Date.now() - Date.parse(last);
+        if (Number.isFinite(elapsed) && elapsed < opts.throttleMs) return false;
+      }
+      await this.set('api_quota_last_probe_at', new Date().toISOString());
+    }
+
+    const probe = await probeGeminiQuotaAvailable();
+    if (probe === 'ok') {
+      await this.resetApiQuotaExhausted();
+      this.logger.log('✅ Gemini probe succeeded — API quota flag auto-cleared (credits renewed).');
+      return true;
+    }
+    if (probe === 'quota') {
+      this.logger.debug('Gemini probe still reports quota exhausted — gate unchanged.');
+    }
+    return false;
+  }
+
   async set(key: string, value: string): Promise<void> {
     const { error } = await this.supabase
       .from('system_settings')
@@ -286,12 +320,18 @@ export class SettingsService {
 
     const lastFinished = map.get('last_ingestion_finished_at') ?? null;
 
+    let apiQuotaExhausted = map.get('api_quota_exhausted') === 'true';
+    if (apiQuotaExhausted) {
+      const cleared = await this.tryAutoClearApiQuotaIfRenewed({ throttleMs: 60_000 });
+      if (cleared) apiQuotaExhausted = false;
+    }
+
     const cronDisabled = process.env.DISABLE_INGESTION_CRON === 'true';
     const emailCrawlOn = map.get('email_crawl_enabled') !== 'false';
     const serverNow = Date.now();
     let nextIngestionAt: string | null = null;
     let secondsUntilNextIngestion: number | null = null;
-    if (!cronDisabled && emailCrawlOn) {
+    if (!cronDisabled && emailCrawlOn && !apiQuotaExhausted) {
       const nextMs = getNextUtcIngestionCronAfter(serverNow);
       nextIngestionAt = new Date(nextMs).toISOString();
       secondsUntilNextIngestion = Math.max(0, Math.ceil((nextMs - serverNow) / 1000));
@@ -323,7 +363,7 @@ export class SettingsService {
       lastReportAt,
       nextReportAt,
       secondsUntilNextReport,
-      apiQuotaExhausted: map.get('api_quota_exhausted') === 'true',
+      apiQuotaExhausted,
       apiQuotaExhaustedAt: map.get('api_quota_exhausted_at')?.trim() || null,
     };
   }
