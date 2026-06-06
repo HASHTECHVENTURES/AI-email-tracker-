@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/Users/sujalpatel/Documents/Automation Email "
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT/frontend"
 
 # Ensure dependencies exist (no-op if already installed)
@@ -11,5 +11,4 @@ fi
 
 # Build once (fast on subsequent runs), then run like a server on 3001
 npm run build
-exec npm run start:server
-
+exec npm run start

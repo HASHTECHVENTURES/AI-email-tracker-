@@ -5,17 +5,18 @@
     <key>Label</key>
     <string>com.followupmonitor.ingestion</string>
 
-    <key>ProgramArguments</key>
-    <array>
-      <string>/usr/bin/curl</string>
-      <string>-fsS</string>
-      <string>-H</string>
-      <string>x-api-key: 5e4093553cbd0141ea7a929b0479f108e7a02665793c422f1be2151e5d1cb1a0</string>
-      <string>http://127.0.0.1:3000/email-ingestion/run</string>
-    </array>
+		<key>ProgramArguments</key>
+		<array>
+			<string>/bin/bash</string>
+			<string>/Users/sujalpatel/Documents/AI EMAIL SUMMARY /scripts/run-ingestion-once.sh</string>
+		</array>
 
-    <key>RunAtLoad</key>
-    <true/>
+		<!-- Disabled by default: backend Nest cron already runs live sync every 2 minutes. -->
+		<key>Disabled</key>
+		<true/>
+
+		<key>RunAtLoad</key>
+		<false/>
 
     <!-- Every 2 minutes -->
     <key>StartInterval</key>
@@ -27,4 +28,3 @@
     <string>/Users/sujalpatel/Library/Logs/followupmonitor-ingestion.err.log</string>
   </dict>
 </plist>
-

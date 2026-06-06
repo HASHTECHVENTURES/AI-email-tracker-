@@ -6,10 +6,10 @@
     <string>com.followupmonitor.frontend</string>
 
     <key>ProgramArguments</key>
-    <array>
-      <string>/bin/bash</string>
-      <string>/Users/sujalpatel/Documents/Automation Email /scripts/start-frontend.sh</string>
-    </array>
+		<array>
+			<string>/bin/bash</string>
+			<string>/Users/sujalpatel/Library/Application Support/followupmonitor/scripts/start-frontend.sh</string>
+		</array>
 
     <key>RunAtLoad</key>
     <true/>
@@ -17,10 +17,17 @@
     <key>KeepAlive</key>
     <true/>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      <key>FOLLOWUPMONITOR_REPO</key>
+      <string>/Users/sujalpatel/Documents/AI EMAIL SUMMARY </string>
+    </dict>
+
     <key>StandardOutPath</key>
     <string>/Users/sujalpatel/Library/Logs/followupmonitor-frontend.log</string>
     <key>StandardErrorPath</key>
     <string>/Users/sujalpatel/Library/Logs/followupmonitor-frontend.err.log</string>
   </dict>
 </plist>
-

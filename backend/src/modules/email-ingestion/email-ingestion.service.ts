@@ -593,6 +593,7 @@ export class EmailIngestionService {
      */
     const messageIds: string[] = [];
     const idSeen = new Set<string>();
+    const zeroCursorFallbackIds = new Set<string>();
     const pushIds = (ids: string[]) => {
       for (const id of ids) {
         if (!idSeen.has(id)) {
@@ -647,6 +648,9 @@ export class EmailIngestionService {
         pageToken: null,
       });
       pushIds(fallback.ids);
+      for (const id of fallback.ids) {
+        zeroCursorFallbackIds.add(id);
+      }
       if (fallback.ids.length > 0) {
         this.logger.log(
           `Zero-id cursor fallback recovered ${fallback.ids.length} recent message(s) for ${employee.name}`,
@@ -683,7 +687,6 @@ export class EmailIngestionService {
     const affectedThreads = new Set<string>();
     let skippedFiltered = 0;
     let skippedFromExistingBeforeTracking = 0;
-    let retriedFromAiSkip = 0;
     let skippedFromExistingUnknown = 0;
     let skippedBeforeTrackingWindow = 0;
     let skippedByAiDecision = 0;
@@ -691,6 +694,9 @@ export class EmailIngestionService {
     let abortedInboundAi: string | null = null;
 
     for (const msgId of messageIds) {
+      if (zeroCursorFallbackIds.has(msgId) && (await this.messageAlreadyHandled(employee.id, msgId))) {
+        continue;
+      }
       if (await this.messageInDatabase(employee.id, msgId)) continue;
 
       const skipKind = await this.getRecordedSkipKind(employee.id, msgId);
@@ -703,12 +709,8 @@ export class EmailIngestionService {
         if (outboundPeek) {
           await this.clearIngestionSkip(employee.id, msgId);
         } else if (skipKind === 'ai_irrelevant') {
-          /**
-           * Re-evaluate previously AI-skipped inbound messages with the latest classifier/guardrails.
-           * Without this, historical false negatives stay hidden forever unless manually cleared.
-           */
-          await this.clearIngestionSkip(employee.id, msgId);
-          retriedFromAiSkip += 1;
+          skippedFromExistingUnknown += 1;
+          continue;
         } else {
           if (skipKind === 'before_tracking') skippedFromExistingBeforeTracking += 1;
           else skippedFromExistingUnknown += 1;
