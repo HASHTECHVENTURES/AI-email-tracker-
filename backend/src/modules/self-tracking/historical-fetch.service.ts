@@ -25,6 +25,10 @@ import { SettingsService } from '../settings/settings.service';
 import { CompanyPolicyService } from '../company-policy/company-policy.service';
 import { EmailMessage } from '../common/types';
 import { getGeminiApiKeyFromEnv } from '../common/env';
+import {
+  isGeminiMonthlyQuotaExhausted,
+  isGeminiTransientRateLimit,
+} from '../common/gemini-quota-probe';
 import { RequestContext } from '../common/request-context';
 import type { ConversationListItem } from '../dashboard/dashboard.service';
 import { SelfTrackingService } from './self-tracking.service';
@@ -651,19 +655,20 @@ export class HistoricalFetchService {
         return null;
       } catch (err) {
         const msg = (err as Error).message ?? String(err);
-        const is429 = /\b429\b|quota|Quota|rate|Rate|resource_exhausted/i.test(msg);
-        if (is429) {
+        if (isGeminiMonthlyQuotaExhausted(msg)) {
           this.monthlyQuotaExhausted = true;
           void this.settingsService.setApiQuotaExhausted();
           this.logger.error(
-            `Gemini API quota/credits exhausted — ALL operations halted (sync, storage, alerts). ${msg.slice(0, 200)}`,
+            `Gemini monthly spend cap reached — ALL operations halted. ${msg.slice(0, 200)}`,
           );
           return null;
         }
-        if (attempt < retries && !is429) {
-          const backoff = 400 * Math.pow(2, attempt);
+        if (attempt < retries) {
+          const backoff = isGeminiTransientRateLimit(msg)
+            ? 2000 * Math.pow(2, attempt)
+            : 400 * Math.pow(2, attempt);
           this.logger.warn(
-            `Historical Gemini relevance failed (attempt ${attempt + 1}/${retries}) — retry in ${backoff}ms: ${msg.slice(0, 200)}`,
+            `Historical Gemini relevance failed (attempt ${attempt + 1}/${retries + 1}) — retry in ${backoff}ms: ${msg.slice(0, 200)}`,
           );
           await new Promise((r) => setTimeout(r, backoff));
           continue;

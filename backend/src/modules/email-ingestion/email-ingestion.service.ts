@@ -32,6 +32,10 @@ import { RELEVANCE_MODEL_TEMPERATURE, RELEVANCE_SYSTEM_INSTRUCTION } from './rel
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { getGeminiApiKeyFromEnv } from '../common/env';
 import {
+  isGeminiMonthlyQuotaExhausted,
+  isGeminiTransientRateLimit,
+} from '../common/gemini-quota-probe';
+import {
   isMigration026ColumnError,
   stripEmailIngestionSkips026Fields,
   stripEmployees026Fields,
@@ -997,21 +1001,22 @@ export class EmailIngestionService {
         return null;
       } catch (err) {
         const msg = (err as Error).message ?? String(err);
-        const is429 = /\b429\b|quota|Quota|rate|Rate|resource_exhausted/i.test(msg);
 
-        if (is429) {
+        if (isGeminiMonthlyQuotaExhausted(msg)) {
           this.monthlyQuotaExhausted = true;
           void this.settingsService.setApiQuotaExhausted();
           this.logger.error(
-            `Gemini API quota/credits exhausted — ALL operations halted (sync, storage, alerts). ${msg.slice(0, 200)}`,
+            `Gemini monthly spend cap reached — ALL operations halted. ${msg.slice(0, 200)}`,
           );
           return null;
         }
 
-        if (attempt < retries && !is429) {
-          const backoff = 400 * Math.pow(2, attempt);
+        if (attempt < retries) {
+          const backoff = isGeminiTransientRateLimit(msg)
+            ? 2000 * Math.pow(2, attempt)
+            : 400 * Math.pow(2, attempt);
           this.logger.warn(
-            `Gemini inbox relevance failed (attempt ${attempt + 1}/${retries}) — retry in ${backoff}ms: ${msg.slice(0, 200)}`,
+            `Gemini inbox relevance failed (attempt ${attempt + 1}/${retries + 1}) — retry in ${backoff}ms: ${msg.slice(0, 200)}`,
           );
           await new Promise((r) => setTimeout(r, backoff));
           continue;
