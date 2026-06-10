@@ -120,6 +120,7 @@ export class SettingsService {
     }
 
     const map = new Map((data ?? []).map((r: { key: string; value: string }) => [r.key, r.value]));
+    await this.clearStaleApiQuotaFlagIfNeeded(map);
     const mode = (map.get('ai_mode') ?? 'AUTO').toUpperCase() as AiMode;
     const validModes: AiMode[] = ['AUTO', 'MANUAL', 'OFF'];
     const rawSla = Number(map.get('default_sla_hours') ?? '24');
@@ -136,8 +137,8 @@ export class SettingsService {
       email_crawl_team_mailboxes_enabled: map.get('email_crawl_team_mailboxes_enabled') !== 'false',
       email_crawl_employee_mailboxes_enabled: map.get('email_crawl_employee_mailboxes_enabled') !== 'false',
       default_sla_hours,
-      api_quota_exhausted: map.get('api_quota_exhausted') === 'true',
-      api_quota_exhausted_at: map.get('api_quota_exhausted_at')?.trim() || null,
+      api_quota_exhausted: false,
+      api_quota_exhausted_at: null,
     };
   }
 
@@ -147,33 +148,33 @@ export class SettingsService {
     return s.default_sla_hours;
   }
 
-  async isApiQuotaExhausted(): Promise<boolean> {
-    const s = await this.getAll();
-    return s.api_quota_exhausted;
-  }
-
   /**
-   * Persist that the Gemini API quota/credits are exhausted.
-   * Halts all sync, storage, alerts, and notifications until manually reset.
+   * Global API halt is disabled — it caused false positives (rate limits froze all users).
+   * Sync always continues; individual Gemini calls fail gracefully per-mail.
    */
-  async setApiQuotaExhausted(): Promise<void> {
-    const already = await this.isApiQuotaExhausted();
-    if (already) return;
-    await this.setMany([
-      { key: 'api_quota_exhausted', value: 'true' },
-      { key: 'api_quota_exhausted_at', value: new Date().toISOString() },
-    ]);
-    this.logger.error(
-      '🛑 API quota exhausted — ALL operations halted (sync, storage, alerts). Reset via admin endpoint when credits are renewed.',
-    );
+  async isApiQuotaExhausted(): Promise<boolean> {
+    return false;
   }
 
-  /** Admin action: clear the quota-exhausted flag after credits are renewed. */
+  /** No-op — global halt disabled to prevent false freezes. */
+  async setApiQuotaExhausted(): Promise<void> {
+    this.logger.debug('setApiQuotaExhausted ignored (global halt disabled)');
+  }
+
+  /** Clear any stale halt flag left in the database. */
   async resetApiQuotaExhausted(): Promise<void> {
     await this.setMany([
       { key: 'api_quota_exhausted', value: 'false' },
+      { key: 'api_quota_exhausted_at', value: '' },
     ]);
-    this.logger.log('✅ API quota exhausted flag cleared — operations will resume on next cycle.');
+    this.logger.log('✅ API quota exhausted flag cleared.');
+  }
+
+  /** Self-heal stale halt flags written before global halt was disabled. */
+  private async clearStaleApiQuotaFlagIfNeeded(map: Map<string, string>): Promise<void> {
+    if (map.get('api_quota_exhausted') === 'true') {
+      await this.resetApiQuotaExhausted();
+    }
   }
 
   /**
@@ -320,18 +321,14 @@ export class SettingsService {
 
     const lastFinished = map.get('last_ingestion_finished_at') ?? null;
 
-    let apiQuotaExhausted = map.get('api_quota_exhausted') === 'true';
-    if (apiQuotaExhausted) {
-      const cleared = await this.tryAutoClearApiQuotaIfRenewed({ throttleMs: 60_000 });
-      if (cleared) apiQuotaExhausted = false;
-    }
+    await this.clearStaleApiQuotaFlagIfNeeded(map);
 
     const cronDisabled = process.env.DISABLE_INGESTION_CRON === 'true';
     const emailCrawlOn = map.get('email_crawl_enabled') !== 'false';
     const serverNow = Date.now();
     let nextIngestionAt: string | null = null;
     let secondsUntilNextIngestion: number | null = null;
-    if (!cronDisabled && emailCrawlOn && !apiQuotaExhausted) {
+    if (!cronDisabled && emailCrawlOn) {
       const nextMs = getNextUtcIngestionCronAfter(serverNow);
       nextIngestionAt = new Date(nextMs).toISOString();
       secondsUntilNextIngestion = Math.max(0, Math.ceil((nextMs - serverNow) / 1000));
@@ -363,8 +360,8 @@ export class SettingsService {
       lastReportAt,
       nextReportAt,
       secondsUntilNextReport,
-      apiQuotaExhausted,
-      apiQuotaExhaustedAt: map.get('api_quota_exhausted_at')?.trim() || null,
+      apiQuotaExhausted: false,
+      apiQuotaExhaustedAt: null,
     };
   }
 
