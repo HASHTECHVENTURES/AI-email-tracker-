@@ -32,6 +32,15 @@ const BASE_QUERY_FILTERS = [
   '-category:social',
 ].join(' ');
 
+/**
+ * Recent inbox-only head poll — no Promotions/Social exclusion so misfiled client mail still syncs.
+ * Merged ahead of the main list in live ingest; AI/heuristics filter noise after fetch.
+ */
+export function buildGmailRecentInboxHeadQuery(afterTimestamp: Date): string {
+  const epochSeconds = Math.floor(afterTimestamp.getTime() / 1000);
+  return `in:inbox -in:spam -in:trash -is:muted after:${epochSeconds}`;
+}
+
 /** Gmail list query for inbox/sent incremental sync (shared by pagination + single-page fetch). */
 export function buildGmailInboxListQuery(afterTimestamp: Date | null): string {
   const parts: string[] = [BASE_QUERY_FILTERS];

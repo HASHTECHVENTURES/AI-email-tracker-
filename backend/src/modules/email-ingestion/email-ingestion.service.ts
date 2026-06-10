@@ -19,6 +19,7 @@ import type { gmail_v1 } from 'googleapis';
 import {
   buildGmailHistoricalWindowQuery,
   buildGmailInboxListQuery,
+  buildGmailRecentInboxHeadQuery,
   GmailService,
 } from './gmail.service';
 import { buildSharedIngestRelevancePrompt } from './relevance-prompt.builder';
@@ -87,11 +88,27 @@ export interface MailFetchProbeResult {
 const GMAIL_LIST_PAGE_SIZE_DEFAULT = 200;
 /** How many messages.list pages to walk in one ingestion run (then cron continues). Speeds backfill. */
 const GMAIL_LIST_MAX_PAGES_DEFAULT = 6;
+/** Max new messages per mailbox that need a full fetch + AI classify per cron run (fairness across team). */
+const CLASSIFY_PER_EMPLOYEE_PER_RUN_DEFAULT = 20;
+/** Recent inbox head poll window (days) — includes Promotions/Social misfiles. Set 0 to disable. */
+const RECENT_INBOX_HEAD_DAYS_DEFAULT = 3;
 /**
  * Cap stored plain-text body size (~2MB) for pathological messages. We still persist the full Gmail-derived
  * body below this limit (HTML→text); older builds truncated at 2k chars — re-run sync to refresh rows.
  */
 const MAX_STORED_EMAIL_BODY_CHARS = 2_000_000;
+
+/** SELF mailboxes first; among peers, stalest `last_synced_at` first so team inboxes are not starved. */
+function sortEmployeesForIngestion(employees: Employee[]): void {
+  employees.sort((a, b) => {
+    const aIsSelf = a.mailboxType === 'SELF' ? 0 : 1;
+    const bIsSelf = b.mailboxType === 'SELF' ? 0 : 1;
+    if (aIsSelf !== bIsSelf) return aIsSelf - bIsSelf;
+    const aSync = a.lastSyncedAt ? new Date(a.lastSyncedAt).getTime() : 0;
+    const bSync = b.lastSyncedAt ? new Date(b.lastSyncedAt).getTime() : 0;
+    return aSync - bSync;
+  });
+}
 
 function clipStoredBody(bodyText: string | undefined): string {
   const t = bodyText ?? '';
@@ -259,11 +276,7 @@ export class EmailIngestionService {
           continue;
         }
         const employees = await this.employeesService.listActive(companyId);
-        employees.sort((a, b) => {
-          const aIsSelf = a.mailboxType === 'SELF' ? 0 : 1;
-          const bIsSelf = b.mailboxType === 'SELF' ? 0 : 1;
-          return aIsSelf - bIsSelf;
-        });
+        sortEmployeesForIngestion(employees);
 
         for (const employee of employees) {
           const hasOAuth = await this.oauthTokenService.hasToken(employee.id);
@@ -627,6 +640,31 @@ export class EmailIngestionService {
       `[ingest-debug] gmail-list mailbox=${employee.email} ids=${messageIds.length} pages=${pagesFetched} hasNext=${nextPageToken ? 'yes' : 'no'} resumed=${resumeToken ? 'yes' : 'no'} queryAfter=${listAfterDate.toISOString()}`,
     );
 
+    const recentHeadDaysRaw = Number(
+      process.env.INGEST_RECENT_INBOX_HEAD_DAYS ?? String(RECENT_INBOX_HEAD_DAYS_DEFAULT),
+    );
+    const recentHeadDays = Number.isFinite(recentHeadDaysRaw)
+      ? Math.min(Math.max(recentHeadDaysRaw, 0), 14)
+      : RECENT_INBOX_HEAD_DAYS_DEFAULT;
+    if (recentHeadDays > 0) {
+      const headAfterMs = Math.max(
+        listAfterDate.getTime(),
+        Date.now() - recentHeadDays * 86_400_000,
+      );
+      const headQuery = buildGmailRecentInboxHeadQuery(new Date(headAfterMs));
+      const headPoll = await this.gmailService.listMessageIdsPage(employee.id, headQuery, {
+        maxResults: Math.min(80, listMaxResults),
+        pageToken: null,
+      });
+      const beforeHead = messageIds.length;
+      pushIds(headPoll.ids);
+      if (messageIds.length > beforeHead) {
+        this.logger.log(
+          `Recent inbox head poll added ${messageIds.length - beforeHead} id(s) for ${employee.name} (includes Promotions/Social)`,
+        );
+      }
+    }
+
     if (messageIds.length === 0 && !nextPageToken) {
       /**
        * Safety fallback: Gmail indexing / cursor timing can occasionally return no IDs
@@ -683,6 +721,15 @@ export class EmailIngestionService {
     let skippedByAiDecision = 0;
     let batchLatestSent: Date | null = null;
     let abortedInboundAi: string | null = null;
+    const maxClassifyRaw = Number(
+      process.env.INGEST_MAX_CLASSIFY_PER_EMPLOYEE_PER_RUN ??
+        String(CLASSIFY_PER_EMPLOYEE_PER_RUN_DEFAULT),
+    );
+    const maxClassifyPerRun = Number.isFinite(maxClassifyRaw)
+      ? Math.min(Math.max(maxClassifyRaw, 1), 200)
+      : CLASSIFY_PER_EMPLOYEE_PER_RUN_DEFAULT;
+    let classifyCountThisRun = 0;
+    let deferredByClassifyCap = 0;
 
     for (const msgId of messageIds) {
       if (zeroCursorFallbackIds.has(msgId) && (await this.messageAlreadyHandled(employee.id, msgId))) {
@@ -708,6 +755,12 @@ export class EmailIngestionService {
           continue;
         }
       }
+
+      if (classifyCountThisRun >= maxClassifyPerRun) {
+        deferredByClassifyCap += 1;
+        continue;
+      }
+      classifyCountThisRun += 1;
 
       try {
         const msg = await this.gmailService.fetchFullMessage(employee.id, employee.email, msgId);
@@ -811,6 +864,11 @@ export class EmailIngestionService {
       } catch (err) {
         this.logger.warn(`Failed to fetch message ${msgId}: ${(err as Error).message}`);
       }
+    }
+    if (deferredByClassifyCap > 0) {
+      this.logger.log(
+        `[ingest] ${employee.email}: deferred ${deferredByClassifyCap} message(s) to next cycle (cap ${maxClassifyPerRun}/run)`,
+      );
     }
     this.logger.log(
       `[ingest-debug] decision mailbox=${employee.email} considered=${messageIds.length} stored=${messages.length} skipped=${skippedFiltered} affectedThreads=${affectedThreads.size}`,

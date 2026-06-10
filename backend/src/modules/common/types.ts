@@ -23,6 +23,8 @@ export interface Employee {
   startTrackingAt?: string | null;
   /** `SELF` = CEO/manager self-tracking inbox; `TEAM` / null = org directory mailbox */
   mailboxType?: 'SELF' | 'TEAM' | null;
+  /** Last successful Gmail ingest for this mailbox (used to prioritize stale team inboxes in cron). */
+  lastSyncedAt?: string | null;
 }
 
 export interface EmailMessage {

@@ -23,8 +23,11 @@ type TrackedMailboxCardProps = {
   onConnectGmail: () => void;
   onRemove: () => void;
   onTogglePause?: (paused: boolean) => void;
+  /** CEO team view: pull Gmail for this mailbox immediately. */
+  onSyncNow?: () => void;
   removing: boolean;
   togglePauseLoading?: boolean;
+  syncLoading?: boolean;
   hideReconnectWhenConnected?: boolean;
 };
 
@@ -34,8 +37,10 @@ export function TrackedMailboxCard({
   onConnectGmail,
   onRemove,
   onTogglePause,
+  onSyncNow,
   removing,
   togglePauseLoading = false,
+  syncLoading = false,
   hideReconnectWhenConnected = false,
 }: TrackedMailboxCardProps) {
   const isOn = mb.tracking_paused !== true && mb.gmail_connected === true;
@@ -111,22 +116,33 @@ export function TrackedMailboxCard({
       ) : null}
 
       {mb.gmail_connected ? (
-        <p className="mt-3 border-t border-slate-100 pt-2 text-[10px] leading-snug text-slate-500">
-          {mb.last_synced_at ? (
-            <>
-              <span className="font-semibold text-slate-600">Last Gmail sync: </span>
-              {new Date(mb.last_synced_at).toLocaleString(undefined, {
-                dateStyle: 'medium',
-                timeStyle: 'short',
-              })}
-            </>
-          ) : (
-            <span className="text-slate-500">
-              Sync time appears after the next completed run for this inbox (or use{' '}
-              <strong className="font-medium text-slate-600">Run sync now</strong>).
-            </span>
-          )}
-        </p>
+        <div className="mt-3 border-t border-slate-100 pt-2">
+          <p className="text-[10px] leading-snug text-slate-500">
+            {mb.last_synced_at ? (
+              <>
+                <span className="font-semibold text-slate-600">Last Gmail sync: </span>
+                {new Date(mb.last_synced_at).toLocaleString(undefined, {
+                  dateStyle: 'medium',
+                  timeStyle: 'short',
+                })}
+              </>
+            ) : (
+              <span className="text-slate-500">
+                Sync time appears after the next completed run for this inbox.
+              </span>
+            )}
+          </p>
+          {onSyncNow && isOn ? (
+            <button
+              type="button"
+              onClick={onSyncNow}
+              disabled={syncLoading}
+              className="mt-2 w-full rounded-lg border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-semibold text-brand-800 hover:bg-brand-100 disabled:opacity-50"
+            >
+              {syncLoading ? 'Syncing…' : 'Sync now'}
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

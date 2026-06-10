@@ -1882,6 +1882,7 @@ function MyEmailPageInner() {
   const [slaSavingId, setSlaSavingId] = useState<string | null>(null);
 
   const [togglePauseLoadingId, setTogglePauseLoadingId] = useState<string | null>(null);
+  const [teamMailboxSyncId, setTeamMailboxSyncId] = useState<string | null>(null);
   /** CEO Live Mails: manual GET /email-ingestion/run */
   const [liveSyncBusy, setLiveSyncBusy] = useState(false);
   /** After a successful run, `last_synced_at` can lag — show a calmer line until it appears. */
@@ -2847,6 +2848,40 @@ function MyEmailPageInner() {
       await loadDashboard(token);
     } finally {
       setTogglePauseLoadingId(null);
+    }
+  }
+
+  async function runTeamMailboxSync(mb: Mailbox) {
+    if (!token || me?.role !== 'CEO') return;
+    if (!isMailboxGmailConnected(mb) || mb.tracking_paused === true) return;
+    setTeamMailboxSyncId(mb.id);
+    setError(null);
+    try {
+      const res = await apiFetch(liveIngestRunUrl([mb.id]), token);
+      const j = (await res.json().catch(() => ({}))) as {
+        status?: string;
+        message?: string;
+        results?: IngestionRunResultRow[];
+      };
+      if (!res.ok) {
+        setError(j.message ?? 'Could not sync this mailbox.');
+        return;
+      }
+      if (j.status === 'skipped') {
+        setError(j.message ?? 'Email syncing is off in Settings.');
+        return;
+      }
+      const hint = summarizeIngestionForMailboxes(j.results, new Set([mb.id]));
+      setSuccess(
+        j.status === 'running'
+          ? `Sync already running — ${mb.name}'s inbox will refresh when it finishes.`
+          : hint
+            ? `Sync finished for ${mb.name}. ${hint}`
+            : `Sync finished for ${mb.name}.`,
+      );
+      await loadDashboard(token);
+    } finally {
+      setTeamMailboxSyncId(null);
     }
   }
 
@@ -5302,8 +5337,12 @@ function MyEmailPageInner() {
                           onConnectGmail={() => void connectGmail(mb.id)}
                           onRemove={() => void removeMailbox(mb.id)}
                           onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
+                          onSyncNow={
+                            me?.role === 'CEO' ? () => void runTeamMailboxSync(mb) : undefined
+                          }
                           removing={deletingId === mb.id}
                           togglePauseLoading={togglePauseLoadingId === mb.id}
+                          syncLoading={teamMailboxSyncId === mb.id}
                           hideReconnectWhenConnected={true}
                         />
                       </div>
