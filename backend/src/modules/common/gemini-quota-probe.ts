@@ -1,11 +1,16 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getGeminiApiKeyFromEnv } from './env';
 
-/** Monthly spend cap or billing quota exhausted — halt all operations. */
+/**
+ * True only when Gemini reports the monthly spend cap is actually hit.
+ * Avoid broad matches (e.g. "billing" in generic 429 text) that falsely halt sync.
+ */
 export function isGeminiMonthlyQuotaExhausted(message: string): boolean {
-  return /monthly|exceeded its|spending\s+cap|spend\s+cap|billing|payment required|insufficient.*quota/i.test(
-    message,
-  );
+  const m = message.toLowerCase();
+  if (/exceeded its/.test(m)) return true;
+  if (/spend(ing)?\s+cap/.test(m) && /exceed|reached|hit|over|limit/.test(m)) return true;
+  if (/monthly/.test(m) && /quota|limit/.test(m) && /exceed/.test(m)) return true;
+  return false;
 }
 
 /** Transient RPM/RPD rate limit — retry, do NOT halt the whole system. */

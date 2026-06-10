@@ -657,9 +657,8 @@ export class HistoricalFetchService {
         const msg = (err as Error).message ?? String(err);
         if (isGeminiMonthlyQuotaExhausted(msg)) {
           this.monthlyQuotaExhausted = true;
-          void this.settingsService.setApiQuotaExhausted();
-          this.logger.error(
-            `Gemini monthly spend cap reached — ALL operations halted. ${msg.slice(0, 200)}`,
+          this.logger.warn(
+            `Gemini spend cap reported — skipping further AI calls this run (sync continues). ${msg.slice(0, 200)}`,
           );
           return null;
         }
@@ -784,9 +783,8 @@ export class HistoricalFetchService {
       };
     }
     return {
-      relevant: false,
-      reason: 'Inbox AI is required but not available for this mailbox.',
-      inboundAiHardStop: true,
+      relevant: true,
+      reason: 'AI temporarily unavailable — kept as Need Reply (safe default).',
     };
   }
 

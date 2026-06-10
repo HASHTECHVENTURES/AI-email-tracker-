@@ -1004,9 +1004,8 @@ export class EmailIngestionService {
 
         if (isGeminiMonthlyQuotaExhausted(msg)) {
           this.monthlyQuotaExhausted = true;
-          void this.settingsService.setApiQuotaExhausted();
-          this.logger.error(
-            `Gemini monthly spend cap reached — ALL operations halted. ${msg.slice(0, 200)}`,
+          this.logger.warn(
+            `Gemini spend cap reported — skipping further AI calls this cycle (sync continues). ${msg.slice(0, 200)}`,
           );
           return null;
         }
@@ -1097,14 +1096,6 @@ export class EmailIngestionService {
           aiAction: parsed.aiAction,
         };
       }
-      if (this.monthlyQuotaExhausted) {
-        return {
-          relevant: false,
-          reason: 'API credits exhausted — all ingestion halted. No emails will be stored or synced until credits are renewed.',
-          confidence: null,
-          inboundAiHardStop: true,
-        };
-      }
       if (ingestWithoutAiConfirmed) {
         return {
           relevant: true,
@@ -1118,13 +1109,14 @@ export class EmailIngestionService {
           reason:
             'Safety fallback: direct human mailbox message kept while Inbox AI is temporarily unavailable.',
           confidence: null,
+          aiAction: 'NEED_REPLY',
         };
       }
       return {
-        relevant: false,
-        reason: 'Inbox AI unavailable: classification failed after retries. Inbound ingestion is paused until Inbox AI responds again.',
+        relevant: true,
+        reason: 'AI temporarily unavailable — kept as Need Reply (safe default).',
         confidence: null,
-        inboundAiHardStop: true,
+        aiAction: 'NEED_REPLY',
       };
     }
 
@@ -1144,10 +1136,10 @@ export class EmailIngestionService {
       };
     }
     return {
-      relevant: false,
-      reason: 'Inbox AI is required but not available for this mailbox.',
+      relevant: true,
+      reason: 'AI temporarily unavailable — kept as Need Reply (safe default).',
       confidence: null,
-      inboundAiHardStop: true,
+      aiAction: 'NEED_REPLY',
     };
   }
 
