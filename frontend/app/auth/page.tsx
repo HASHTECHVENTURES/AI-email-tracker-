@@ -341,6 +341,8 @@ function AuthPageInner() {
   );
 
   useEffect(() => {
+    if (phase !== 'boot') return;
+
     let cancelled = false;
 
     async function run() {
@@ -425,6 +427,7 @@ function AuthPageInner() {
       cancelled = true;
     };
   }, [
+    phase,
     authCtxLoading,
     authCtxError,
     token,
@@ -574,9 +577,11 @@ function AuthPageInner() {
         return;
       }
       await refreshMe(session.access_token);
-      router.replace(
-        consumeGmailConnectedRedirect(postLoginPath(status.user?.role, safeNext), gmailConnectedParam),
+      const destination = consumeGmailConnectedRedirect(
+        postLoginPath(status.user?.role, safeNext),
+        gmailConnectedParam,
       );
+      window.location.assign(destination);
     } catch (err) {
       setInfo(formatAuthClientError(err));
     } finally {

@@ -34,8 +34,14 @@ export async function middleware(request: NextRequest) {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
     const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
 
+    const hasSupabaseSessionCookie = request.cookies.getAll().some((cookie) => {
+      if (!cookie.name.startsWith('sb-')) return false;
+      return cookie.name.endsWith('-auth-token') || cookie.name.includes('-auth-token.');
+    });
+
     let hasValidUser = false;
-    if (supabaseUrl && supabaseKey) {
+    let clearedStaleSession = false;
+    if (supabaseUrl && supabaseKey && hasSupabaseSessionCookie) {
       const supabase = createServerClient(supabaseUrl, supabaseKey, {
         cookies: {
           getAll() {
@@ -57,6 +63,7 @@ export async function middleware(request: NextRequest) {
       if (error) {
         if (isStaleRefreshTokenError(error)) {
           await supabase.auth.signOut();
+          clearedStaleSession = true;
         }
       } else if (data.user) {
         hasValidUser = true;
@@ -88,14 +95,8 @@ export async function middleware(request: NextRequest) {
     const isAdminLogin = pathname === '/admin/login';
     const isProtected = !isAdminLogin && protectedPaths.some((p) => pathname.startsWith(p));
 
-    const hasSupabaseSessionCookie = request.cookies.getAll().some((cookie) => {
-      if (!cookie.name.startsWith('sb-')) return false;
-      return cookie.name.endsWith('-auth-token') || cookie.name.includes('-auth-token.');
-    });
-
     const canAccessProtected =
-      hasValidUser ||
-      ((!supabaseUrl || !supabaseKey) && hasSupabaseSessionCookie);
+      hasValidUser || (!clearedStaleSession && hasSupabaseSessionCookie);
 
     if (!canAccessProtected && isProtected) {
       const redirectUrl = request.nextUrl.clone();
