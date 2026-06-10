@@ -1,10 +1,10 @@
 import type { EmailMessage } from '../common/types';
 
 /** Max plain-text chars for the message being classified. */
-export const RELEVANCE_PROMPT_TARGET_BODY = 800;
+export const RELEVANCE_PROMPT_TARGET_BODY = 300;
 
 /** Max plain-text chars for thread context messages (not the target). */
-export const RELEVANCE_PROMPT_CONTEXT_BODY = 300;
+export const RELEVANCE_PROMPT_CONTEXT_BODY = 100;
 
 export const RELEVANCE_MODEL_TEMPERATURE = 0.1;
 

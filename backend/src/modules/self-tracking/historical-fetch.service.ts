@@ -383,7 +383,7 @@ export class HistoricalFetchService {
             employee.email,
             msg,
             threadMetaCache,
-            2,
+            1,
           );
         }
 
@@ -702,6 +702,20 @@ export class HistoricalFetchService {
     if (noiseSkip) {
       return { relevant: false, reason: noiseSkip };
     }
+
+    // CC-only / BCC pre-filter: mailbox not in To → CC tab (no Gemini needed)
+    if (target.direction === 'INBOUND') {
+      const m = employeeEmail.trim().toLowerCase();
+      const inTo = (target.toEmails ?? []).some((e) => e.trim().toLowerCase() === m);
+      if (!inTo) {
+        const inCc = (target.ccEmails ?? []).some((e) => e.trim().toLowerCase() === m);
+        if (inCc) {
+          return { relevant: true, reason: 'Mailbox only in CC — no reply expected.' };
+        }
+        return { relevant: true, reason: 'Mailbox BCC — informational only.' };
+      }
+    }
+
     if (allowGeminiRelevance && this.relevanceModel) {
       const sliceWithTarget = this.sortThreadChronological(
         threadSlice.some((m) => m.providerMessageId === target.providerMessageId)

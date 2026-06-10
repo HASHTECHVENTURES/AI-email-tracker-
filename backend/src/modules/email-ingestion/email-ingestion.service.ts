@@ -127,6 +127,28 @@ export class EmailIngestionService {
    */
   private monthlyQuotaExhausted = false;
 
+  /** Daily AI call counter per mailbox — resets each UTC day. Prevents bill spikes. */
+  private aiCallsToday: Map<string, { count: number; date: string }> = new Map();
+  private static readonly MAX_AI_CALLS_PER_MAILBOX_PER_DAY =
+    parseInt(process.env.MAX_AI_CALLS_PER_MAILBOX_DAY ?? '30', 10);
+
+  private isAiCapReached(employeeEmail: string): boolean {
+    const today = new Date().toISOString().slice(0, 10);
+    const entry = this.aiCallsToday.get(employeeEmail);
+    if (!entry || entry.date !== today) return false;
+    return entry.count >= EmailIngestionService.MAX_AI_CALLS_PER_MAILBOX_PER_DAY;
+  }
+
+  private incrementAiCallCount(employeeEmail: string): void {
+    const today = new Date().toISOString().slice(0, 10);
+    const entry = this.aiCallsToday.get(employeeEmail);
+    if (!entry || entry.date !== today) {
+      this.aiCallsToday.set(employeeEmail, { count: 1, date: today });
+    } else {
+      entry.count += 1;
+    }
+  }
+
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
     private readonly employeesService: EmployeesService,
@@ -759,7 +781,7 @@ export class EmailIngestionService {
             employee.email,
             msg,
             threadMetaCache,
-            2,
+            1,
           );
         }
 
@@ -1054,13 +1076,39 @@ export class EmailIngestionService {
     if (noiseSkip) {
       return { relevant: false, reason: noiseSkip, confidence: 1, aiAction: 'SKIP' };
     }
+
+    // CC-only / BCC pre-filter: mailbox not in To → CC tab (no Gemini needed)
+    if (target.direction === 'INBOUND') {
+      const m = employeeEmail.trim().toLowerCase();
+      const inTo = (target.toEmails ?? []).some((e) => e.trim().toLowerCase() === m);
+      if (!inTo) {
+        const inCc = (target.ccEmails ?? []).some((e) => e.trim().toLowerCase() === m);
+        if (inCc) {
+          return { relevant: true, reason: 'Mailbox only in CC — no reply expected.', confidence: 1, aiAction: 'CC' };
+        }
+        // Not in To or Cc → BCC'd, treat as CC
+        return { relevant: true, reason: 'Mailbox BCC — informational only.', confidence: 1, aiAction: 'CC' };
+      }
+    }
+
     if (allowGeminiRelevance && this.relevanceModel) {
+      // Daily AI cap — default to NEED_REPLY (safe) if limit exceeded
+      if (this.isAiCapReached(employeeEmail)) {
+        return {
+          relevant: true,
+          reason: 'Daily AI call limit reached — defaulting to Need Reply (safe).',
+          confidence: null,
+          aiAction: 'NEED_REPLY',
+        };
+      }
+
       const sliceWithTarget = this.sortThreadChronological(
         threadSlice.some((m) => m.providerMessageId === target.providerMessageId)
           ? threadSlice
           : [...threadSlice, target],
       );
       const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
+      this.incrementAiCallCount(employeeEmail);
       const parsed = await this.callGeminiIngestRelevance(prompt, target.fromEmail);
       if (parsed) {
         const finalized = finalizeIngestRelevanceFromAi(
@@ -1305,7 +1353,7 @@ export class EmailIngestionService {
             employee.email,
             msg,
             threadMetaCache,
-            2,
+            1,
           )
         : [msg];
     const decision = await this.classifyMessageForIngest(
