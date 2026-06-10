@@ -279,12 +279,28 @@ function passesNeedReplyVisibility(c: ConversationRow): boolean {
   return !HIDE_STALE_NEED_REPLY || !isStaleNeedReplyByClientMessage(c, STALE_NEED_REPLY_DAYS);
 }
 
-function slaChipLabel(c: ConversationRow): { text: string; className: string } {
+function isBoilerplateShortReason(sub: string): boolean {
+  return /^(client indicated|ai: low priority|ai: cc|ai: calendar|promotional mail|calendar\/meeting|you were (only )?cc|no reply needed)/i.test(
+    sub.trim(),
+  );
+}
+
+function slaChipLabel(
+  c: ConversationRow,
+  mailTab?: MailTab,
+): { text: string; className: string } | null {
   if (c.follow_up_status === 'MISSED') {
     return {
       text: `Missed · +${Number(c.delay_hours).toFixed(0)}h`,
       className: 'bg-red-100 text-red-800',
     };
+  }
+  // Done / Low tabs already convey status — hide redundant "Done" chip.
+  if (mailTab === 'closed' || mailTab === 'noise') {
+    if (mailTab === 'noise' && c.priority === 'LOW') {
+      return { text: 'Low', className: 'bg-slate-100 text-slate-700' };
+    }
+    return null;
   }
   if (c.follow_up_status === 'DONE') {
     return { text: 'Done', className: 'bg-emerald-100 text-emerald-800' };
@@ -465,11 +481,20 @@ function ConversationMailSubjectCell({ c }: { c: ConversationRow }) {
   );
 }
 
-function ConversationSubjectCell({ c }: { c: ConversationRow }) {
+function ConversationSubjectCell({
+  c,
+  hideBoilerplateReason = false,
+}: {
+  c: ConversationRow;
+  hideBoilerplateReason?: boolean;
+}) {
   const title = conversationDisplayTitle(c);
   const sender = conversationSenderLabel(c);
   const sub = (c.short_reason ?? '').trim();
-  const showSub = sub.length > 0 && sub !== title;
+  const showSub =
+    sub.length > 0 &&
+    sub !== title &&
+    !(hideBoilerplateReason && isBoilerplateShortReason(sub));
   return (
     <td className="max-w-[min(28rem,45vw)] px-4 py-3 align-top text-slate-700">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -5578,7 +5603,8 @@ function MyEmailPageInner() {
                     </thead>
                     <tbody className="divide-y divide-slate-50">
                       {pagedTabRows.map((c) => {
-                        const sla = slaChipLabel(c);
+                        const sla = slaChipLabel(c, mailTab);
+                        const hideBoilerplateReason = mailTab === 'closed' || mailTab === 'noise';
                         return (
                           <tr
                             key={c.conversation_id}
@@ -5615,14 +5641,19 @@ function MyEmailPageInner() {
                               </td>
                             ) : null}
                             <ConversationMailSubjectCell c={c} />
-                            <ConversationSubjectCell c={c} />
+                            <ConversationSubjectCell
+                              c={c}
+                              hideBoilerplateReason={hideBoilerplateReason}
+                            />
                             <td className="px-3 py-3 align-top">
-                              <span
-                                className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${sla.className}`}
-                              >
-                                {sla.text}
-                              </span>
-                              <div className="mt-1 flex items-center gap-1">
+                              {sla ? (
+                                <span
+                                  className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${sla.className}`}
+                                >
+                                  {sla.text}
+                                </span>
+                              ) : null}
+                              <div className={`flex items-center gap-1${sla ? ' mt-1' : ''}`}>
                                 {priorityDot(c.priority)}
                                 <span className="text-[10px] text-slate-500">{c.priority}</span>
                               </div>
