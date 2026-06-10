@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import type { AuthError, Session } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
 import { formatAuthClientError } from '@/lib/supabase/public-env';
+import { getBrowserSession } from '@/lib/supabase/session';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { PasswordInput } from '@/components/PasswordInput';
@@ -172,7 +173,7 @@ function RoleSegment({
 
 function AuthPageInner() {
   const router = useRouter();
-  const { me, loading: authCtxLoading, error: authCtxError, refreshMe } = useAuth();
+  const { me, token, loading: authCtxLoading, error: authCtxError, refreshMe } = useAuth();
   const searchParams = useSearchParams();
   const completeFromEmail = searchParams.get('complete') === '1';
   const err = searchParams.get('error');
@@ -346,13 +347,7 @@ function AuthPageInner() {
       try {
         if (authCtxLoading) return;
 
-        const supabase = createClient();
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        if (cancelled) return;
-
-        if (!session) {
+        if (!token) {
           setPhase('auth');
           return;
         }
@@ -363,11 +358,10 @@ function AuthPageInner() {
           return;
         }
 
-        const token = session.access_token;
         const statusRes = await apiFetch('/auth/status', token);
         if (!statusRes.ok) {
           if (statusRes.status === 401) {
-            await supabase.auth.signOut();
+            await createClient().auth.signOut();
           }
           setPhase('auth');
           return;
@@ -399,7 +393,11 @@ function AuthPageInner() {
             });
             if (cancelled) return;
             if (onboardRes.ok) {
-              const outcome = await finalizeOnboarding(session, onboardRes, { quiet: true });
+              const outcome = await finalizeOnboarding(
+                { access_token: token } as Session,
+                onboardRes,
+                { quiet: true },
+              );
               if (cancelled) return;
               if (outcome === 'navigated') return;
             }
@@ -429,6 +427,7 @@ function AuthPageInner() {
   }, [
     authCtxLoading,
     authCtxError,
+    token,
     router,
     safeNext,
     hasExplicitNext,
@@ -461,6 +460,7 @@ function AuthPageInner() {
     setLoading(true);
     try {
       const supabase = createClient();
+      await getBrowserSession(supabase);
       const trimmedEmail = email.trim();
       if (!trimmedEmail || !password) {
         setInfo('Email and password are required.');
@@ -619,9 +619,7 @@ function AuthPageInner() {
         setInfo(mapSupabaseSignUpError(error.message));
         return;
       }
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { session } = await getBrowserSession(supabase);
       if (session) {
         const onboardRes = await apiFetch('/auth/onboarding', session.access_token, {
           method: 'POST',
@@ -648,9 +646,7 @@ function AuthPageInner() {
     setLoading(true);
     try {
       const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { session } = await getBrowserSession(supabase);
       if (!session) {
         setInfo('Session expired. Sign in again.');
         setPhase('auth');

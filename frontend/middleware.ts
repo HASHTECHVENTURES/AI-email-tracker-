@@ -1,4 +1,6 @@
+import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { isStaleRefreshTokenError } from '@/lib/supabase/session';
 
 export async function middleware(request: NextRequest) {
   try {
@@ -27,13 +29,47 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(url);
     }
 
+    let response = NextResponse.next({ request });
+
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
+
+    let hasValidUser = false;
+    if (supabaseUrl && supabaseKey) {
+      const supabase = createServerClient(supabaseUrl, supabaseKey, {
+        cookies: {
+          getAll() {
+            return request.cookies.getAll();
+          },
+          setAll(cookiesToSet: { name: string; value: string; options?: object }[]) {
+            cookiesToSet.forEach(({ name, value }) => {
+              request.cookies.set(name, value);
+            });
+            response = NextResponse.next({ request });
+            cookiesToSet.forEach(({ name, value, options }) => {
+              response.cookies.set(name, value, options);
+            });
+          },
+        },
+      });
+
+      const { data, error } = await supabase.auth.getUser();
+      if (error) {
+        if (isStaleRefreshTokenError(error)) {
+          await supabase.auth.signOut();
+        }
+      } else if (data.user) {
+        hasValidUser = true;
+      }
+    }
+
     if (pathname === '/auth' || pathname.startsWith('/auth/')) {
       if (request.nextUrl.searchParams.has('portal')) {
         const url = request.nextUrl.clone();
         url.searchParams.delete('portal');
         return NextResponse.redirect(url);
       }
-      return NextResponse.next();
+      return response;
     }
 
     const protectedPaths = [
@@ -51,11 +87,17 @@ export async function middleware(request: NextRequest) {
     ];
     const isAdminLogin = pathname === '/admin/login';
     const isProtected = !isAdminLogin && protectedPaths.some((p) => pathname.startsWith(p));
+
     const hasSupabaseSessionCookie = request.cookies.getAll().some((cookie) => {
       if (!cookie.name.startsWith('sb-')) return false;
       return cookie.name.endsWith('-auth-token') || cookie.name.includes('-auth-token.');
     });
-    if (!hasSupabaseSessionCookie && isProtected) {
+
+    const canAccessProtected =
+      hasValidUser ||
+      ((!supabaseUrl || !supabaseKey) && hasSupabaseSessionCookie);
+
+    if (!canAccessProtected && isProtected) {
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = pathname.startsWith('/admin') ? '/admin/login' : '/auth';
       // Do not clone the full query string (e.g. Gmail OAuth adds connected=, employee_id=).
@@ -69,7 +111,7 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(redirectUrl);
     }
 
-    return NextResponse.next();
+    return response;
   } catch (e) {
     console.error('[middleware]', e);
     return NextResponse.next({ request });
