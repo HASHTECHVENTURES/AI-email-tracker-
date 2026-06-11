@@ -1848,7 +1848,7 @@ function MyEmailPageInner() {
   /** CEO / manager: optional name + email for an extra `SELF` mailbox (any address), same API as team “add mailbox”. */
   const [showAddPersonalMailbox, setShowAddPersonalMailbox] = useState(false);
 
-  /** Sidebar hash drives separate screens for CEO (manager mail / team mail). Department managers stay on the CEO-style home tab only. */
+  /** Sidebar hash: CEO — manager mail + team mail; department managers — team mail tab for their roster. */
   const [myEmailTab, setMyEmailTab] = useState<'ceo' | 'manager' | 'team'>('ceo');
 
   const [aiSkippedMailboxId, setAiSkippedMailboxId] = useState('');
@@ -2598,10 +2598,16 @@ function MyEmailPageInner() {
     const syncTab = () => {
       if (typeof window === 'undefined') return;
       const h = window.location.hash;
-      /** Department managers use the same single-inbox surface as the CEO home tab — no team/manager sub-views here. */
+      /** Department managers: team mail tab only (not CEO “manager mail” across the company). */
       if (me && isDepartmentManagerRole(me.role)) {
-        if (h === '#manager-mailboxes' || h === '#team-mailboxes-ceo') {
+        if (h === '#manager-mailboxes') {
           window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+          setMyEmailTab('ceo');
+          return;
+        }
+        if (h === '#team-mailboxes-ceo') {
+          setMyEmailTab('team');
+          return;
         }
         setMyEmailTab('ceo');
         return;
@@ -2852,7 +2858,12 @@ function MyEmailPageInner() {
   }
 
   async function runTeamMailboxSync(mb: Mailbox) {
-    if (!token || me?.role !== 'CEO') return;
+    if (
+      !token ||
+      (me?.role !== 'CEO' && !isDepartmentManagerRole(me?.role ?? ''))
+    ) {
+      return;
+    }
     if (!isMailboxGmailConnected(mb) || mb.tracking_paused === true) return;
     setTeamMailboxSyncId(mb.id);
     setError(null);
@@ -3614,11 +3625,23 @@ function MyEmailPageInner() {
   }, [managerMailboxes, managerScopeMailboxIds]);
 
   /**
-   * Employee mail: TEAM mailboxes except CEO self. Omit **canonical** manager inboxes only
-   * (`is_manager_mailbox` and not a secondary roster row) — dual-role heads keep their
-   * `roster_duplicate` row here. Dedupe by email for duplicate roster rows.
+   * Team / employee mail: CEO — TEAM mailboxes company-wide (minus CEO self and canonical manager inboxes).
+   * Department manager — every mailbox in scope except their own inbox row(s).
    */
   const teamMailboxesOnly = useMemo(() => {
+    if (isDepartmentManagerRole(me?.role)) {
+      const ownIds = new Set(ownMailboxes.map((m) => m.id));
+      const ownEmails = new Set(
+        ownMailboxes.map((m) => m.email.trim().toLowerCase()).filter(Boolean),
+      );
+      const raw = mailboxes.filter((mb) => {
+        if (ownIds.has(mb.id)) return false;
+        const emailNorm = mb.email.trim().toLowerCase();
+        if (emailNorm && ownEmails.has(emailNorm)) return false;
+        return true;
+      });
+      return dedupeMailboxesByEmailPreferPrimary(raw);
+    }
     const raw = mailboxes.filter((mb) => {
       const emailNorm = mb.email.trim().toLowerCase();
       if (ceoEmailNorm !== '' && emailNorm === ceoEmailNorm) {
@@ -3629,7 +3652,7 @@ function MyEmailPageInner() {
       return true;
     });
     return dedupeMailboxesByEmailPreferPrimary(raw);
-  }, [mailboxes, ceoEmailNorm]);
+  }, [mailboxes, ceoEmailNorm, me?.role, ownMailboxes]);
 
   useEffect(() => {
     const allowed = new Set(teamMailboxesOnly.map((m) => m.id));
@@ -4513,7 +4536,9 @@ function MyEmailPageInner() {
         : myEmailTab === 'team'
           ? 'Team mail'
           : 'My Email'
-      : 'My Email';
+      : isDepartmentManagerRole(me.role) && myEmailTab === 'team'
+        ? 'Team mail'
+        : 'My Email';
   const shellSubtitle =
     me.role === 'CEO'
       ? myEmailTab === 'ceo'
@@ -4522,7 +4547,9 @@ function MyEmailPageInner() {
           ? 'Department heads’ tracked inboxes.'
           : 'Individual contributors and other org mailboxes (not your CEO login).'
       : isDepartmentManagerRole(me.role)
-        ? 'Your inbox only. Mail in your tracking window appears here for follow-up.'
+        ? myEmailTab === 'team'
+          ? 'Your team’s tracked inboxes — follow-ups, threads, and mailbox status for everyone you manage.'
+          : 'Your inbox only. Mail in your tracking window appears here for follow-up.'
         : me.role === 'EMPLOYEE'
           ? 'Your inbox: live mail and follow-ups — same My Email tools as leadership, scoped to your mailbox. Connect Gmail here, run sync when you need it, and track SLAs on your threads.'
           : 'My Email';
@@ -5338,7 +5365,9 @@ function MyEmailPageInner() {
                           onRemove={() => void removeMailbox(mb.id)}
                           onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
                           onSyncNow={
-                            me?.role === 'CEO' ? () => void runTeamMailboxSync(mb) : undefined
+                            me?.role === 'CEO' || isDepartmentManagerRole(me?.role ?? '')
+                              ? () => void runTeamMailboxSync(mb)
+                              : undefined
                           }
                           removing={deletingId === mb.id}
                           togglePauseLoading={togglePauseLoadingId === mb.id}
@@ -5351,11 +5380,18 @@ function MyEmailPageInner() {
                   {teamScopedMailboxes.length === 0 ? (
                     <p className="mt-3 text-center text-sm text-slate-500">
                       {teamMailboxesOnly.length === 0 ? (
-                        <>
-                          No team mailboxes in this view yet. Add teammates on <strong>Employees</strong> or use{' '}
-                          <strong>+ Add another mailbox</strong> above. Heads also appear under{' '}
-                          <strong>Manager mail</strong> for their own inbox.
-                        </>
+                        isDepartmentManagerRole(me.role) ? (
+                          <>
+                            No team mailboxes in your scope yet. Add people under{' '}
+                            <strong>Team</strong> — their tracked mail and follow-ups will appear here.
+                          </>
+                        ) : (
+                          <>
+                            No team mailboxes in this view yet. Add teammates on <strong>Employees</strong> or use{' '}
+                            <strong>+ Add another mailbox</strong> above. Heads also appear under{' '}
+                            <strong>Manager mail</strong> for their own inbox.
+                          </>
+                        )
                       ) : (
                         'No employee mailbox matches this selection.'
                       )}

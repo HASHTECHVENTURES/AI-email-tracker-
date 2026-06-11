@@ -198,7 +198,10 @@ export function AppShell({
   const managerNavVisible = isHead && !isPlatformAdmin && !actAsMailbox;
   /** CEO (full My Email), department manager (HEAD), or Employee portal — scoped mailboxes and follow-ups. */
   const showMyEmail = (isCeo || isHead || isEmployee) && !isPlatformAdmin;
+  /** CEO-only: department heads’ inboxes across the company. */
   const showMyEmailCeoHashNav = isCeo;
+  /** CEO + department managers: team / IC mailboxes (managers see their team only). */
+  const showMyEmailTeamHashNav = isCeo || isHead;
   const roleLabel = isPlatformAdmin
     ? 'Platform admin'
     : actAsMailbox
@@ -333,22 +336,22 @@ export function AppShell({
                     My Email
                   </SafeLink>
                   {showMyEmailCeoHashNav ? (
-                    <>
-                      <SafeLink
-                        href="/my-email#manager-mailboxes"
-                        className={navItemClass(managerMailFocus)}
-                        onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
-                      >
-                        Manager mail
-                      </SafeLink>
-                      <SafeLink
-                        href="/my-email#team-mailboxes-ceo"
-                        className={navItemClass(employeeMailFocus)}
-                        onClick={(e) => onMyEmailHashNavClick(e, pathname, 'team')}
-                      >
-                        Employee mail
-                      </SafeLink>
-                    </>
+                    <SafeLink
+                      href="/my-email#manager-mailboxes"
+                      className={navItemClass(managerMailFocus)}
+                      onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
+                    >
+                      Manager mail
+                    </SafeLink>
+                  ) : null}
+                  {showMyEmailTeamHashNav ? (
+                    <SafeLink
+                      href="/my-email#team-mailboxes-ceo"
+                      className={navItemClass(employeeMailFocus)}
+                      onClick={(e) => onMyEmailHashNavClick(e, pathname, 'team')}
+                    >
+                      {isHead ? 'Team mail' : 'Employee mail'}
+                    </SafeLink>
                   ) : null}
                 </>
               ) : null}
@@ -518,22 +521,22 @@ export function AppShell({
                     My Email
                   </SafeLink>
                   {showMyEmailCeoHashNav ? (
-                    <>
-                      <SafeLink
-                        href="/my-email#manager-mailboxes"
-                        className={navMobileClass(managerMailFocus)}
-                        onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
-                      >
-                        Manager mail
-                      </SafeLink>
-                      <SafeLink
-                        href="/my-email#team-mailboxes-ceo"
-                        className={navMobileClass(employeeMailFocus)}
-                        onClick={(e) => onMyEmailHashNavClick(e, pathname, 'team')}
-                      >
-                        Employee mail
-                      </SafeLink>
-                    </>
+                    <SafeLink
+                      href="/my-email#manager-mailboxes"
+                      className={navMobileClass(managerMailFocus)}
+                      onClick={(e) => onMyEmailHashNavClick(e, pathname, 'manager')}
+                    >
+                      Manager mail
+                    </SafeLink>
+                  ) : null}
+                  {showMyEmailTeamHashNav ? (
+                    <SafeLink
+                      href="/my-email#team-mailboxes-ceo"
+                      className={navMobileClass(employeeMailFocus)}
+                      onClick={(e) => onMyEmailHashNavClick(e, pathname, 'team')}
+                    >
+                      {isHead ? 'Team mail' : 'Employee mail'}
+                    </SafeLink>
                   ) : null}
                 </>
               ) : null}
