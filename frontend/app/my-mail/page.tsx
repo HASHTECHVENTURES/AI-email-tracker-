@@ -322,7 +322,7 @@ function ManagerMyMailInner() {
     openGmailOAuthWindow(body.url);
   }
 
-  async function connectMyMailbox() {
+  async function connectMyMailbox(provider: 'google' | 'microsoft' = 'google') {
     if (!token) return;
     setAddingMyMailbox(true);
     setError(null);
@@ -342,8 +342,16 @@ function ManagerMyMailInner() {
         setError('Could not resolve your mailbox');
         return;
       }
-      setSuccess('Opening Google to connect your mailbox…');
-      await connectGmail(id);
+      setSuccess(
+        provider === 'microsoft'
+          ? 'Opening Microsoft to connect your mailbox…'
+          : 'Opening Google to connect your mailbox…',
+      );
+      if (provider === 'microsoft') {
+        await connectOutlook(id);
+      } else {
+        await connectGmail(id);
+      }
     } finally {
       setAddingMyMailbox(false);
     }
@@ -542,15 +550,25 @@ function ManagerMyMailInner() {
               </div>
               {ownMailboxes.length === 0 ? (
                 <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-white px-4 py-4 text-sm text-slate-600">
-                  <p>No mailbox connected yet.</p>
-                  <button
-                    type="button"
-                    onClick={() => void connectMyMailbox()}
-                    disabled={addingMyMailbox}
-                    className="mt-3 rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2.5 text-xs font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95 disabled:opacity-60"
-                  >
-                    {addingMyMailbox ? 'Opening…' : 'Connect my Gmail'}
-                  </button>
+                  <p>Connect Gmail or Outlook to start tracking your inbox.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void connectMyMailbox('google')}
+                      disabled={addingMyMailbox}
+                      className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2.5 text-xs font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95 disabled:opacity-60"
+                    >
+                      {addingMyMailbox ? 'Opening…' : 'Connect my Gmail'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void connectMyMailbox('microsoft')}
+                      disabled={addingMyMailbox}
+                      className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-xs font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60"
+                    >
+                      Connect my Outlook
+                    </button>
+                  </div>
                 </div>
               ) : null}
             </div>

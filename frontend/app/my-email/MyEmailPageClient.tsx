@@ -1691,9 +1691,9 @@ function CeoLiveSyncStrip({
   if (!connected) {
     return (
       <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/90 px-4 py-4 sm:px-5">
-        <p className="text-sm font-semibold text-slate-800">Connect Gmail</p>
+        <p className="text-sm font-semibold text-slate-800">Connect your inbox</p>
         <p className="mt-1 text-xs leading-relaxed text-slate-600">
-          After you connect, pick when tracking starts below. One flow: mail from that date forward—use{' '}
+          Connect Gmail or Outlook below. After you connect, pick when tracking starts—use{' '}
           <strong className="font-medium text-slate-800">Sync now</strong> to pull through today, and keep your inbox{' '}
           <strong className="font-medium text-slate-800">ON</strong> so new mail keeps flowing until you turn it off.
         </p>
@@ -2715,7 +2715,7 @@ function MyEmailPageInner() {
   }
 
   /** Signed-in user’s own inbox row (CEO or department manager) — uses session profile for POST /self-tracking/mailboxes. */
-  async function connectMyInbox() {
+  async function connectMyInbox(provider: 'google' | 'microsoft' = 'google') {
     if (!token || !me) return;
     const profileEmail = (me.email ?? '').trim();
     if (!profileEmail) {
@@ -2748,8 +2748,16 @@ function MyEmailPageInner() {
       const data = (await res.json()) as { mailbox?: { id: string } };
       const id = data.mailbox?.id;
       if (id) {
-        setSuccess('Opening Google to connect your inbox…');
-        await connectGmail(id);
+        setSuccess(
+          provider === 'microsoft'
+            ? 'Opening Microsoft to connect your inbox…'
+            : 'Opening Google to connect your inbox…',
+        );
+        if (provider === 'microsoft') {
+          await connectOutlook(id);
+        } else {
+          await connectGmail(id);
+        }
         return;
       }
       setError('Could not create your mailbox');
@@ -5144,16 +5152,29 @@ function MyEmailPageInner() {
                       {me.role === 'CEO' ? 'Your inbox (CEO)' : 'Your inbox'}
                     </p>
                     <h3 className="mt-1 text-base font-bold text-slate-900">
-                      Connect your own Gmail
+                      Connect your work inbox
                     </h3>
-                    <button
-                      type="button"
-                      onClick={() => void connectMyInbox()}
-                      disabled={adding}
-                      className="mt-4 w-full rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-md shadow-brand-600/25 hover:opacity-95 disabled:opacity-60 sm:w-auto"
-                    >
-                      {adding ? 'Opening…' : 'Connect my Gmail'}
-                    </button>
+                    <p className="mt-1 text-xs text-slate-600">
+                      Gmail or Microsoft 365 / Outlook — same tracking and follow-up tools either way.
+                    </p>
+                    <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                      <button
+                        type="button"
+                        onClick={() => void connectMyInbox('google')}
+                        disabled={adding}
+                        className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-md shadow-brand-600/25 hover:opacity-95 disabled:opacity-60 sm:w-auto"
+                      >
+                        {adding ? 'Opening…' : 'Connect my Gmail'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void connectMyInbox('microsoft')}
+                        disabled={adding}
+                        className="rounded-xl border border-sky-200 bg-sky-50 px-5 py-3 text-sm font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60 sm:w-auto"
+                      >
+                        Connect my Outlook
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -5179,18 +5200,29 @@ function MyEmailPageInner() {
                       <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-white px-4 py-4 text-sm text-slate-600">
                         <p>
                           Your work inbox isn&apos;t listed yet. Use{' '}
-                          <strong className="font-medium text-slate-800">Connect my Gmail</strong> so
+                          <strong className="font-medium text-slate-800">Connect my Gmail</strong> or{' '}
+                          <strong className="font-medium text-slate-800">Connect my Outlook</strong> so
                           the row matches{' '}
                           {me.role === 'CEO' ? 'your CEO email' : 'your work email'}.
                         </p>
-                        <button
-                          type="button"
-                          onClick={() => void connectMyInbox()}
-                          disabled={adding}
-                          className="mt-3 rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2.5 text-xs font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95 disabled:opacity-60"
-                        >
-                          {adding ? 'Opening…' : 'Connect my Gmail'}
-                        </button>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void connectMyInbox('google')}
+                            disabled={adding}
+                            className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2.5 text-xs font-semibold text-white shadow-md shadow-brand-600/20 hover:opacity-95 disabled:opacity-60"
+                          >
+                            {adding ? 'Opening…' : 'Connect my Gmail'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void connectMyInbox('microsoft')}
+                            disabled={adding}
+                            className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-xs font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60"
+                          >
+                            Connect my Outlook
+                          </button>
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -5204,7 +5236,7 @@ function MyEmailPageInner() {
                           Add another address to track
                         </p>
                         <p className="mt-0.5 text-xs text-slate-600">
-                          Use any work or personal email you can sign in with via Google — not only your login address.
+                          Use any work email you can sign in with via Google or Microsoft — not only your login address.
                         </p>
                       </div>
                       <button
