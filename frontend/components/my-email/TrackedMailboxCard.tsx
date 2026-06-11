@@ -21,6 +21,9 @@ type TrackedMailboxCardProps = {
    */
   showConnectGmail?: boolean;
   onConnectGmail: () => void;
+  /** Microsoft 365 / Outlook OAuth — same mailbox owner rules as Gmail. */
+  onConnectOutlook?: () => void;
+  showConnectOutlook?: boolean;
   onRemove: () => void;
   onTogglePause?: (paused: boolean) => void;
   /** CEO team view: pull Gmail for this mailbox immediately. */
@@ -35,6 +38,8 @@ export function TrackedMailboxCard({
   mb,
   showConnectGmail = true,
   onConnectGmail,
+  onConnectOutlook,
+  showConnectOutlook = true,
   onRemove,
   onTogglePause,
   onSyncNow,
@@ -47,6 +52,9 @@ export function TrackedMailboxCard({
   const showConnectButton =
     showConnectGmail && !(hideReconnectWhenConnected && mb.gmail_connected);
 
+  const showOutlookButton =
+    showConnectOutlook && onConnectOutlook && !(hideReconnectWhenConnected && mb.gmail_connected);
+
   return (
     <div className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-card hover:-translate-y-[1px] hover:shadow-card-hover">
       <div className="flex items-start justify-between gap-3">
@@ -54,14 +62,23 @@ export function TrackedMailboxCard({
           <p className="truncate text-sm font-bold text-slate-900">{mb.name}</p>
           <p className="truncate text-xs text-slate-500">{mb.email}</p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-col items-end gap-1.5 sm:flex-row sm:items-center">
           {showConnectButton ? (
             <button
               type="button"
               onClick={onConnectGmail}
               className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 hover:shadow-md"
             >
-              {mb.gmail_connected ? 'Reconnect' : 'Connect Gmail'}
+              {mb.gmail_connected ? 'Reconnect Gmail' : 'Connect Gmail'}
+            </button>
+          ) : null}
+          {showOutlookButton ? (
+            <button
+              type="button"
+              onClick={onConnectOutlook}
+              className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-900 hover:bg-sky-100 hover:shadow-sm"
+            >
+              Connect Outlook
             </button>
           ) : null}
           <button
@@ -81,7 +98,7 @@ export function TrackedMailboxCard({
             className={`h-2 w-2 rounded-full ${mb.gmail_connected ? 'bg-emerald-500' : 'bg-slate-300'}`}
           />
           <span className="text-xs text-slate-600">
-            {mb.gmail_connected ? 'Gmail connected' : 'Gmail not connected'}
+            {mb.gmail_connected ? 'Mail connected' : 'Mail not connected'}
           </span>
         </div>
         {mb.gmail_connected && onTogglePause ? (
@@ -120,7 +137,7 @@ export function TrackedMailboxCard({
           <p className="text-[10px] leading-snug text-slate-500">
             {mb.last_synced_at ? (
               <>
-                <span className="font-semibold text-slate-600">Last Gmail sync: </span>
+                <span className="font-semibold text-slate-600">Last sync: </span>
                 {new Date(mb.last_synced_at).toLocaleString(undefined, {
                   dateStyle: 'medium',
                   timeStyle: 'short',

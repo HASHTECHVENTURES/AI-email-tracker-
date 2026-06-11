@@ -301,6 +301,27 @@ function ManagerMyMailInner() {
     openGmailOAuthWindow(body.url);
   }
 
+  async function connectOutlook(mailboxId: string) {
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return;
+    const res = await apiFetch(
+      `/auth/microsoft/authorize-url?employee_id=${encodeURIComponent(mailboxId)}`,
+      session.access_token,
+    );
+    const body = (await res.json().catch(() => ({}))) as {
+      url?: string;
+      message?: string;
+    };
+    if (!res.ok || !body.url) {
+      setError(body.message || 'Could not start Microsoft connection');
+      return;
+    }
+    openGmailOAuthWindow(body.url);
+  }
+
   async function connectMyMailbox() {
     if (!token) return;
     setAddingMyMailbox(true);
@@ -511,6 +532,7 @@ function ManagerMyMailInner() {
                     mb={mb}
                     ceoEmailNorm={headEmailNorm}
                     onConnectGmail={() => void connectGmail(mb.id)}
+                    onConnectOutlook={() => void connectOutlook(mb.id)}
                     onRemove={() => void removeMailbox(mb)}
                     onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
                     removing={deletingId === mb.id}

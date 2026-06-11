@@ -7,6 +7,7 @@ import { CompanyPolicyModule } from '../company-policy/company-policy.module';
 import { AiEnrichmentModule } from '../ai-enrichment/ai-enrichment.module';
 import { supabaseProvider } from '../common/supabase.provider';
 import { GmailService } from './gmail.service';
+import { MicrosoftGraphService } from './microsoft-graph.service';
 import { EmailIngestionService } from './email-ingestion.service';
 import { EmailIngestionController } from './email-ingestion.controller';
 import { IngestionCronService } from './ingestion-cron.service';
@@ -21,7 +22,13 @@ import { IngestionCronService } from './ingestion-cron.service';
     AiEnrichmentModule,
   ],
   controllers: [EmailIngestionController],
-  providers: [supabaseProvider, GmailService, EmailIngestionService, IngestionCronService],
-  exports: [EmailIngestionService, GmailService],
+  providers: [
+    supabaseProvider,
+    GmailService,
+    MicrosoftGraphService,
+    EmailIngestionService,
+    IngestionCronService,
+  ],
+  exports: [EmailIngestionService, GmailService, MicrosoftGraphService],
 })
 export class EmailIngestionModule {}

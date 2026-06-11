@@ -22,6 +22,7 @@ import {
   buildGmailRecentInboxHeadQuery,
   GmailService,
 } from './gmail.service';
+import { MicrosoftGraphService } from './microsoft-graph.service';
 import { buildSharedIngestRelevancePrompt } from './relevance-prompt.builder';
 import {
   ingestForceRelevantCalendarOrMeeting,
@@ -153,6 +154,7 @@ export class EmailIngestionService {
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
     private readonly employeesService: EmployeesService,
     private readonly gmailService: GmailService,
+    private readonly microsoftGraphService: MicrosoftGraphService,
     private readonly oauthTokenService: OauthTokenService,
     private readonly conversationsService: ConversationsService,
     private readonly settingsService: SettingsService,
@@ -175,6 +177,94 @@ export class EmailIngestionService {
         responseMimeType: 'application/json',
       },
     });
+  }
+
+  private async listMailIdsPage(
+    employeeId: string,
+    listAfterDate: Date,
+    gmailQuery: string,
+    opts: { maxResults: number; pageToken?: string | null },
+  ): Promise<{ ids: string[]; nextPageToken: string | null }> {
+    const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'microsoft') {
+      return this.microsoftGraphService.listMessageIdsPage(employeeId, listAfterDate, opts);
+    }
+    return this.gmailService.listMessageIdsPage(employeeId, gmailQuery, opts);
+  }
+
+  private async listRecentInboxHeadIds(
+    employeeId: string,
+    afterDate: Date,
+    maxResults: number,
+  ): Promise<string[]> {
+    const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'microsoft') {
+      return this.microsoftGraphService.listRecentInboxHead(employeeId, afterDate, maxResults);
+    }
+    const headQuery = buildGmailRecentInboxHeadQuery(afterDate);
+    const head = await this.gmailService.listMessageIdsPage(employeeId, headQuery, {
+      maxResults,
+      pageToken: null,
+    });
+    return head.ids;
+  }
+
+  private async fetchMailFullMessage(
+    employeeId: string,
+    employeeEmail: string,
+    messageId: string,
+  ): Promise<EmailMessage> {
+    const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'microsoft') {
+      return this.microsoftGraphService.fetchFullMessage(employeeId, employeeEmail, messageId);
+    }
+    return this.gmailService.fetchFullMessage(employeeId, employeeEmail, messageId);
+  }
+
+  private async peekMailIsOutboundFrom(
+    employeeId: string,
+    employeeEmail: string,
+    messageId: string,
+  ): Promise<boolean> {
+    const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'microsoft') {
+      return this.microsoftGraphService.peekIsOutboundFrom(employeeId, employeeEmail, messageId);
+    }
+    return this.gmailService.peekIsOutboundFrom(employeeId, employeeEmail, messageId);
+  }
+
+  private async fetchMailThreadForRelevance(
+    employeeId: string,
+    employeeEmail: string,
+    msg: EmailMessage,
+    threadMetaCache: Map<string, gmail_v1.Schema$Message[]>,
+    maxMessages: number,
+  ): Promise<EmailMessage[]> {
+    const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'microsoft') {
+      return this.microsoftGraphService.fetchLastMessagesInThreadForRelevance(
+        employeeId,
+        employeeEmail,
+        msg,
+        threadMetaCache as Map<string, unknown>,
+        maxMessages,
+      );
+    }
+    return this.gmailService.fetchLastMessagesInThreadForRelevance(
+      employeeId,
+      employeeEmail,
+      msg,
+      threadMetaCache,
+      maxMessages,
+    );
+  }
+
+  private async isMailNoiseAsync(msg: EmailMessage, employeeId: string): Promise<boolean> {
+    const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'microsoft') {
+      return this.microsoftGraphService.isNoise(msg.labelIds);
+    }
+    return this.gmailService.isNoise(msg.labelIds);
   }
 
   /** Employees.last_gmail_sync_at / last_ai_analysis_at require migration 026 — degrade if not applied. */
@@ -608,7 +698,7 @@ export class EmailIngestionService {
     };
 
     if (resumeToken) {
-      const head = await this.gmailService.listMessageIdsPage(employee.id, listQuery, {
+      const head = await this.listMailIdsPage(employee.id, listAfterDate, listQuery, {
         maxResults: listMaxResults,
         pageToken: null,
       });
@@ -622,8 +712,9 @@ export class EmailIngestionService {
     let nextPageToken: string | null = null;
     let pagesFetched = 0;
     for (let p = 0; p < maxListPages; p++) {
-      const { ids, nextPageToken: np } = await this.gmailService.listMessageIdsPage(
+      const { ids, nextPageToken: np } = await this.listMailIdsPage(
         employee.id,
+        listAfterDate,
         listQuery,
         { maxResults: listMaxResults, pageToken: pageTokenLoop },
       );
@@ -637,7 +728,7 @@ export class EmailIngestionService {
       pageTokenLoop = np;
     }
     this.logger.log(
-      `[ingest-debug] gmail-list mailbox=${employee.email} ids=${messageIds.length} pages=${pagesFetched} hasNext=${nextPageToken ? 'yes' : 'no'} resumed=${resumeToken ? 'yes' : 'no'} queryAfter=${listAfterDate.toISOString()}`,
+      `[ingest-debug] mail-list mailbox=${employee.email} ids=${messageIds.length} pages=${pagesFetched} hasNext=${nextPageToken ? 'yes' : 'no'} resumed=${resumeToken ? 'yes' : 'no'} queryAfter=${listAfterDate.toISOString()}`,
     );
 
     const recentHeadDaysRaw = Number(
@@ -651,13 +742,13 @@ export class EmailIngestionService {
         listAfterDate.getTime(),
         Date.now() - recentHeadDays * 86_400_000,
       );
-      const headQuery = buildGmailRecentInboxHeadQuery(new Date(headAfterMs));
-      const headPoll = await this.gmailService.listMessageIdsPage(employee.id, headQuery, {
-        maxResults: Math.min(80, listMaxResults),
-        pageToken: null,
-      });
+      const headPollIds = await this.listRecentInboxHeadIds(
+        employee.id,
+        new Date(headAfterMs),
+        Math.min(80, listMaxResults),
+      );
       const beforeHead = messageIds.length;
-      pushIds(headPoll.ids);
+      pushIds(headPollIds);
       if (messageIds.length > beforeHead) {
         this.logger.log(
           `Recent inbox head poll added ${messageIds.length - beforeHead} id(s) for ${employee.name} (includes Promotions/Social)`,
@@ -667,22 +758,32 @@ export class EmailIngestionService {
 
     if (messageIds.length === 0 && !nextPageToken) {
       /**
-       * Safety fallback: Gmail indexing / cursor timing can occasionally return no IDs
+       * Safety fallback: provider indexing / cursor timing can occasionally return no IDs
        * right after recent messages arrive. Probe a short recent window before declaring
        * "no new messages" so user-facing inboxes don't appear stuck at zero.
        */
-      const fallbackQuery = `${buildGmailInboxListQuery(null)} newer_than:7d`;
-      const fallback = await this.gmailService.listMessageIdsPage(employee.id, fallbackQuery, {
-        maxResults: Math.min(120, listMaxResults),
-        pageToken: null,
-      });
-      pushIds(fallback.ids);
-      for (const id of fallback.ids) {
+      const provider = await this.oauthTokenService.getOAuthProvider(employee.id);
+      const fallbackIds =
+        provider === 'microsoft'
+          ? await this.microsoftGraphService.listRecentInboxHead(
+              employee.id,
+              new Date(Date.now() - 7 * 86_400_000),
+              Math.min(120, listMaxResults),
+            )
+          : (
+              await this.gmailService.listMessageIdsPage(
+                employee.id,
+                `${buildGmailInboxListQuery(null)} newer_than:7d`,
+                { maxResults: Math.min(120, listMaxResults), pageToken: null },
+              )
+            ).ids;
+      pushIds(fallbackIds);
+      for (const id of fallbackIds) {
         zeroCursorFallbackIds.add(id);
       }
-      if (fallback.ids.length > 0) {
+      if (fallbackIds.length > 0) {
         this.logger.log(
-          `Zero-id cursor fallback recovered ${fallback.ids.length} recent message(s) for ${employee.name}`,
+          `Zero-id cursor fallback recovered ${fallbackIds.length} recent message(s) for ${employee.name}`,
         );
       } else {
         this.logger.log(`No new messages for ${employee.name}`);
@@ -739,7 +840,7 @@ export class EmailIngestionService {
 
       const skipKind = await this.getRecordedSkipKind(employee.id, msgId);
       if (skipKind) {
-        const outboundPeek = await this.gmailService.peekIsOutboundFrom(
+        const outboundPeek = await this.peekMailIsOutboundFrom(
           employee.id,
           employee.email,
           msgId,
@@ -763,7 +864,7 @@ export class EmailIngestionService {
       classifyCountThisRun += 1;
 
       try {
-        const msg = await this.gmailService.fetchFullMessage(employee.id, employee.email, msgId);
+        const msg = await this.fetchMailFullMessage(employee.id, employee.email, msgId);
 
         if (
           await this.conversationsService.isThreadPermanentlyResolved(
@@ -788,7 +889,7 @@ export class EmailIngestionService {
 
         let threadSlice: EmailMessage[] = [msg];
         if (allowGeminiRelevance && this.relevanceModel) {
-          threadSlice = await this.gmailService.fetchLastMessagesInThreadForRelevance(
+          threadSlice = await this.fetchMailThreadForRelevance(
             employee.id,
             employee.email,
             msg,
@@ -797,11 +898,12 @@ export class EmailIngestionService {
           );
         }
 
+        const isNoise = await this.isMailNoiseAsync(msg, employee.id);
         const decision = await this.classifyMessageForIngest(
           msg,
           threadSlice,
           employee.email,
-          this.gmailService.isNoise(msg.labelIds),
+          isNoise,
           allowGeminiRelevance,
           ingestWithoutAiConfirmed,
         );
@@ -1319,7 +1421,7 @@ export class EmailIngestionService {
       throw new NotFoundException('Mailbox not found');
     }
     if (!(await this.oauthTokenService.hasToken(employeeId))) {
-      throw new BadRequestException('Gmail is not connected for this mailbox');
+      throw new BadRequestException('Email is not connected for this mailbox');
     }
     const tracking = await this.employeesService.getTrackingState(companyId, employeeId);
     if (!tracking?.trackingStartAt?.trim()) {
@@ -1330,7 +1432,7 @@ export class EmailIngestionService {
       return { outcome: 'already_in_portal', reason: null, confidence: 1, conversationsUpdated: 0 };
     }
 
-    const msg = await this.gmailService.fetchFullMessage(employee.id, employee.email, providerMessageId);
+    const msg = await this.fetchMailFullMessage(employee.id, employee.email, providerMessageId);
     const startAt = new Date(tracking.trackingStartAt);
     if (msg.sentAt < startAt) {
       await this.clearIngestionSkip(employeeId, providerMessageId);
@@ -1347,7 +1449,7 @@ export class EmailIngestionService {
     const threadMetaCache = new Map<string, gmail_v1.Schema$Message[]>();
     const threadSlice =
       allowGeminiRelevance && this.relevanceModel
-        ? await this.gmailService.fetchLastMessagesInThreadForRelevance(
+        ? await this.fetchMailThreadForRelevance(
             employee.id,
             employee.email,
             msg,
@@ -1355,11 +1457,12 @@ export class EmailIngestionService {
             1,
           )
         : [msg];
+    const isNoise = await this.isMailNoiseAsync(msg, employee.id);
     const decision = await this.classifyMessageForIngest(
       msg,
       threadSlice,
       employee.email,
-      this.gmailService.isNoise(msg.labelIds),
+      isNoise,
       allowGeminiRelevance,
       cycleSettings.email_ingest_without_ai_confirmed,
     );
@@ -1420,7 +1523,7 @@ export class EmailIngestionService {
       throw new NotFoundException('Mailbox not found');
     }
     if (!(await this.oauthTokenService.hasToken(employeeId))) {
-      throw new BadRequestException('Gmail is not connected for this mailbox');
+      throw new BadRequestException('Email is not connected for this mailbox');
     }
 
     const tracking = await this.employeesService.getTrackingState(companyId, employeeId);
@@ -1440,10 +1543,10 @@ export class EmailIngestionService {
 
     let msg: EmailMessage;
     try {
-      msg = await this.gmailService.fetchFullMessage(employee.id, employee.email, providerMessageId);
+      msg = await this.fetchMailFullMessage(employee.id, employee.email, providerMessageId);
     } catch (e) {
       throw new BadRequestException(
-        `Could not load this message from Gmail: ${(e as Error).message}`,
+        `Could not load this message from the mailbox: ${(e as Error).message}`,
       );
     }
 
@@ -1684,8 +1787,9 @@ export class EmailIngestionService {
 
     try {
       for (let p = 0; p < maxPages; p++) {
-        const { ids, nextPageToken: np } = await this.gmailService.listMessageIdsPage(
+        const { ids, nextPageToken: np } = await this.listMailIdsPage(
           employeeId,
+          listAfterDate,
           listQuery,
           { maxResults, pageToken: pageTokenLoop },
         );
@@ -1740,8 +1844,9 @@ export class EmailIngestionService {
         try {
           let pt: string | null = null;
           for (let p = 0; p < maxPages; p++) {
-            const { ids, nextPageToken: np } = await this.gmailService.listMessageIdsPage(
+            const { ids, nextPageToken: np } = await this.listMailIdsPage(
               employeeId,
+              new Date(startMs),
               hQuery,
               { maxResults, pageToken: pt },
             );

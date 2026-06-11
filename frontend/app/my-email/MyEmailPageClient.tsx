@@ -2693,6 +2693,27 @@ function MyEmailPageInner() {
     openGmailOAuthWindow(body.url);
   }
 
+  async function connectOutlook(mailboxId: string) {
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return;
+    const res = await apiFetch(
+      `/auth/microsoft/authorize-url?employee_id=${encodeURIComponent(mailboxId)}`,
+      session.access_token,
+    );
+    const body = (await res.json().catch(() => ({}))) as {
+      url?: string;
+      message?: string;
+    };
+    if (!res.ok || !body.url) {
+      setError(body.message || 'Could not start Microsoft connection');
+      return;
+    }
+    openGmailOAuthWindow(body.url);
+  }
+
   /** Signed-in user’s own inbox row (CEO or department manager) — uses session profile for POST /self-tracking/mailboxes. */
   async function connectMyInbox() {
     if (!token || !me) return;
@@ -5145,6 +5166,7 @@ function MyEmailPageInner() {
                           mb={mb}
                           ceoEmailNorm={ceoEmailNorm}
                           onConnectGmail={() => void connectGmail(mb.id)}
+                          onConnectOutlook={() => void connectOutlook(mb.id)}
                           onRemove={() => void removeMailbox(mb.id)}
                           onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
                           removing={deletingId === mb.id}
@@ -5362,6 +5384,7 @@ function MyEmailPageInner() {
                           mb={mb}
                           showConnectGmail={false}
                           onConnectGmail={() => void connectGmail(mb.id)}
+                          onConnectOutlook={() => void connectOutlook(mb.id)}
                           onRemove={() => void removeMailbox(mb.id)}
                           onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
                           onSyncNow={

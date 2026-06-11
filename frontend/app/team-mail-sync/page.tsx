@@ -249,6 +249,33 @@ function TeamMailSyncInner() {
     }
   }
 
+  async function connectOutlook(mailboxId: string) {
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return;
+    setConnectingId(mailboxId);
+    setError(null);
+    try {
+      const res = await apiFetch(
+        `/auth/microsoft/authorize-url?employee_id=${encodeURIComponent(mailboxId)}`,
+        session.access_token,
+      );
+      const body = (await res.json().catch(() => ({}))) as { url?: string; message?: string };
+      if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
+      }
+      if (!res.ok || !body.url) {
+        setError(body.message || 'Could not start Microsoft connection');
+        return;
+      }
+      openGmailOAuthWindow(body.url);
+    } finally {
+      setConnectingId(null);
+    }
+  }
+
   if (!me || authLoading) {
     return (
       <AppShell role="HEAD" title="Team mail sync" subtitle="" onSignOut={() => void ctxSignOut()}>
@@ -363,6 +390,14 @@ function TeamMailSyncInner() {
                         >
                           {connectingId === selectedMailbox.id ? 'Opening…' : selectedMailbox.gmail_connected ? 'Reconnect Gmail' : 'Connect Gmail'}
                         </button>
+                        <button
+                          type="button"
+                          disabled={connectingId === selectedMailbox.id}
+                          onClick={() => void connectOutlook(selectedMailbox.id)}
+                          className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60"
+                        >
+                          Connect Outlook
+                        </button>
                       </div>
                     </div>
 
@@ -471,7 +506,15 @@ function TeamMailSyncInner() {
                               onClick={() => void connectGmail(mb.id)}
                               className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm hover:opacity-95 disabled:opacity-60"
                             >
-                              {connectingId === mb.id ? '…' : mb.gmail_connected ? 'Reconnect' : 'Connect'}
+                              {connectingId === mb.id ? '…' : mb.gmail_connected ? 'Reconnect' : 'Gmail'}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={connectingId === mb.id}
+                              onClick={() => void connectOutlook(mb.id)}
+                              className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60"
+                            >
+                              Outlook
                             </button>
                           </div>
                         </td>

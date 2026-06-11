@@ -7,10 +7,15 @@ import { assertRequiredEnv, isGeminiEnvConfigured } from './modules/common/env';
 import rateLimit from 'express-rate-limit';
 import type { Request } from 'express';
 
-function isGoogleOAuthCallback(req: Request): boolean {
+function isOAuthCallback(req: Request): boolean {
   if (req.method !== 'GET') return false;
   const path = req.path || '';
-  return path === '/auth/google/callback' || path.endsWith('/auth/google/callback');
+  return (
+    path === '/auth/google/callback' ||
+    path.endsWith('/auth/google/callback') ||
+    path === '/auth/microsoft/callback' ||
+    path.endsWith('/auth/microsoft/callback')
+  );
 }
 
 async function bootstrap() {
@@ -29,7 +34,7 @@ async function bootstrap() {
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests', code: 'RATE_LIMITED' },
-    skip: (req) => isGoogleOAuthCallback(req),
+    skip: (req) => isOAuthCallback(req),
   });
   app.use(['/auth', '/email-ingestion/run', '/conversations'], limiter);
   app.enableCors({

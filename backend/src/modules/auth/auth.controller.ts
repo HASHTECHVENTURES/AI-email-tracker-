@@ -23,6 +23,12 @@ import {
   getGoogleOAuthCredentials,
   getGoogleRedirectUri,
 } from '../common/google-oauth-credentials';
+import {
+  buildMicrosoftAuthorizeUrl,
+  getMicrosoftOAuthCredentials,
+  isMicrosoftOAuthConfigured,
+  MICROSOFT_MAIL_SCOPES,
+} from '../common/microsoft-oauth-credentials';
 
 function mePayload(
   u: NonNullable<Request['user']>,
@@ -171,6 +177,179 @@ export class AuthController {
     });
   }
 
+  /** Returns Microsoft OAuth URL (caller redirects browser). Requires Bearer auth. */
+  @Get('microsoft/authorize-url')
+  async microsoftAuthorizeUrl(@Req() req: Request, @Query('employee_id') employeeId: string) {
+    if (!req.user) {
+      throw new UnauthorizedException('Sign in required');
+    }
+    if (!employeeId?.trim()) {
+      throw new BadRequestException('employee_id is required');
+    }
+    if (!isMicrosoftOAuthConfigured()) {
+      throw new BadRequestException(
+        'Microsoft OAuth is not configured. Set MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET, and redirect URI on the server.',
+      );
+    }
+    const normalizedEmployeeId = employeeId.trim();
+    await this.employeesService.assertCanInitiateGmailOAuth(
+      getRequestContext(req),
+      normalizedEmployeeId,
+      req.user.id,
+      req.user.email?.trim().toLowerCase() ?? '',
+      req.user.linkedEmployeeId ?? undefined,
+    );
+    const state = await this.oauthStateService.createState({
+      employeeId: normalizedEmployeeId,
+      companyId: req.user.companyId,
+      userId: req.user.id,
+      role: req.user.role,
+    });
+    return { url: buildMicrosoftAuthorizeUrl(state) };
+  }
+
+  @PublicRoute()
+  @Get('microsoft/callback')
+  async handleMicrosoftCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Query('error') oauthError: string | undefined,
+    @Query('error_description') errorDescription: string | undefined,
+    @Res() res: Response,
+  ) {
+    const frontendBase = (process.env.FRONTEND_URL || 'http://localhost:3001').replace(/\/$/, '');
+
+    try {
+      if (oauthError) {
+        const hint = errorDescription ? `${oauthError}:${errorDescription}` : oauthError;
+        // eslint-disable-next-line no-console
+        console.error('Microsoft OAuth callback error', hint);
+        res.redirect(
+          `${frontendBase}/employees?oauth_error=${encodeURIComponent(oauthError)}`,
+        );
+        return;
+      }
+
+      if (!code || !state) {
+        res.redirect(`${frontendBase}/employees?oauth_error=missing_code_or_state`);
+        return;
+      }
+      if (!isMicrosoftOAuthConfigured()) {
+        res.redirect(`${frontendBase}/employees?oauth_error=not_configured`);
+        return;
+      }
+
+      let stateToken = state.trim();
+      if (stateToken.includes('%')) {
+        try {
+          stateToken = decodeURIComponent(stateToken);
+        } catch {
+          /* use trimmed original */
+        }
+      }
+
+      const payload = await this.oauthStateService.verifyAndConsumeState(stateToken);
+      const actor = await this.saasAuthService.findProfileByAuthId(payload.user_id);
+      if (!actor || actor.companyId !== payload.company_id) {
+        throw new UnauthorizedException('invalid_actor_context');
+      }
+      const oauthCtx: RequestContext = {
+        companyId: actor.companyId,
+        role: actor.role,
+        userId: actor.id,
+        employeeId: actor.role === 'EMPLOYEE' ? actor.linkedEmployeeId ?? undefined : undefined,
+        departmentId: actor.role === 'HEAD' ? actor.departmentId ?? undefined : undefined,
+      };
+      await this.employeesService.assertCanInitiateGmailOAuth(
+        oauthCtx,
+        payload.employee_id,
+        actor.id,
+        actor.email?.trim().toLowerCase() ?? '',
+        actor.linkedEmployeeId ?? undefined,
+      );
+
+      const validEmployee = await this.employeesService.employeeExists(payload.employee_id);
+      if (!validEmployee) {
+        throw new BadRequestException('invalid_employee');
+      }
+
+      const { clientId, clientSecret, redirectUri, tenantId } = getMicrosoftOAuthCredentials();
+      const tokenBody = new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code: code.trim(),
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+        scope: MICROSOFT_MAIL_SCOPES.join(' '),
+      });
+      const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`;
+      const tokenRes = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: tokenBody.toString(),
+      });
+      if (!tokenRes.ok) {
+        throw new BadRequestException(`token_exchange_failed:${await tokenRes.text()}`);
+      }
+      const tokens = (await tokenRes.json()) as {
+        access_token?: string;
+        refresh_token?: string;
+        expires_in?: number;
+        scope?: string;
+      };
+      if (!tokens.access_token) {
+        throw new BadRequestException('missing_access_token');
+      }
+      if (!tokens.refresh_token) {
+        const existing = await this.oauthTokenService.getExistingRefreshTokenPlaintext(
+          payload.employee_id,
+        );
+        if (!existing) {
+          throw new BadRequestException('missing_refresh_token');
+        }
+        tokens.refresh_token = existing;
+      }
+
+      await this.oauthTokenService.upsertTokens(
+        payload.employee_id,
+        tokens.access_token,
+        tokens.refresh_token!,
+        new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000),
+        tokens.scope,
+        'microsoft',
+      );
+
+      await this.employeesService.ensureMailSyncAfterOAuth(payload.employee_id);
+      await this.auditLogService.log({
+        userId: actor.id,
+        companyId: actor.companyId,
+        action: 'microsoft_connect',
+        entity: 'employee',
+        entityId: payload.employee_id,
+      });
+
+      const mailboxType = await this.employeesService.getMailboxType(payload.employee_id);
+      const isActorLinkedMailbox =
+        !!actor.linkedEmployeeId && actor.linkedEmployeeId === payload.employee_id;
+      let nextPath = '/employees';
+      if (mailboxType === 'SELF' || isActorLinkedMailbox) {
+        nextPath = '/my-email';
+      } else if (actor.role === 'HEAD') {
+        nextPath = '/team-mail-sync';
+      }
+      const done = new URL(`${frontendBase}/auth/gmail-oauth-done`);
+      done.searchParams.set('connected', '1');
+      done.searchParams.set('employee_id', payload.employee_id);
+      done.searchParams.set('provider', 'microsoft');
+      done.searchParams.set('next', nextPath);
+      res.redirect(done.toString());
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Microsoft OAuth callback failed', err);
+      res.redirect(`${frontendBase}/employees?oauth_error=exchange_failed`);
+    }
+  }
+
   @PublicRoute()
   @Get('google/callback')
   async handleCallback(
@@ -266,6 +445,7 @@ export class AuthController {
         refreshToken,
         new Date(tokens.expiry_date ?? Date.now() + 3600_000),
         tokens.scope ?? undefined,
+        'google',
       );
 
       await this.employeesService.ensureMailSyncAfterOAuth(payload.employee_id);

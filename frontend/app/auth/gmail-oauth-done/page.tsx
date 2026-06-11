@@ -48,7 +48,7 @@ function GmailOauthDoneInner() {
 
   return (
     <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 px-4 text-center text-sm text-slate-600">
-      <p className="font-medium text-slate-800">Finishing Gmail connection…</p>
+      <p className="font-medium text-slate-800">Finishing mail connection…</p>
       <p className="text-xs text-slate-500">This window should close automatically.</p>
     </div>
   );

@@ -5,6 +5,12 @@ import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { retryWithBackoff } from '../common/retry.util';
 import { EncryptionService } from './encryption.service';
 import { getGoogleOAuthCredentials } from '../common/google-oauth-credentials';
+import {
+  getMicrosoftOAuthCredentials,
+  MICROSOFT_MAIL_SCOPES,
+} from '../common/microsoft-oauth-credentials';
+
+export type OAuthProvider = 'google' | 'microsoft';
 
 interface OAuthTokenRow {
   employee_id: string;
@@ -12,6 +18,7 @@ interface OAuthTokenRow {
   refresh_token_enc: string;
   expires_at: string;
   scope: string | null;
+  oauth_provider?: string | null;
 }
 
 @Injectable()
@@ -130,12 +137,24 @@ export class OauthTokenService {
     }
   }
 
+  async getOAuthProvider(employeeId: string): Promise<OAuthProvider> {
+    const tokenEmployeeId = (await this.resolveTokenEmployeeId(employeeId)) ?? employeeId;
+    const { data } = await this.supabase
+      .from('employee_oauth_tokens')
+      .select('oauth_provider')
+      .eq('employee_id', tokenEmployeeId)
+      .maybeSingle();
+    const p = (data as { oauth_provider?: string } | null)?.oauth_provider?.trim().toLowerCase();
+    return p === 'microsoft' ? 'microsoft' : 'google';
+  }
+
   async upsertTokens(
     employeeId: string,
     accessToken: string,
     refreshToken: string,
     expiresAt: Date,
     scope?: string,
+    oauthProvider: OAuthProvider = 'google',
   ): Promise<void> {
     const { error } = await this.supabase
       .from('employee_oauth_tokens')
@@ -146,6 +165,7 @@ export class OauthTokenService {
           refresh_token_enc: this.encryptionService.encrypt(refreshToken),
           expires_at: expiresAt.toISOString(),
           scope: scope ?? null,
+          oauth_provider: oauthProvider,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'employee_id' },
@@ -158,7 +178,16 @@ export class OauthTokenService {
   }
 
   private async refresh(employeeId: string, row: OAuthTokenRow): Promise<string> {
-    this.logger.log(`Refreshing OAuth token for employee ${employeeId}`);
+    const provider: OAuthProvider =
+      row.oauth_provider?.trim().toLowerCase() === 'microsoft' ? 'microsoft' : 'google';
+    if (provider === 'microsoft') {
+      return this.refreshMicrosoft(employeeId, row);
+    }
+    return this.refreshGoogle(employeeId, row);
+  }
+
+  private async refreshGoogle(employeeId: string, row: OAuthTokenRow): Promise<string> {
+    this.logger.log(`Refreshing Google OAuth token for employee ${employeeId}`);
 
     const oauth2 = this.createOAuth2Client();
     oauth2.setCredentials({
@@ -169,7 +198,7 @@ export class OauthTokenService {
       const { credentials } = await retryWithBackoff(
         async () => oauth2.refreshAccessToken(),
         {
-          operationName: `oauth.refresh(${employeeId})`,
+          operationName: `oauth.refresh.google(${employeeId})`,
           attempts: 3,
           timeoutMs: 10_000,
           onRetry: (attempt, err, delayMs) => {
@@ -188,6 +217,7 @@ export class OauthTokenService {
         this.encryptionService.decrypt(row.refresh_token_enc),
         newExpiry,
         row.scope ?? undefined,
+        'google',
       );
 
       await this.supabase
@@ -198,10 +228,78 @@ export class OauthTokenService {
       return newAccessToken;
     } catch (err) {
       this.logger.error(
-        `OAuth refresh failed for ${employeeId}: ${(err as Error).message}. ` +
-          'If "unauthorized_client": verify GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET match the Google Cloud project, ' +
-          'and the OAuth consent screen is published (not Testing). Reconnect Gmail from the portal.',
+        `Google OAuth refresh failed for ${employeeId}: ${(err as Error).message}.`,
       );
+      const msg = String((err as Error).message || '').toLowerCase();
+      const status =
+        msg.includes('invalid_grant') || msg.includes('revoked') ? 'REVOKED' : 'EXPIRED';
+      await this.supabase
+        .from('employees')
+        .update({ gmail_status: status })
+        .eq('id', employeeId);
+      throw new Error(`Token refresh failed for employee ${employeeId}: ${(err as Error).message}`);
+    }
+  }
+
+  private async refreshMicrosoft(employeeId: string, row: OAuthTokenRow): Promise<string> {
+    this.logger.log(`Refreshing Microsoft OAuth token for employee ${employeeId}`);
+    const { clientId, clientSecret, tenantId } = getMicrosoftOAuthCredentials();
+    const refreshToken = this.encryptionService.decrypt(row.refresh_token_enc);
+
+    try {
+      const body = new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        scope: MICROSOFT_MAIL_SCOPES.join(' '),
+      });
+      const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`;
+      const res = await retryWithBackoff(
+        () =>
+          fetch(tokenUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+          }),
+        {
+          operationName: `oauth.refresh.microsoft(${employeeId})`,
+          attempts: 3,
+          timeoutMs: 10_000,
+        },
+      );
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      const data = (await res.json()) as {
+        access_token?: string;
+        refresh_token?: string;
+        expires_in?: number;
+        scope?: string;
+      };
+      if (!data.access_token) {
+        throw new Error('Microsoft refresh returned no access_token');
+      }
+      const newExpiry = new Date(Date.now() + (data.expires_in ?? 3600) * 1000);
+      const newRefresh = data.refresh_token ?? refreshToken;
+
+      await this.upsertTokens(
+        employeeId,
+        data.access_token,
+        newRefresh,
+        newExpiry,
+        data.scope ?? row.scope ?? undefined,
+        'microsoft',
+      );
+
+      await this.supabase
+        .from('employees')
+        .update({ gmail_status: 'CONNECTED' })
+        .eq('id', employeeId);
+
+      return data.access_token;
+    } catch (err) {
+      this.logger.error(`Microsoft OAuth refresh failed for ${employeeId}: ${(err as Error).message}`);
       const msg = String((err as Error).message || '').toLowerCase();
       const status =
         msg.includes('invalid_grant') || msg.includes('revoked') ? 'REVOKED' : 'EXPIRED';
