@@ -238,6 +238,14 @@ export function looksLikeClientDeliverableFyi(msg: InboundNoiseFields): boolean 
   const firstChunk = extractLatestInboundComposeBody(body).slice(0, 600);
   const combined = `${sub} ${firstChunk}`.toLowerCase();
 
+  if (
+    /\b(?:sponsorship|sponsor details|summit|conference|expo|symposium|peopletech|ibc \()\b/i.test(
+      combined,
+    )
+  ) {
+    return false;
+  }
+
   const attachmentShare =
     /\b(?:p\.?\s*f\.?\s*a\.?|please\s+find\s+attached|please\s+find\s+the\s+attached|find\s+attached|attached\s+(?:is|are|herewith|please\s+find)|enclosed\s+(?:is|are|please\s+find)|herewith\s+(?:the|is|are)?\s*|attached\s+(?:file|files|template|document|sheet|excel|pdf|format|master))\b/i.test(
       combined,
@@ -344,11 +352,31 @@ export function looksLikeShortAcknowledgment(msg: InboundNoiseFields): boolean {
   return SHORT_ACK_PATTERN.test(stripped);
 }
 
+/** Post-meeting AI recap / report digests — not a live calendar invite. */
+export function looksLikeMeetingRecapOrReportMail(msg: InboundNoiseFields): boolean {
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+
+  const { from, subject, body } = readInboundFields(msg);
+  const sub = subject.toLowerCase();
+  const b = body.toLowerCase().slice(0, 2_000);
+
+  if (/@(?:e\.read\.ai|fathom\.video|fireflies\.ai)\b/i.test(from)) {
+    return /\b(?:meeting report|recap|read meeting)\b/i.test(sub) || /\bmeeting report\b/i.test(b);
+  }
+
+  return (
+    /\b(?:meeting report|recap of your meeting|read meeting report)\b/i.test(sub) ||
+    /\bmonthly performance report\b/i.test(sub)
+  );
+}
+
 /** Marketing / promo / newsletter-style mail (Gmail Promotions label is a strong signal). */
 export function looksLikePromotionalMail(
   msg: InboundNoiseFields,
   hasNoiseGmailLabel = false,
 ): boolean {
+  if (looksLikeMeetingRecapOrReportMail(msg)) return true;
+
   if (looksLikeMeetingOrEventMail(msg)) return false;
 
   const { from, subject, body } = readInboundFields(msg);
@@ -356,6 +384,19 @@ export function looksLikePromotionalMail(
   const b = body.toLowerCase();
 
   if (hasNoiseGmailLabel) return true;
+
+  if (/businessprofile-noreply@google\.com/i.test(from)) return true;
+  if (/@(?:e\.read\.ai|fathom\.video|email\.openai\.com|e\.shrm\.org|ippgroup\.in)\b/i.test(from)) {
+    return true;
+  }
+
+  if (
+    /\b(?:sponsorship opportunit|summit & award|invites you to|performance report for|newsletter|webinar invite)\b/i.test(
+      sub,
+    )
+  ) {
+    return true;
+  }
 
   if (
     /^(no-?reply|noreply|do-?not-?reply|mailer-daemon|postmaster|newsletter|promotions?|deals?|offers?)@/i.test(
@@ -407,6 +448,7 @@ export function ingestForceRelevantCalendarOrMeeting(
   msg: InboundNoiseFields,
 ): { relevant: true; reason: string; confidence: number } | null {
   if (msg.direction && msg.direction !== 'INBOUND') return null;
+  if (looksLikeMeetingRecapOrReportMail(msg)) return null;
   if (!looksLikeMeetingOrEventMail(msg)) return null;
   return {
     relevant: true,

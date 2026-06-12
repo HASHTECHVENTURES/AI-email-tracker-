@@ -37,6 +37,7 @@ SKIP → Skipped (not stored). Newsletters, promos, spam, platform noise.
 - Client sends files/templates only (PFA, please find attached, sharing template) with no question → LOW.
 - Ticket/CRM auto-notifications (request logged, opportunity assigned, vtiger) → LOW.
 - Cold outreach without real name + company + specific ask → SKIP.
+- Sponsorship/summit/conference invites, Google performance reports, Read.ai/Fathom recaps → SKIP.
 - When uncertain → NEED_REPLY.
 
 ## Output

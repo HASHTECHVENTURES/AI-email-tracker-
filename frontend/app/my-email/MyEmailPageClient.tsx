@@ -245,7 +245,7 @@ function isNoFollowUpNoise(c: ConversationRow): boolean {
     return true;
   }
   if (
-    /(request has been logged|acknowledgement mail|opportunity has been assigned|assigned to you on vtiger)/i.test(
+    /(request has been logged|acknowledgement mail|opportunity has been assigned|assigned to you on vtiger|sponsorship opportunit|summit & award|performance report for|meeting report|invites you to)/i.test(
       text,
     )
   ) {
