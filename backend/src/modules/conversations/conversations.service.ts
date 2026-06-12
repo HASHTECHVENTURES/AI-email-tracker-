@@ -188,6 +188,66 @@ export class ConversationsService {
     return true;
   }
 
+  /** Remove the per-thread skip marker (e.g. after auto-delete left no stored messages). */
+  async clearUserResolvedThreadSkip(employeeId: string, providerThreadId: string): Promise<void> {
+    const markerId = userResolvedThreadSkipMessageId(providerThreadId);
+    const { error } = await this.supabase
+      .from('email_ingestion_skips')
+      .delete()
+      .eq('employee_id', employeeId)
+      .eq('provider_message_id', markerId);
+    if (error) {
+      this.logger.warn(`clearUserResolvedThreadSkip ${providerThreadId}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Threads auto-removed from DB still had skip markers — unblock Gmail re-import automatically.
+   * Called at the start of each ingestion cycle (no user action required).
+   */
+  async clearOrphanedUserResolvedThreadSkips(): Promise<number> {
+    const { data: markers, error } = await this.supabase
+      .from('email_ingestion_skips')
+      .select('employee_id, provider_message_id, provider_thread_id')
+      .like('provider_message_id', `${USER_RESOLVED_THREAD_SKIP_PREFIX}%`);
+
+    if (error || !markers?.length) {
+      if (error) this.logger.warn(`clearOrphanedUserResolvedThreadSkips: ${error.message}`);
+      return 0;
+    }
+
+    let cleared = 0;
+    for (const row of markers) {
+      const employeeId = String((row as { employee_id: string }).employee_id);
+      const threadId =
+        String((row as { provider_thread_id?: string | null }).provider_thread_id ?? '').trim() ||
+        String((row as { provider_message_id: string }).provider_message_id).slice(
+          USER_RESOLVED_THREAD_SKIP_PREFIX.length,
+        );
+      if (!threadId) continue;
+
+      const { count, error: countErr } = await this.supabase
+        .from('email_messages')
+        .select('provider_message_id', { count: 'exact', head: true })
+        .eq('employee_id', employeeId)
+        .eq('provider_thread_id', threadId);
+
+      if (countErr) {
+        this.logger.warn(`clearOrphanedUserResolvedThreadSkips count ${threadId}: ${countErr.message}`);
+        continue;
+      }
+      if ((count ?? 0) > 0) continue;
+
+      await this.clearUserResolvedThreadSkip(employeeId, threadId);
+      cleared += 1;
+    }
+
+    if (cleared > 0) {
+      this.logger.log(`clearOrphanedUserResolvedThreadSkips: unblocked ${cleared} thread(s) for re-import`);
+    }
+    return cleared;
+  }
+
   /** True when the user clicked Resolve on this Gmail thread (skip marker in ingestion ledger). */
   async isThreadPermanentlyResolved(employeeId: string, providerThreadId: string): Promise<boolean> {
     const markerId = userResolvedThreadSkipMessageId(providerThreadId);

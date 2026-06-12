@@ -326,6 +326,8 @@ export class EmailIngestionService {
     this.monthlyQuotaExhausted = false;
     this.aiEnrichmentService.resetMonthlyQuotaGate();
 
+    await this.conversationsService.clearOrphanedUserResolvedThreadSkips();
+
     const { data: companies, error: companiesErr } = await this.supabase.from('companies').select('id');
     if (companiesErr) {
       await this.settingsService.markIngestionFinished({
@@ -873,8 +875,20 @@ export class EmailIngestionService {
             msg.providerThreadId,
           )
         ) {
-          skippedFiltered += 1;
-          continue;
+          const { count: threadMsgCount } = await this.supabase
+            .from('email_messages')
+            .select('provider_message_id', { count: 'exact', head: true })
+            .eq('employee_id', employee.id)
+            .eq('provider_thread_id', msg.providerThreadId);
+          if ((threadMsgCount ?? 0) === 0) {
+            await this.conversationsService.clearUserResolvedThreadSkip(
+              employee.id,
+              msg.providerThreadId,
+            );
+          } else {
+            skippedFiltered += 1;
+            continue;
+          }
         }
 
         if (!batchLatestSent || msg.sentAt > batchLatestSent) {
