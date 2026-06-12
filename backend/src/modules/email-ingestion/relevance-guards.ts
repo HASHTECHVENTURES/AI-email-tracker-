@@ -45,6 +45,22 @@ function normalizeInboundAckBody(body: string): string {
     .trim();
 }
 
+/** Top compose block only — strips Gmail/Outlook quoted thread below "On … wrote:". */
+function extractLatestInboundComposeBody(body: string): string {
+  let text = (body ?? '').replace(/\r\n/g, '\n');
+  const wroteIdx = text.search(/\n\s*on\s+.{10,140}\s+wrote\s*:/i);
+  if (wroteIdx > 0) text = text.slice(0, wroteIdx);
+  return stripMobileReplySignature(
+    normalizeInboundAckBody(text)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
+}
+
 function stripMobileReplySignature(text: string): string {
   return text
     .replace(/\bsent on move\b[\s\S]*$/i, '')
@@ -192,6 +208,125 @@ export function looksLikeConversationClosure(msg: InboundNoiseFields): boolean {
  * the client is done — especially after the employee already replied.
  * Use with timestamp context: only treat as closure when employee replied BEFORE this message.
  */
+/**
+ * True when the inbound text clearly asks for a reply, review, or confirmation.
+ * Used to avoid auto-resolving deliverable FYI mail that also contains a question.
+ */
+export function looksLikeInboundReplyQuestion(msg: InboundNoiseFields): boolean {
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+
+  const { subject, body } = readInboundFields(msg);
+  const chunk = extractLatestInboundComposeBody(body).slice(0, 900);
+  const combined = `${subject}\n${chunk}`;
+  if (combined.includes('?')) return true;
+
+  return /\b(?:please|kindly)\s+(?:confirm|review|check|advise|revert|update\s+us|let\s+me\s+know)\b|\b(?:could|can|would)\s+you\b|\blet\s+me\s+know\b|\bawaiting\s+(?:your|the)\b|\bneed\s+(?:your|the)\b|\bplease\s+(?:reply|respond)\b|\bwhen\s+(?:can|will|do)\s+you\b|\bkindly\s+share\b/i.test(
+    combined,
+  );
+}
+
+/**
+ * Client sends requested files/templates (PFA, attachments) without asking for a reply.
+ * e.g. "PFA Employee Salary Master template" after kickoff discussion.
+ */
+export function looksLikeClientDeliverableFyi(msg: InboundNoiseFields): boolean {
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+  if (looksLikeInboundReplyQuestion(msg)) return false;
+
+  const { subject, body } = readInboundFields(msg);
+  const sub = subject.toLowerCase();
+  const firstChunk = extractLatestInboundComposeBody(body).slice(0, 600);
+  const combined = `${sub} ${firstChunk}`.toLowerCase();
+
+  const attachmentShare =
+    /\b(?:p\.?\s*f\.?\s*a\.?|please\s+find\s+attached|please\s+find\s+the\s+attached|find\s+attached|attached\s+(?:is|are|herewith|please\s+find)|enclosed\s+(?:is|are|please\s+find)|herewith\s+(?:the|is|are)?\s*|attached\s+(?:file|files|template|document|sheet|excel|pdf|format|master))\b/i.test(
+      combined,
+    ) ||
+    /\bsharing\s+(?:the\s+)?(?:\w+\s+){0,5}(?:template|file|document|sheet|format|master|data)\b/i.test(
+      combined,
+    ) ||
+    /\b(?:as\s+(?:discussed|requested|agreed))[\s\S]{0,100}\b(?:attach|template|file|document|pfa)\b/i.test(
+      combined,
+    );
+
+  const subjectPfa =
+    /\bp\.?\s*f\.?\s*a\.?\b/i.test(sub) ||
+    (/\battached\b/i.test(sub) && /\b(?:template|file|document|master|sheet)\b/i.test(sub));
+
+  return attachmentShare || (subjectPfa && firstChunk.length < 450);
+}
+
+/**
+ * Client promises to send/share a file by a date — informational after employee already replied.
+ * e.g. "will share salary template by tomorrow evening".
+ */
+export function looksLikeClientSharePromiseFyi(msg: InboundNoiseFields): boolean {
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+  if (looksLikeInboundReplyQuestion(msg)) return false;
+
+  const { body } = readInboundFields(msg);
+  const firstLine = extractLatestInboundComposeBody(body).slice(0, 320);
+
+  return (
+    /\b(?:will|shall)\s+(?:share|send)\s+(?:the\s+)?[\w\s]{0,40}(?:template|file|document|sheet|format|data|details?|master)\s+(?:by|on|before|today|tomorrow|eod|end\s+of\s+(?:the\s+)?day)/i.test(
+      firstLine,
+    ) ||
+    /\b(?:sharing|sending)\s+(?:the\s+)?[\w\s]{0,30}(?:template|file|document|master)\s+(?:by|on|before|today|tomorrow)/i.test(
+      firstLine,
+    )
+  );
+}
+
+/**
+ * Helpdesk / CRM / platform auto-notifications — not a human expecting a reply.
+ * e.g. ticket logged ack, vtiger "opportunity assigned".
+ */
+export function looksLikeAutomatedSystemNotification(msg: InboundNoiseFields): boolean {
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+
+  const { from, subject, body } = readInboundFields(msg);
+  const sub = subject.toLowerCase();
+  const head = extractLatestInboundComposeBody(body).slice(0, 900).toLowerCase();
+  const combined = `${sub} ${head}`;
+
+  if (
+    /(?:hrservicedesk|helpdesk|servicedesk|support-desk|ticketingsystem|zendesk|freshdesk|jira-mail|atlassian)\b/i.test(
+      from,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /(?:vtiger|salesforce|hubspot|zoho\s*crm|pipedrive|freshsales|monday\.com)\b/i.test(from) ||
+    /(?:vtiger|salesforce|hubspot)\b/i.test(combined)
+  ) {
+    return true;
+  }
+
+  const ticketAck =
+    /\b(?:request|ticket|case)\s+(?:has been\s+)?(?:logged|created|registered|submitted|opened)\b/i.test(
+      combined,
+    ) ||
+    /\b(?:acknowledgement|acknowledgment)\s+mail\b/i.test(combined) ||
+    /\byour request has been created\b/i.test(combined) ||
+    /request id\s*#*#*\d+/i.test(combined) ||
+    /^your request has been logged\b/i.test(sub);
+
+  const crmAssign =
+    /\b(?:new\s+)?opportunity\s+has been assigned\b/i.test(combined) ||
+    /\blead\s+has been assigned\b/i.test(combined) ||
+    /\bassigned to you on\s+(?:vtiger|salesforce|zoho|hubspot)/i.test(combined) ||
+    /^new opportunity has been assigned\b/i.test(sub);
+
+  const systemFooter =
+    /\b(?:do not reply to this (?:email|message)|this is an automated (?:message|notification|email))\b/i.test(
+      head,
+    );
+
+  return ticketAck || crmAssign || systemFooter;
+}
+
 export function looksLikeShortAcknowledgment(msg: InboundNoiseFields): boolean {
   if (msg.direction && msg.direction !== 'INBOUND') return false;
 

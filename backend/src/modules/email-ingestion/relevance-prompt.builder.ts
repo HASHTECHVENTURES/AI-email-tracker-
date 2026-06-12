@@ -34,6 +34,8 @@ SKIP → Skipped (not stored). Newsletters, promos, spam, platform noise.
 - direction=OUTBOUND → NEED_REPLY.
 - Automated sender + unsubscribe footer + not addressed to mailbox → SKIP.
 - One-word client reply ("OK","Confirmed") in live thread → LOW.
+- Client sends files/templates only (PFA, please find attached, sharing template) with no question → LOW.
+- Ticket/CRM auto-notifications (request logged, opportunity assigned, vtiger) → LOW.
 - Cold outreach without real name + company + specific ask → SKIP.
 - When uncertain → NEED_REPLY.
 

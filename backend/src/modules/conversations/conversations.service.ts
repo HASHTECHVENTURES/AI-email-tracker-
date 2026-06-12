@@ -15,6 +15,9 @@ import {
   looksLikeMeetingOrEventMail,
   looksLikeConversationClosure,
   looksLikeShortAcknowledgment,
+  looksLikeClientDeliverableFyi,
+  looksLikeClientSharePromiseFyi,
+  looksLikeAutomatedSystemNotification,
   isInternalColleagueSender,
 } from '../email-ingestion/relevance-guards';
 
@@ -648,8 +651,21 @@ export class ConversationsService {
       ? looksLikeInboundNoReplyNoise(inboundFields) && !latestInboundIsCalendar
       : false;
 
+    const latestInboundIsAutomatedSystem = inboundFields
+      ? looksLikeAutomatedSystemNotification(inboundFields)
+      : false;
+
+    const latestInboundIsDeliverableFyi = inboundFields
+      ? looksLikeClientDeliverableFyi(inboundFields) ||
+        (lastEmployeeReplyAt !== null &&
+          lastClientMsgAt !== null &&
+          lastClientMsgAt > lastEmployeeReplyAt &&
+          looksLikeClientSharePromiseFyi(inboundFields))
+      : false;
+
     const latestInboundIsClosure = inboundFields
       ? looksLikeConversationClosure(inboundFields) ||
+        latestInboundIsDeliverableFyi ||
         (lastEmployeeReplyAt !== null &&
           lastClientMsgAt !== null &&
           lastClientMsgAt > lastEmployeeReplyAt &&
@@ -706,6 +722,7 @@ export class ConversationsService {
         latestInboundIsCalendar ||
         latestInboundIsClosure ||
         latestInboundIsInternal ||
+        latestInboundIsAutomatedSystem ||
         userCcOnly ||
         userBccOnly ||
         aiAction === 'LOW'
@@ -718,6 +735,7 @@ export class ConversationsService {
               latestInboundIsCalendar ||
               latestInboundIsClosure ||
               latestInboundIsInternal ||
+              latestInboundIsAutomatedSystem ||
               aiAction === 'LOW'
             ? 'DONE'
             : userCcOnly || userBccOnly
@@ -731,35 +749,44 @@ export class ConversationsService {
               latestInboundIsCalendar ||
               latestInboundIsClosure ||
               latestInboundIsInternal ||
+              latestInboundIsAutomatedSystem ||
               aiAction === 'LOW'
             ? 'RESOLVED'
             : result.lifecycleStatus,
-      short_reason: latestInboundIsClosure
-        ? 'Client indicated the conversation is closed — no reply needed.'
-        : latestInboundIsInternal
+      short_reason: latestInboundIsDeliverableFyi
+        ? 'Client sent files or templates — no reply needed.'
+        : latestInboundIsClosure
+          ? 'Client indicated the conversation is closed — no reply needed.'
+          : latestInboundIsInternal
           ? 'Internal colleague message — no client reply needed.'
           : latestInboundIsCalendar
             ? 'Calendar/meeting invite — no reply needed.'
             : latestInboundIsNoise
               ? 'Promotional mail — no reply needed.'
-              : userBcc
-                ? 'You were BCC’d on this email — no reply needed.'
-                : userCcOnlyStrict
-                  ? 'You were only CC’d on this email — no reply needed.'
-                  : result.shortReason,
-      reason: latestInboundIsClosure
-        ? 'Client indicated the conversation is closed — no reply needed.'
-        : latestInboundIsInternal
+              : latestInboundIsAutomatedSystem
+                ? 'Automated ticket/CRM notification — no reply needed.'
+                : userBcc
+                  ? 'You were BCC’d on this email — no reply needed.'
+                  : userCcOnlyStrict
+                    ? 'You were only CC’d on this email — no reply needed.'
+                    : result.shortReason,
+      reason: latestInboundIsDeliverableFyi
+        ? 'Client sent files or templates — no reply needed.'
+        : latestInboundIsClosure
+          ? 'Client indicated the conversation is closed — no reply needed.'
+          : latestInboundIsInternal
           ? 'Internal colleague message — no client reply needed.'
           : latestInboundIsCalendar
             ? 'Calendar/meeting invite — no reply needed.'
             : latestInboundIsNoise
               ? 'Promotional mail — no reply needed.'
-              : userBcc
-                ? 'You were BCC’d on this email — no reply needed.'
-                : userCcOnlyStrict
-                  ? 'You were only CC’d on this email — no reply needed.'
-                  : result.shortReason,
+              : latestInboundIsAutomatedSystem
+                ? 'Automated ticket/CRM notification — no reply needed.'
+                : userBcc
+                  ? 'You were BCC’d on this email — no reply needed.'
+                  : userCcOnlyStrict
+                    ? 'You were only CC’d on this email — no reply needed.'
+                    : result.shortReason,
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,
       user_cc_only: userCcOnly,
@@ -769,6 +796,7 @@ export class ConversationsService {
         latestInboundIsNoise ||
         latestInboundIsClosure ||
         latestInboundIsInternal ||
+        latestInboundIsAutomatedSystem ||
         userCcOnly ||
         userBccOnly ||
         aiAction === 'LOW' ||

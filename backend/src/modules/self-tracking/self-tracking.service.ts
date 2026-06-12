@@ -13,6 +13,7 @@ import { EmployeesService, MailArchiveItem, OrgEmployeeDto } from '../employees/
 import { RequestContext } from '../common/request-context';
 import { isMigration026ColumnError } from '../common/migration-026-compat';
 import type { ConversationListItem } from '../dashboard/dashboard.service';
+import { FollowupService } from '../followup/followup.service';
 
 const CEO_SYNCED_MAIL_PAGE_LIMIT = 200;
 /** Max calendar span for historical missed search (inclusive). */
@@ -84,7 +85,20 @@ export class SelfTrackingService {
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
     private readonly employeesService: EmployeesService,
     private readonly conversationsService: ConversationsService,
+    private readonly followupService: FollowupService,
   ) {}
+
+  private withLiveSlaFields<T extends ConversationListItem>(row: T, slaHours: number): T {
+    const live = this.followupService.liveSlaDisplay(row, slaHours);
+    if (!live) return row;
+    return {
+      ...row,
+      delay_hours: live.delay_hours,
+      short_reason: live.short_reason,
+      reason: live.short_reason,
+      follow_up_status: live.follow_up_status,
+    };
+  }
 
   /**
    * CEO: self-tracked mailboxes (CEO-added) **plus** all TEAM org mailboxes — so manager-connected
@@ -321,7 +335,9 @@ export class SelfTrackingService {
       .map((r) => {
         const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
         const tid = encodeURIComponent(r.provider_thread_id);
-        return {
+        const slaHours =
+          mailboxes.find((m) => m.id === targetId)?.sla_hours_default ?? 24;
+        const item: ConversationListItem = {
           conversation_id: r.conversation_id,
           employee_id: targetId,
           employee_name: nameById.get(targetId) ?? targetId,
@@ -331,8 +347,7 @@ export class SelfTrackingService {
           follow_up_status: r.follow_up_status,
           priority: r.priority,
           delay_hours: r.delay_hours,
-          sla_hours:
-            mailboxes.find((m) => m.id === targetId)?.sla_hours_default ?? 24,
+          sla_hours: slaHours,
           summary: r.summary,
           short_reason: r.short_reason,
           reason: r.reason || r.short_reason,
@@ -349,6 +364,7 @@ export class SelfTrackingService {
           open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
           updated_at: r.updated_at,
         };
+        return this.withLiveSlaFields(item, slaHours);
       });
 
     const conversationsWithSubjects =
@@ -552,7 +568,9 @@ export class SelfTrackingService {
     const conversations: ConversationListItem[] = rows.map((r) => {
       const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
       const tid = encodeURIComponent(r.provider_thread_id);
-      return {
+      const slaHours =
+        mailboxes.find((m) => m.id === targetId)?.sla_hours_default ?? 24;
+      const item: ConversationListItem = {
         conversation_id: r.conversation_id,
         employee_id: targetId,
         employee_name: nameById.get(targetId) ?? targetId,
@@ -562,8 +580,7 @@ export class SelfTrackingService {
         follow_up_status: r.follow_up_status,
         priority: r.priority,
         delay_hours: r.delay_hours,
-        sla_hours:
-          mailboxes.find((m) => m.id === targetId)?.sla_hours_default ?? 24,
+        sla_hours: slaHours,
         summary: r.summary,
         short_reason: r.short_reason,
         reason: r.reason || r.short_reason,
@@ -580,6 +597,7 @@ export class SelfTrackingService {
         open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
         updated_at: r.updated_at,
       };
+      return this.withLiveSlaFields(item, slaHours);
     });
 
     const withSubjects = await this.conversationsService.attachThreadSubjects(conversations);
@@ -672,7 +690,7 @@ export class SelfTrackingService {
     const mapped = (data ?? []).map((r: Row) => {
       const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
       const tid = encodeURIComponent(r.provider_thread_id);
-      return {
+      const item: ConversationListItem = {
         conversation_id: r.conversation_id,
         employee_id: targetId,
         employee_name: employeeName,
@@ -699,6 +717,7 @@ export class SelfTrackingService {
         open_gmail_link: `https://mail.google.com/mail/u/0/#inbox/${tid}`,
         updated_at: r.updated_at,
       };
+      return this.withLiveSlaFields(item, slaHours);
     });
     return this.conversationsService.attachThreadSubjects(mapped);
   }

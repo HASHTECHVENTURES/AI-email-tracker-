@@ -7,6 +7,7 @@ import { AuthModule } from '../auth/auth.module';
 import { SettingsModule } from '../settings/settings.module';
 import { CompanyPolicyModule } from '../company-policy/company-policy.module';
 import { AiEnrichmentModule } from '../ai-enrichment/ai-enrichment.module';
+import { FollowupModule } from '../followup/followup.module';
 import { SelfTrackingService } from './self-tracking.service';
 import { SelfTrackingController } from './self-tracking.controller';
 import { HistoricalFetchService } from './historical-fetch.service';
@@ -20,6 +21,7 @@ import { HistoricalFetchService } from './historical-fetch.service';
     SettingsModule,
     CompanyPolicyModule,
     AiEnrichmentModule,
+    FollowupModule,
   ],
   controllers: [SelfTrackingController],
   providers: [supabaseProvider, SelfTrackingService, HistoricalFetchService],

@@ -240,7 +240,14 @@ function isNoFollowUpNoise(c: ConversationRow): boolean {
     return true;
   }
   if (
-    /(conversation.?(?:is\s+)?closed|no reply needed|no further action|client indicated.*closed|ai detected.*closed|internal colleague)/i.test(text)
+    /(conversation.?(?:is\s+)?closed|no reply needed|no further action|client indicated.*closed|ai detected.*closed|internal colleague|automated ticket|crm notification|files or templates)/i.test(text)
+  ) {
+    return true;
+  }
+  if (
+    /(request has been logged|acknowledgement mail|opportunity has been assigned|assigned to you on vtiger)/i.test(
+      text,
+    )
   ) {
     return true;
   }

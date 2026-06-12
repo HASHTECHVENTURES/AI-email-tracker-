@@ -28,6 +28,8 @@ import {
   ingestForceRelevantCalendarOrMeeting,
   ingestSkipReasonForInboundNoise,
   looksLikeDirectHumanMail,
+  looksLikeClientDeliverableFyi,
+  looksLikeAutomatedSystemNotification,
   finalizeIngestRelevanceFromAi,
   isInternalColleagueSender,
 } from './relevance-guards';
@@ -92,6 +94,40 @@ const GMAIL_LIST_PAGE_SIZE_DEFAULT = 200;
 const GMAIL_LIST_MAX_PAGES_DEFAULT = 6;
 /** Max new messages per mailbox that need a full fetch + AI classify per cron run (fairness across team). */
 const CLASSIFY_PER_EMPLOYEE_PER_RUN_DEFAULT = 20;
+/** Skip-ledger kind: prior ingest decision kept after `email_messages` row is deleted (no Gemini re-bill). */
+export const CLASSIFIED_STORED_SKIP_KIND = 'classified_stored';
+
+export type CachedIngestClassification = {
+  relevant: boolean;
+  reason: string | null;
+  confidence?: number | null;
+  aiAction?: string;
+};
+
+export type IngestClassificationDecision = CachedIngestClassification & {
+  inboundAiHardStop?: boolean;
+  transientAiUnavailable?: boolean;
+};
+
+/** Parse `[ACTION] reason` stored on messages / classification cache rows. */
+export function parseStoredRelevanceReason(
+  relevanceReason: string | null | undefined,
+): CachedIngestClassification | null {
+  const raw = relevanceReason?.trim();
+  if (!raw) return null;
+  const m = raw.match(/^\[(NEED_REPLY|CC|BCC|CALENDAR|LOW|SKIP)\]\s*(.*)$/s);
+  if (m) {
+    const action = m[1];
+    const reason = m[2]?.trim() || null;
+    return {
+      relevant: action !== 'SKIP',
+      reason,
+      confidence: 1,
+      aiAction: action,
+    };
+  }
+  return { relevant: true, reason: raw, confidence: 1 };
+}
 /** Recent inbox head poll window (days) — includes Promotions/Social misfiles. Set 0 to disable. */
 const RECENT_INBOX_HEAD_DAYS_DEFAULT = 3;
 /**
@@ -841,6 +877,8 @@ export class EmailIngestionService {
       }
       if (await this.messageInDatabase(employee.id, msgId)) continue;
 
+      const cachedEarly = await this.getCachedIngestClassification(employee.id, msgId);
+
       const skipKind = await this.getRecordedSkipKind(employee.id, msgId);
       if (skipKind) {
         const outboundPeek = await this.peekMailIsOutboundFrom(
@@ -860,11 +898,13 @@ export class EmailIngestionService {
         }
       }
 
-      if (classifyCountThisRun >= maxClassifyPerRun) {
+      if (classifyCountThisRun >= maxClassifyPerRun && !cachedEarly) {
         deferredByClassifyCap += 1;
         continue;
       }
-      classifyCountThisRun += 1;
+      if (!cachedEarly) {
+        classifyCountThisRun += 1;
+      }
 
       try {
         const msg = await this.fetchMailFullMessage(employee.id, employee.email, msgId);
@@ -903,7 +943,11 @@ export class EmailIngestionService {
         }
 
         let threadSlice: EmailMessage[] = [msg];
-        if (allowGeminiRelevance && this.relevanceModel) {
+        const cachedDecision = cachedEarly ?? (await this.getCachedIngestClassification(
+          employee.id,
+          msg.providerMessageId,
+        ));
+        if (!cachedDecision && allowGeminiRelevance && this.relevanceModel) {
           threadSlice = await this.fetchMailThreadForRelevance(
             employee.id,
             employee.email,
@@ -914,14 +958,21 @@ export class EmailIngestionService {
         }
 
         const isNoise = await this.isMailNoiseAsync(msg, employee.id);
-        const decision = await this.classifyMessageForIngest(
-          msg,
-          threadSlice,
-          employee.email,
-          isNoise,
-          allowGeminiRelevance,
-          ingestWithoutAiConfirmed,
-        );
+        const decision: IngestClassificationDecision =
+          cachedDecision ??
+          (await this.classifyMessageForIngest(
+            msg,
+            threadSlice,
+            employee.email,
+            isNoise,
+            allowGeminiRelevance,
+            ingestWithoutAiConfirmed,
+          ));
+        if (cachedDecision) {
+          this.logger.debug(
+            `[ingest] cache hit ${msg.providerMessageId} — skipped Gemini (${cachedDecision.aiAction ?? 'stored'})`,
+          );
+        }
         if (decision.inboundAiHardStop) {
           abortedInboundAi =
             decision.reason?.trim() ??
@@ -978,6 +1029,7 @@ export class EmailIngestionService {
         messages.push(msg);
         affectedThreads.add(msg.providerThreadId);
         threadMetaCache.delete(msg.providerThreadId);
+        await this.recordIngestClassificationCache(employee.id, msg, decision);
       } catch (err) {
         this.logger.warn(`Failed to fetch message ${msgId}: ${(err as Error).message}`);
       }
@@ -1186,14 +1238,7 @@ export class EmailIngestionService {
     hasNoiseGmailLabel: boolean,
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
-  ): Promise<{
-    relevant: boolean;
-    reason: string | null;
-    confidence: number | null;
-    aiAction?: string;
-    inboundAiHardStop?: boolean;
-    transientAiUnavailable?: boolean;
-  }> {
+  ): Promise<IngestClassificationDecision> {
     if (target.direction === 'OUTBOUND') {
       return {
         relevant: true,
@@ -1209,6 +1254,24 @@ export class EmailIngestionService {
     const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
     if (noiseSkip) {
       return { relevant: false, reason: noiseSkip, confidence: 1, aiAction: 'SKIP' };
+    }
+
+    if (target.direction === 'INBOUND' && looksLikeClientDeliverableFyi(target)) {
+      return {
+        relevant: true,
+        reason: 'Client attachment or template share — informational only.',
+        confidence: 1,
+        aiAction: 'LOW',
+      };
+    }
+
+    if (target.direction === 'INBOUND' && looksLikeAutomatedSystemNotification(target)) {
+      return {
+        relevant: true,
+        reason: 'Automated ticket/CRM notification — no reply needed.',
+        confidence: 1,
+        aiAction: 'LOW',
+      };
     }
 
     // Internal colleague on same email domain — not a client SLA thread.
@@ -1334,6 +1397,62 @@ export class EmailIngestionService {
     return row != null;
   }
 
+  /** Prior classification kept after portal row delete — reuse without Gemini. */
+  async getCachedIngestClassification(
+    employeeId: string,
+    providerMessageId: string,
+  ): Promise<CachedIngestClassification | null> {
+    const { data: sk } = await this.supabase
+      .from('email_ingestion_skips')
+      .select('skip_kind, skip_reason, ai_confidence_score')
+      .eq('employee_id', employeeId)
+      .eq('provider_message_id', providerMessageId)
+      .maybeSingle();
+    if (!sk) return null;
+    const kind = String((sk as { skip_kind?: string | null }).skip_kind ?? '').trim().toLowerCase();
+    if (kind !== CLASSIFIED_STORED_SKIP_KIND) return null;
+
+    const parsed = parseStoredRelevanceReason(
+      (sk as { skip_reason?: string | null }).skip_reason ?? null,
+    );
+    if (!parsed) return null;
+
+    const confidenceRaw = (sk as { ai_confidence_score?: number | null }).ai_confidence_score;
+    if (typeof confidenceRaw === 'number' && Number.isFinite(confidenceRaw)) {
+      parsed.confidence = Math.max(0, Math.min(1, confidenceRaw));
+    }
+    return parsed;
+  }
+
+  /** Persist ingest decision so a later re-sync after DB cleanup does not call Gemini again. */
+  async recordIngestClassificationCache(
+    employeeId: string,
+    msg: EmailMessage,
+    decision: {
+      relevant: boolean;
+      reason: string | null;
+      confidence?: number | null;
+      aiAction?: string;
+    },
+  ): Promise<void> {
+    const relevanceReason =
+      decision.aiAction && decision.reason
+        ? `[${decision.aiAction}] ${decision.reason}`
+        : decision.reason?.trim() || null;
+    if (!relevanceReason) return;
+
+    await this.recordIngestionSkip(employeeId, msg.providerMessageId, {
+      skip_kind: CLASSIFIED_STORED_SKIP_KIND,
+      skip_reason: relevanceReason,
+      classification_status: 'classified',
+      ai_confidence_score: decision.confidence,
+      subject: msg.subject,
+      from_email: msg.fromEmail,
+      sent_at: msg.sentAt,
+      provider_thread_id: msg.providerThreadId,
+    });
+  }
+
   private async getRecordedSkipKind(
     employeeId: string,
     providerMessageId: string,
@@ -1346,6 +1465,7 @@ export class EmailIngestionService {
       .maybeSingle();
     if (!sk) return null;
     const kind = String((sk as { skip_kind?: string | null }).skip_kind ?? '').trim().toLowerCase();
+    if (kind === CLASSIFIED_STORED_SKIP_KIND) return null;
     if (kind === 'before_tracking' || kind === 'ai_irrelevant' || kind === 'legacy') {
       return kind;
     }
@@ -1376,7 +1496,12 @@ export class EmailIngestionService {
     employeeId: string,
     providerMessageId: string,
     meta?: {
-      skip_kind: 'before_tracking' | 'ai_irrelevant' | 'quota_exceeded' | 'legacy';
+      skip_kind:
+        | 'before_tracking'
+        | 'ai_irrelevant'
+        | 'quota_exceeded'
+        | 'legacy'
+        | typeof CLASSIFIED_STORED_SKIP_KIND;
       skip_reason?: string | null;
       skip_reason_code?: SkipReasonCode | null;
       classification_status?: 'skipped' | 'classified' | 'pending' | 'failed' | null;
@@ -1456,9 +1581,10 @@ export class EmailIngestionService {
       throw new BadRequestException('Set a tracking start time before reanalyzing skipped mail');
     }
     if (await this.messageInDatabase(employeeId, providerMessageId)) {
-      await this.clearIngestionSkip(employeeId, providerMessageId);
       return { outcome: 'already_in_portal', reason: null, confidence: 1, conversationsUpdated: 0 };
     }
+
+    await this.clearIngestionSkip(employeeId, providerMessageId);
 
     const msg = await this.fetchMailFullMessage(employee.id, employee.email, providerMessageId);
     const startAt = new Date(tracking.trackingStartAt);
@@ -1496,9 +1622,13 @@ export class EmailIngestionService {
     );
 
     if (decision.relevant) {
-      msg.relevanceReason = decision.reason ?? 'Reanalyzed and classified as follow-up eligible.';
+      if (decision.aiAction && decision.reason) {
+        msg.relevanceReason = `[${decision.aiAction}] ${decision.reason}`;
+      } else {
+        msg.relevanceReason = decision.reason ?? 'Reanalyzed and classified as follow-up eligible.';
+      }
       await this.storeMessages(companyId, employeeId, [msg]);
-      await this.clearIngestionSkip(employeeId, providerMessageId);
+      await this.recordIngestClassificationCache(employeeId, msg, decision);
       const recompute = await this.conversationsService.recomputeForThreads([
         { companyId, employeeId, threadId: msg.providerThreadId },
       ]);
@@ -1511,7 +1641,7 @@ export class EmailIngestionService {
       return {
         outcome: 'classified',
         reason: decision.reason,
-        confidence: decision.confidence,
+        confidence: decision.confidence ?? null,
         conversationsUpdated: recompute.threadsProcessed,
       };
     }
@@ -1522,7 +1652,7 @@ export class EmailIngestionService {
       skip_reason: reasonText,
       skip_reason_code: this.skipReasonCodeForMessage(msg, decision.reason),
       classification_status: decision.inboundAiHardStop ? 'failed' : 'skipped',
-      ai_confidence_score: decision.confidence,
+      ai_confidence_score: decision.confidence ?? null,
       subject: msg.subject,
       from_email: msg.fromEmail,
       sent_at: msg.sentAt,
@@ -1531,7 +1661,7 @@ export class EmailIngestionService {
     await this.updateEmployeePartial(employee.id, companyId, {
       last_ai_analysis_at: new Date().toISOString(),
     });
-    return { outcome: 'skipped', reason: reasonText, confidence: decision.confidence, conversationsUpdated: 0 };
+    return { outcome: 'skipped', reason: reasonText, confidence: decision.confidence ?? null, conversationsUpdated: 0 };
   }
 
   /**

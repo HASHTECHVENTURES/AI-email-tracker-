@@ -138,6 +138,41 @@ export class FollowupService {
     return { followUpRequired, followUpStatus, lifecycleStatus, delayHours, shortReason };
   }
 
+  /**
+   * Refresh SLA delay/subtitle on read — avoids stale "just now" text when sync has not recomputed.
+   */
+  liveSlaDisplay(
+    row: {
+      follow_up_status: string;
+      follow_up_required?: boolean | null;
+      last_client_msg_at: string | null;
+      last_employee_reply_at: string | null;
+      manually_closed?: boolean | null;
+    },
+    slaHours: number,
+  ): { delay_hours: number; short_reason: string; follow_up_status: FollowUpStatus } | null {
+    if (row.follow_up_required === false) return null;
+    const status = (row.follow_up_status ?? '').toUpperCase();
+    if (status !== 'PENDING' && status !== 'MISSED') return null;
+
+    const lastClientMsgAt = row.last_client_msg_at ? new Date(row.last_client_msg_at) : null;
+    const lastEmployeeReplyAt = row.last_employee_reply_at
+      ? new Date(row.last_employee_reply_at)
+      : null;
+    const result = this.analyze(
+      lastClientMsgAt,
+      lastEmployeeReplyAt,
+      slaHours,
+      row.manually_closed === true,
+    );
+
+    return {
+      delay_hours: result.delayHours,
+      short_reason: result.shortReason,
+      follow_up_status: result.followUpStatus,
+    };
+  }
+
   private formatAgo(date: Date): string {
     const diffH = Math.round((Date.now() - date.getTime()) / (1000 * 60 * 60));
     if (diffH < 1) return 'just now';

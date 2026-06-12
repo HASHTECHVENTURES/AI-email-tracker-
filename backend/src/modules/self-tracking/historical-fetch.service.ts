@@ -32,7 +32,7 @@ import {
 import { RequestContext } from '../common/request-context';
 import type { ConversationListItem } from '../dashboard/dashboard.service';
 import { SelfTrackingService } from './self-tracking.service';
-import { EmailIngestionService } from '../email-ingestion/email-ingestion.service';
+import { EmailIngestionService, type IngestClassificationDecision } from '../email-ingestion/email-ingestion.service';
 import { AiEnrichmentService } from '../ai-enrichment/ai-enrichment.service';
 import type { gmail_v1 } from 'googleapis';
 
@@ -371,7 +371,11 @@ export class HistoricalFetchService {
         }
 
         let threadSlice: EmailMessage[] = [msg];
-        if (allowGeminiRelevance && this.relevanceModel) {
+        const cachedDecision = await this.emailIngestionService.getCachedIngestClassification(
+          employeeId,
+          msg.providerMessageId,
+        );
+        if (!cachedDecision && allowGeminiRelevance && this.relevanceModel) {
           threadSlice = await this.gmailService.fetchLastMessagesInThreadForRelevance(
             employeeId,
             employee.email,
@@ -386,14 +390,16 @@ export class HistoricalFetchService {
           break;
         }
 
-        const decision = await this.classifyMessage(
-          msg,
-          threadSlice,
-          employee.email,
-          this.gmailService.isNoise(msg.labelIds),
-          allowGeminiRelevance,
-          ingestWithoutAiConfirmed,
-        );
+        const decision: IngestClassificationDecision =
+          cachedDecision ??
+          (await this.classifyMessage(
+            msg,
+            threadSlice,
+            employee.email,
+            this.gmailService.isNoise(msg.labelIds),
+            allowGeminiRelevance,
+            ingestWithoutAiConfirmed,
+          ));
 
         onProgress?.({
           phase: 'ai_decision',
@@ -465,11 +471,21 @@ export class HistoricalFetchService {
         if (decision.reason) {
           msg.relevanceReason = decision.reason;
         }
-        msg.aiAction = decision.reason?.match(/^\[(NEED_REPLY|CC|CALENDAR|LOW|SKIP)\]/)?.[1] ?? null;
+        if (decision.aiAction) {
+          msg.aiAction = decision.aiAction;
+        } else {
+          msg.aiAction = decision.reason?.match(/^\[(NEED_REPLY|CC|CALENDAR|LOW|SKIP)\]/)?.[1] ?? null;
+        }
 
         messages.push(msg);
         affectedThreads.add(msg.providerThreadId);
         threadMetaCache.delete(msg.providerThreadId);
+        await this.emailIngestionService.recordIngestClassificationCache(employeeId, msg, {
+          relevant: decision.relevant,
+          reason: decision.reason,
+          confidence: decision.confidence ?? null,
+          aiAction: msg.aiAction ?? undefined,
+        });
         // Make the CEO portal feel live: once AI accepts a message, write and recompute
         // that thread right away so it can appear in Need reply / Waiting / CC'd / Done.
         await flushRelevantBatch();
