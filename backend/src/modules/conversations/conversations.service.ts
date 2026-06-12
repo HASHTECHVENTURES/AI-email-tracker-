@@ -768,24 +768,8 @@ export class ConversationsService {
       throw upsertFinal;
     }
 
-    // Product policy: DONE / RESOLVED threads are removed from DB, except calendar,
-    // CC'd, and low-priority rows which must stay visible in their portal tabs.
-    // Keep a resolved skip marker so Gmail sync does not recreate removed threads.
-    const keepForPortalTab =
-      latestInboundIsCalendar ||
-      row.user_cc_only ||
-      row.user_bcc_only ||
-      row.priority === 'LOW' ||
-      aiAction === 'LOW' ||
-      aiAction === 'CC' ||
-      aiAction === 'BCC';
-    if (
-      (row.follow_up_status === 'DONE' || row.lifecycle_status === 'RESOLVED') &&
-      !keepForPortalTab
-    ) {
-      await this.permanentlyRemoveConversation(companyId, conversationId);
-      return { action: existing ? 'updated' : 'created', enriched: false };
-    }
+    // Resolved threads stay in the database (Done tab / All threads). Only an explicit
+    // user Resolve action calls permanentlyRemoveConversation.
 
     const oldFollowUpStatus = (existing?.follow_up_status as FollowUpStatus | undefined) ?? null;
     await this.alertsService.notifyPendingToMissedIfNeeded({
