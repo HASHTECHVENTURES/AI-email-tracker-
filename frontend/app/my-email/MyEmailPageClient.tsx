@@ -120,13 +120,15 @@ type ConversationRow = {
   follow_up_required?: boolean;
   /** Latest inbound had you only on Cc, not To. */
   user_cc_only?: boolean;
+  /** Latest inbound: you were BCC'd (not in To or Cc). */
+  user_bcc_only?: boolean;
   /** Original Gmail subject (latest message in thread). */
   thread_subject?: string | null;
 };
 
 const MAIL_PAGE_SIZE = 50;
 
-type MailTab = 'action' | 'cc' | 'calendar' | 'closed' | 'noise' | 'all' | 'skipped';
+type MailTab = 'action' | 'cc' | 'bcc' | 'calendar' | 'closed' | 'noise' | 'all' | 'skipped';
 
 /** Mirrors GET /settings (includes company_admin_ai_enabled). Used before Start to gate ingest without Inbox AI. */
 type IngestAiSettings = {
@@ -238,7 +240,7 @@ function isNoFollowUpNoise(c: ConversationRow): boolean {
     return true;
   }
   if (
-    /(conversation.?(?:is\s+)?closed|no reply needed|no further action|client indicated.*closed|ai detected.*closed)/i.test(text)
+    /(conversation.?(?:is\s+)?closed|no reply needed|no further action|client indicated.*closed|ai detected.*closed|internal colleague)/i.test(text)
   ) {
     return true;
   }
@@ -272,7 +274,7 @@ function isCalendarEventConversation(c: ConversationRow): boolean {
 /** Need reply KPI/tab: hide stale *pending* threads, but never hide MISSED SLA rows (they were invisible before). */
 function passesNeedReplyVisibility(c: ConversationRow): boolean {
   if ((c.follow_up_status ?? '').toUpperCase() === 'DONE') return false;
-  if (c.user_cc_only === true) return false;
+  if (c.user_cc_only === true || c.user_bcc_only === true) return false;
   if (isNoFollowUpNoise(c)) return false;
   if (!needsMyReply(c)) return false;
   if (c.follow_up_status === 'MISSED') return true;
@@ -280,7 +282,7 @@ function passesNeedReplyVisibility(c: ConversationRow): boolean {
 }
 
 function isBoilerplateShortReason(sub: string): boolean {
-  return /^(client indicated|ai: low priority|ai: cc|ai: calendar|promotional mail|calendar\/meeting|you were (only )?cc|no reply needed)/i.test(
+  return /^(client indicated|ai: low priority|ai: cc|ai: bcc|ai: calendar|promotional mail|calendar\/meeting|you were (only )?cc|you were bcc|no reply needed)/i.test(
     sub.trim(),
   );
 }
@@ -501,7 +503,14 @@ function ConversationSubjectCell({
         <span className="font-medium leading-snug text-slate-900 line-clamp-2" title={title}>
           {title}
         </span>
-        {c.user_cc_only ? (
+        {c.user_bcc_only ? (
+          <span
+            className="shrink-0 rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-800"
+            title="You were BCC'd on the latest inbound (not in To or Cc)"
+          >
+            BCC
+          </span>
+        ) : c.user_cc_only ? (
           <span
             className="shrink-0 rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-800"
             title="You were only on Cc on the latest inbound (not To)"
@@ -3799,7 +3808,23 @@ function MyEmailPageInner() {
       (hideLowPriority
         ? scopedConversations.filter((c) => c.priority !== 'LOW')
         : scopedConversations
-      ).filter((c) => c.user_cc_only === true && (c.follow_up_status ?? '').toUpperCase() !== 'DONE'),
+      ).filter(
+        (c) =>
+          c.user_cc_only === true &&
+          c.user_bcc_only !== true &&
+          (c.follow_up_status ?? '').toUpperCase() !== 'DONE',
+      ),
+    [hideLowPriority, scopedConversations],
+  );
+
+  const bccScopedRows = useMemo(
+    () =>
+      (hideLowPriority
+        ? scopedConversations.filter((c) => c.priority !== 'LOW')
+        : scopedConversations
+      ).filter(
+        (c) => c.user_bcc_only === true && (c.follow_up_status ?? '').toUpperCase() !== 'DONE',
+      ),
     [hideLowPriority, scopedConversations],
   );
 
@@ -3860,6 +3885,8 @@ function MyEmailPageInner() {
         return scopedExcludingLowUnlessMissed.filter((c) => passesNeedReplyVisibility(c));
       case 'cc':
         return ccScopedRows;
+      case 'bcc':
+        return bccScopedRows;
       case 'calendar':
         return calendarScopedRows;
       case 'closed':
@@ -3881,6 +3908,7 @@ function MyEmailPageInner() {
     withoutLowScoped,
     scopedExcludingLowUnlessMissed,
     ccScopedRows,
+    bccScopedRows,
     calendarScopedRows,
     hideLowPriority,
     allTabStatus,
@@ -3976,7 +4004,9 @@ function MyEmailPageInner() {
     mailTab === 'action'
       ? 'Conversations waiting for your response.'
       : mailTab === 'cc'
-          ? 'Conversations where you were included for awareness.'
+          ? 'Conversations where you were on Cc for awareness (not in To).'
+          : mailTab === 'bcc'
+            ? 'Conversations where you were BCC\'d — hidden copy, no reply expected.'
           : mailTab === 'calendar'
             ? 'Google Calendar invites and RSVP/event notifications.'
           : mailTab === 'closed'
@@ -5077,7 +5107,7 @@ function MyEmailPageInner() {
           ) : null}
 
           {/* ── KPI strip — follow-up command center (scoped to tab) ── */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             {[
               {
                 label: 'Need your reply',
@@ -5091,6 +5121,12 @@ function MyEmailPageInner() {
                 value: ccScopedRows.length,
                 color: 'text-sky-700',
                 hint: 'Threads where you were only on Cc on the latest inbound',
+              },
+              {
+                label: "BCC'd (FYI)",
+                value: bccScopedRows.length,
+                color: 'text-violet-700',
+                hint: 'Threads where you were BCC\'d on the latest inbound (not in To or Cc)',
               },
               {
                 label: 'Missed SLA',
@@ -5496,7 +5532,12 @@ function MyEmailPageInner() {
                   [
                     'cc',
                     "CC'd",
-                    'Conversations where you were included for awareness.',
+                    'Conversations where you were on Cc for awareness (not in To).',
+                  ],
+                  [
+                    'bcc',
+                    "BCC'd",
+                    'Conversations where you were BCC\'d — hidden copy, no reply expected.',
                   ],
                   [
                     'calendar',
@@ -5541,6 +5582,9 @@ function MyEmailPageInner() {
                   ) : null}
                   {id === 'cc' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({ccScopedRows.length})</span>
+                  ) : null}
+                  {id === 'bcc' ? (
+                    <span className="ml-1.5 tabular-nums opacity-80">({bccScopedRows.length})</span>
                   ) : null}
                   {id === 'calendar' ? (
                     <span className="ml-1.5 tabular-nums opacity-80">({calendarScopedRows.length})</span>

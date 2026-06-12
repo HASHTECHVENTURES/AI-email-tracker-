@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   manually_closed BOOLEAN NOT NULL DEFAULT FALSE,
   is_ignored BOOLEAN NOT NULL DEFAULT FALSE,
   user_cc_only BOOLEAN NOT NULL DEFAULT FALSE,
+  user_bcc_only BOOLEAN NOT NULL DEFAULT FALSE,
   last_alert_sent_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (employee_id, provider_thread_id)

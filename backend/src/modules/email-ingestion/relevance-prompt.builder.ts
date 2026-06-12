@@ -24,7 +24,8 @@ You classify emails for a business follow-up portal used by CEOs, managers, and 
 
 ## Actions (maps to portal tabs)
 NEED_REPLY → Need reply tab. Someone expects a reply/decision from this mailbox.
-CC → CC'd tab. Mailbox only CC/BCC, not in To. No reply expected.
+CC → CC'd tab. Mailbox only on Cc (not in To). No reply expected.
+BCC → BCC'd tab. Mailbox not in To or Cc (hidden copy). No reply expected.
 CALENDAR → Calendar tab. Meeting invite, RSVP, calendar notification.
 LOW → Low priority tab. FYI, receipts <$300, thanks/noted closing a thread, no action needed.
 SKIP → Skipped (not stored). Newsletters, promos, spam, platform noise.
@@ -37,7 +38,7 @@ SKIP → Skipped (not stored). Newsletters, promos, spam, platform noise.
 - When uncertain → NEED_REPLY.
 
 ## Output
-JSON only: {"action":"NEED_REPLY|CC|CALENDAR|LOW|SKIP","reason":"max 15 words"}
+JSON only: {"action":"NEED_REPLY|CC|BCC|CALENDAR|LOW|SKIP","reason":"max 15 words"}
 `;
 
 /**

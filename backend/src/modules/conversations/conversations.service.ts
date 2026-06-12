@@ -15,6 +15,7 @@ import {
   looksLikeMeetingOrEventMail,
   looksLikeConversationClosure,
   looksLikeShortAcknowledgment,
+  isInternalColleagueSender,
 } from '../email-ingestion/relevance-guards';
 
 /** Skip-ledger marker so Gmail sync does not recreate a user-resolved thread. */
@@ -68,6 +69,7 @@ interface ConversationRow {
   manually_closed: boolean;
   is_ignored: boolean;
   user_cc_only: boolean;
+  user_bcc_only: boolean;
   updated_at: string;
 }
 
@@ -457,6 +459,7 @@ export class ConversationsService {
       manually_closed: old.manually_closed,
       is_ignored: old.is_ignored,
       user_cc_only: old.user_cc_only ?? false,
+      user_bcc_only: old.user_bcc_only ?? false,
       updated_at: new Date().toISOString(),
     };
 
@@ -555,9 +558,10 @@ export class ConversationsService {
     const userBcc = lastInbound
       ? ConversationsService.mailboxIsBccOnLatestInbound(employee.email, lastInbound.to_emails, lastInbound.cc_emails)
       : false;
-    const aiActionMatch = lastInbound?.relevance_reason?.match(/^\[(NEED_REPLY|CC|CALENDAR|LOW|SKIP)\]/);
+    const aiActionMatch = lastInbound?.relevance_reason?.match(/^\[(NEED_REPLY|CC|BCC|CALENDAR|LOW|SKIP)\]/);
     const aiAction = aiActionMatch ? aiActionMatch[1] : null;
-    const userCcOnly = userCcOnlyStrict || userBcc || aiAction === 'CC';
+    const userCcOnly = userCcOnlyStrict || aiAction === 'CC';
+    const userBccOnly = userBcc || aiAction === 'BCC';
 
     const slaHours = this.employeesService.getSlaHours(employee, globalSlaHours);
     const existing = await this.getConversation(companyId, `${employeeId}:${threadId}`);
@@ -590,6 +594,10 @@ export class ConversationsService {
           lastClientMsgAt !== null &&
           lastClientMsgAt > lastEmployeeReplyAt &&
           looksLikeShortAcknowledgment(inboundFields))
+      : false;
+
+    const latestInboundIsInternal = lastInbound
+      ? isInternalColleagueSender(employee.email, lastInbound.from_email)
       : false;
 
     const contactEmail = (
@@ -634,51 +642,79 @@ export class ConversationsService {
       last_client_msg_at: lastClientMsgAt?.toISOString() ?? null,
       last_employee_reply_at: lastEmployeeReplyAt?.toISOString() ?? null,
       follow_up_required:
-        latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || userCcOnly || aiAction === 'LOW'
+        latestInboundIsNoise ||
+        latestInboundIsCalendar ||
+        latestInboundIsClosure ||
+        latestInboundIsInternal ||
+        userCcOnly ||
+        userBccOnly ||
+        aiAction === 'LOW'
           ? false
           : result.followUpRequired,
       follow_up_status:
-        aiAction === 'CC'
+        aiAction === 'CC' || aiAction === 'BCC'
           ? 'PENDING'
-          : latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || aiAction === 'LOW'
+          : latestInboundIsNoise ||
+              latestInboundIsCalendar ||
+              latestInboundIsClosure ||
+              latestInboundIsInternal ||
+              aiAction === 'LOW'
             ? 'DONE'
-            : userCcOnly
+            : userCcOnly || userBccOnly
               ? 'PENDING'
               : result.followUpStatus,
       delay_hours: result.delayHours,
       lifecycle_status:
         aiAction === 'CC'
           ? 'ACTIVE'
-          : latestInboundIsNoise || latestInboundIsCalendar || latestInboundIsClosure || aiAction === 'LOW'
+          : latestInboundIsNoise ||
+              latestInboundIsCalendar ||
+              latestInboundIsClosure ||
+              latestInboundIsInternal ||
+              aiAction === 'LOW'
             ? 'RESOLVED'
             : result.lifecycleStatus,
       short_reason: latestInboundIsClosure
         ? 'Client indicated the conversation is closed — no reply needed.'
-        : latestInboundIsCalendar
-          ? 'Calendar/meeting invite — no reply needed.'
-          : latestInboundIsNoise
-            ? 'Promotional mail — no reply needed.'
-            : userBcc
-              ? 'You were BCC’d on this email — no reply needed.'
-              : userCcOnlyStrict
-                ? 'You were only CC’d on this email — no reply needed.'
-                : result.shortReason,
+        : latestInboundIsInternal
+          ? 'Internal colleague message — no client reply needed.'
+          : latestInboundIsCalendar
+            ? 'Calendar/meeting invite — no reply needed.'
+            : latestInboundIsNoise
+              ? 'Promotional mail — no reply needed.'
+              : userBcc
+                ? 'You were BCC’d on this email — no reply needed.'
+                : userCcOnlyStrict
+                  ? 'You were only CC’d on this email — no reply needed.'
+                  : result.shortReason,
       reason: latestInboundIsClosure
         ? 'Client indicated the conversation is closed — no reply needed.'
-        : latestInboundIsCalendar
-          ? 'Calendar/meeting invite — no reply needed.'
-          : latestInboundIsNoise
-            ? 'Promotional mail — no reply needed.'
-            : userBcc
-              ? 'You were BCC’d on this email — no reply needed.'
-              : userCcOnlyStrict
-                ? 'You were only CC’d on this email — no reply needed.'
-                : result.shortReason,
+        : latestInboundIsInternal
+          ? 'Internal colleague message — no client reply needed.'
+          : latestInboundIsCalendar
+            ? 'Calendar/meeting invite — no reply needed.'
+            : latestInboundIsNoise
+              ? 'Promotional mail — no reply needed.'
+              : userBcc
+                ? 'You were BCC’d on this email — no reply needed.'
+                : userCcOnlyStrict
+                  ? 'You were only CC’d on this email — no reply needed.'
+                  : result.shortReason,
       manually_closed: manuallyClosed,
       is_ignored: isIgnored,
       user_cc_only: userCcOnly,
+      user_bcc_only: userBccOnly,
       priority:
-        looksAutomated || latestInboundIsNoise || latestInboundIsClosure || userCcOnly || aiAction === 'LOW' || aiAction === 'CC' || latestInboundIsCalendar
+        looksAutomated ||
+        latestInboundIsNoise ||
+        latestInboundIsClosure ||
+        latestInboundIsInternal ||
+        userCcOnly ||
+        userBccOnly ||
+        aiAction === 'LOW' ||
+        aiAction === 'CC' ||
+        aiAction === 'BCC' ||
+        latestInboundIsCalendar
           ? 'LOW'
           : (existing?.priority ?? 'MEDIUM'),
       summary: summaryForRow,
@@ -690,6 +726,9 @@ export class ConversationsService {
 
     if (aiAction === 'CC' && !latestInboundIsClosure && !latestInboundIsNoise) {
       row.short_reason = 'AI: CC\'d — no reply needed.';
+      row.reason = row.short_reason;
+    } else if (aiAction === 'BCC' && !latestInboundIsClosure && !latestInboundIsNoise) {
+      row.short_reason = 'AI: BCC\'d — no reply needed.';
       row.reason = row.short_reason;
     } else if (aiAction === 'CALENDAR' && !latestInboundIsClosure && !latestInboundIsNoise) {
       row.short_reason = 'AI: Calendar/meeting invite.';
@@ -733,7 +772,13 @@ export class ConversationsService {
     // CC'd, and low-priority rows which must stay visible in their portal tabs.
     // Keep a resolved skip marker so Gmail sync does not recreate removed threads.
     const keepForPortalTab =
-      latestInboundIsCalendar || row.user_cc_only || row.priority === 'LOW' || aiAction === 'LOW' || aiAction === 'CC';
+      latestInboundIsCalendar ||
+      row.user_cc_only ||
+      row.user_bcc_only ||
+      row.priority === 'LOW' ||
+      aiAction === 'LOW' ||
+      aiAction === 'CC' ||
+      aiAction === 'BCC';
     if (
       (row.follow_up_status === 'DONE' || row.lifecycle_status === 'RESOLVED') &&
       !keepForPortalTab

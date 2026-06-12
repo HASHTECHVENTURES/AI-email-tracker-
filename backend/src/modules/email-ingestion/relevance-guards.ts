@@ -23,6 +23,39 @@ function readInboundFields(msg: InboundNoiseFields): {
   };
 }
 
+/** Same org domain as the tracked mailbox (e.g. colleague @opportune.in → niket@opportune.in). */
+export function isInternalColleagueSender(
+  employeeEmail: string,
+  inboundFromEmail: string | null | undefined,
+): boolean {
+  const emp = (employeeEmail ?? '').trim().toLowerCase();
+  const from = (inboundFromEmail ?? '').trim().toLowerCase();
+  if (!emp.includes('@') || !from.includes('@')) return false;
+  if (from === emp) return false;
+  const empDomain = emp.split('@')[1];
+  const fromDomain = from.split('@')[1];
+  return Boolean(empDomain && fromDomain && empDomain === fromDomain);
+}
+
+function normalizeInboundAckBody(body: string): string {
+  return body
+    .replace(/[-–—]+\s*(?:forwarded|original)\s+message.*$/is, '')
+    .replace(/^>.*$/gm, '')
+    .replace(/on\s+.{5,80}\s+wrote:.*$/is, '')
+    .trim();
+}
+
+function stripMobileReplySignature(text: string): string {
+  return text
+    .replace(/\bsent on move\b[\s\S]*$/i, '')
+    .replace(/\bplease excuse brevity\b[\s\S]*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const SHORT_ACK_PATTERN =
+  /^(?:approved!?|approval\s+granted|thanks?!?|thank\s+you!?|thx!?|ty!?|got\s+it!?|perfect!?|great!?|ok(?:ay)?!?|cool!?|noted!?|received!?|awesome!?|wonderful!?|sounds?\s+good!?|looks?\s+good!?|works?\s+for\s+(?:me|us)!?|will\s+do!?|on\s+it!?|done!?|sure!?|confirmed!?|no\s+(?:worries|problem)!?|all\s+(?:good|set|done)!?|we(?:'re| are)\s+(?:good|set|done)!?|much\s+appreciated!?|appreciate\s+it!?)[.!,]?\s*$/i;
+
 /**
  * Calendar invites & meeting events from any sender (not only marketing@).
  * Covers Gmail "Invitation: … @ Mon May 18, 2026 5pm", Fireflies prep, ICS bodies, etc.
@@ -136,7 +169,12 @@ export function looksLikeConversationClosure(msg: InboundNoiseFields): boolean {
     /\bthanks?,?\s+(?:that(?:'s|s)\s+all|we(?:'re| are)\s+good|no\s+need|all\s+good|all\s+set|nothing\s+else|no\s+further|so\s+much|a\s+lot|for\s+(?:the\s+)?(?:update|info|help|clarification|confirmation|quick|prompt))\b/i;
 
   const resolvedStandalone =
-    /(?:^|\.\s*|\n\s*)(?:resolved|completed|closed|fixed|sorted)\s*[.!]?\s*$/im;
+    /(?:^|\.\s*|\n\s*)(?:resolved|completed|closed|fixed|sorted|approved)\s*[.!]?\s*$/im;
+
+  const approvalLead =
+    /^(?:approved|approval\s+granted)[.!,]?\b/i.test(
+      stripMobileReplySignature(normalizeInboundAckBody(body).split('\n')[0] ?? ''),
+    );
 
   return (
     closurePhrases.test(sub) || closurePhrases.test(b) ||
@@ -144,7 +182,8 @@ export function looksLikeConversationClosure(msg: InboundNoiseFields): boolean {
     conversationEnd.test(b) ||
     clientClosing.test(b) ||
     thanksClosure.test(b) ||
-    resolvedStandalone.test(b)
+    resolvedStandalone.test(b) ||
+    approvalLead
   );
 }
 
@@ -157,19 +196,17 @@ export function looksLikeShortAcknowledgment(msg: InboundNoiseFields): boolean {
   if (msg.direction && msg.direction !== 'INBOUND') return false;
 
   const { body } = readInboundFields(msg);
-  const stripped = body
-    .replace(/[-–—]+\s*(?:forwarded|original)\s+message.*$/is, '')
-    .replace(/^>.*$/gm, '')
-    .replace(/on\s+.{5,80}\s+wrote:.*$/is, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const normalized = normalizeInboundAckBody(body);
+  const firstLine = stripMobileReplySignature(
+    (normalized.split('\n')[0] ?? '').replace(/\s+/g, ' ').trim(),
+  );
+  if (firstLine.length > 0 && firstLine.length <= 80 && SHORT_ACK_PATTERN.test(firstLine)) {
+    return true;
+  }
 
+  const stripped = stripMobileReplySignature(normalized.replace(/\s+/g, ' ').trim());
   if (stripped.length > 120) return false;
-
-  const shortAck =
-    /^(?:thanks?!?|thank\s+you!?|thx!?|ty!?|got\s+it!?|perfect!?|great!?|ok(?:ay)?!?|cool!?|noted!?|received!?|awesome!?|wonderful!?|sounds?\s+good!?|looks?\s+good!?|works?\s+for\s+(?:me|us)!?|will\s+do!?|on\s+it!?|done!?|sure!?|confirmed!?|no\s+(?:worries|problem)!?|all\s+(?:good|set|done)!?|we(?:'re| are)\s+(?:good|set|done)!?|much\s+appreciated!?|appreciate\s+it!?)[.!,]?\s*$/i;
-
-  return shortAck.test(stripped);
+  return SHORT_ACK_PATTERN.test(stripped);
 }
 
 /** Marketing / promo / newsletter-style mail (Gmail Promotions label is a strong signal). */

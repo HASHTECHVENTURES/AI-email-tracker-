@@ -29,6 +29,7 @@ import {
   ingestSkipReasonForInboundNoise,
   looksLikeDirectHumanMail,
   finalizeIngestRelevanceFromAi,
+  isInternalColleagueSender,
 } from './relevance-guards';
 import { RELEVANCE_MODEL_TEMPERATURE, RELEVANCE_SYSTEM_INSTRUCTION } from './relevance-prompt.builder';
 import { OauthTokenService } from '../auth/oauth-token.service';
@@ -1103,7 +1104,7 @@ export class EmailIngestionService {
       return null;
     }
 
-    const VALID_ACTIONS = new Set(['NEED_REPLY', 'CC', 'CALENDAR', 'LOW', 'SKIP']);
+    const VALID_ACTIONS = new Set(['NEED_REPLY', 'CC', 'BCC', 'CALENDAR', 'LOW', 'SKIP']);
 
     const retries = 2;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -1196,6 +1197,19 @@ export class EmailIngestionService {
       return { relevant: false, reason: noiseSkip, confidence: 1, aiAction: 'SKIP' };
     }
 
+    // Internal colleague on same email domain — not a client SLA thread.
+    if (
+      target.direction === 'INBOUND' &&
+      isInternalColleagueSender(employeeEmail, target.fromEmail)
+    ) {
+      return {
+        relevant: true,
+        reason: 'Internal colleague — no client reply expected.',
+        confidence: 1,
+        aiAction: 'LOW',
+      };
+    }
+
     // CC-only / BCC pre-filter: mailbox not in To → CC tab (no Gemini needed)
     if (target.direction === 'INBOUND') {
       const m = employeeEmail.trim().toLowerCase();
@@ -1205,8 +1219,8 @@ export class EmailIngestionService {
         if (inCc) {
           return { relevant: true, reason: 'Mailbox only in CC — no reply expected.', confidence: 1, aiAction: 'CC' };
         }
-        // Not in To or Cc → BCC'd, treat as CC
-        return { relevant: true, reason: 'Mailbox BCC — informational only.', confidence: 1, aiAction: 'CC' };
+        // Not in To or Cc → BCC'd (Gmail does not expose Bcc header to recipients)
+        return { relevant: true, reason: 'Mailbox BCC — informational only.', confidence: 1, aiAction: 'BCC' };
       }
     }
 
