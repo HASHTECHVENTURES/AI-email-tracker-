@@ -65,6 +65,21 @@ function isMailboxGmailConnected(m: Pick<Mailbox, 'gmail_connected' | 'gmail_sta
   return m.gmail_status === 'CONNECTED';
 }
 
+/** Gmail / Outlook / neutral label for connected mailboxes (sync strip copy). */
+function connectedMailProviderLabel(
+  mailboxes: Pick<Mailbox, 'gmail_connected' | 'gmail_status' | 'mail_provider'>[],
+): string {
+  const connected = mailboxes.filter((m) => isMailboxGmailConnected(m));
+  if (connected.length === 0) return 'Mail';
+  const providers = new Set(
+    connected.map((m) => (m.mail_provider === 'microsoft' ? 'microsoft' : 'google')),
+  );
+  if (providers.size === 1) {
+    return providers.has('microsoft') ? 'Outlook' : 'Gmail';
+  }
+  return 'Mail';
+}
+
 /** One UI row per inbox email when duplicate `employees` roster rows exist (e.g. secondary team listing). */
 function dedupeMailboxesByEmailPreferPrimary(mailboxes: Mailbox[]): Mailbox[] {
   const byEmail = new Map<string, Mailbox[]>();
@@ -1409,6 +1424,7 @@ function mailboxReadyForQuickLiveSync(mb: Mailbox, trackingIso: string): boolean
 function summarizeIngestionForMailboxes(
   results: IngestionRunResultRow[] | undefined,
   mailboxIds: Set<string>,
+  providerLabel = 'Mail',
 ): string | null {
   if (!results?.length) return null;
   let newMessages = 0;
@@ -1425,10 +1441,10 @@ function summarizeIngestionForMailboxes(
     return errors[0]!.length > 320 ? `${errors[0]!.slice(0, 317)}…` : errors[0]!;
   }
   if (newMessages === 0 && skippedFiltered === 0) {
-    return 'Gmail was checked — no new messages were stored for your inbox this run (already synced or none in the crawl window).';
+    return `${providerLabel} was checked — no new messages were stored for your inbox this run (already synced or none in the crawl window).`;
   }
   if (newMessages === 0 && skippedFiltered > 0) {
-    return `Gmail was checked — 0 new messages stored, ${skippedFiltered} skipped (Inbox AI, date window, or duplicates). Open All threads or AI skipped to find mail.`;
+    return `${providerLabel} was checked — 0 new messages stored, ${skippedFiltered} skipped (Inbox AI, date window, or duplicates). Open All threads or AI skipped to find mail.`;
   }
   return `Saved ${newMessages} new message(s) this run.${skippedFiltered > 0 ? ` ${skippedFiltered} skipped — check AI skipped if you expected more.` : ''}`;
 }
@@ -1467,6 +1483,7 @@ function buildLiveMailCountdownCopy(opts: {
   liveIngestAwaitingServer: boolean;
   liveSyncStartedAtMs: number | null;
   awaitingAfterRun: boolean;
+  providerLabel?: string;
 }): { headline: string; detail: string; tone: 'active' | 'wait' | 'idle' | 'halted' } {
   const {
     nowMs,
@@ -1476,6 +1493,7 @@ function buildLiveMailCountdownCopy(opts: {
     liveIngestAwaitingServer,
     liveSyncStartedAtMs,
     awaitingAfterRun,
+    providerLabel = 'Mail',
   } = opts;
 
   if (runtime?.apiQuotaExhausted) {
@@ -1485,7 +1503,7 @@ function buildLiveMailCountdownCopy(opts: {
         : '';
     return {
       tone: 'halted',
-      headline: 'Automatic Gmail checks stopped — API credits exhausted',
+      headline: `Automatic ${providerLabel} checks stopped — API credits exhausted`,
       detail:
         `All sync, storage, and alerts are paused.${since} ` +
         'When you top up Google AI Studio, everything resumes on its own — usually within about a minute.',
@@ -1529,7 +1547,7 @@ function buildLiveMailCountdownCopy(opts: {
     );
     return {
       tone: 'wait',
-      headline: `Next automatic Gmail check in ${formatCountdownMinutesSeconds(waitSec)}`,
+      headline: `Next automatic ${providerLabel} check in ${formatCountdownMinutesSeconds(waitSec)}`,
       detail: `Background live mail runs about every ${intervalMin} minute${intervalMin === 1 ? '' : 's'} for connected inboxes. Press Sync now to pull new mail immediately (usually under 3 minutes for your mailbox).`,
     };
   }
@@ -1538,7 +1556,7 @@ function buildLiveMailCountdownCopy(opts: {
     tone: 'idle',
     headline: 'Live mail',
     detail: scheduleReady
-      ? 'Automatic checks run on a schedule. Use Sync now to fetch new Gmail mail for your inbox right away.'
+      ? `Automatic checks run on a schedule. Use Sync now to fetch new ${providerLabel} mail for your inbox right away.`
       : 'Loading sync schedule…',
   };
 }
@@ -1695,6 +1713,7 @@ function CeoLiveSyncStrip({
   void tick;
   const nowMs = Date.now();
   const connected = mailboxes.some((m) => isMailboxGmailConnected(m));
+  const providerLabel = connectedMailProviderLabel(mailboxes);
   const latestIso = pickLatestMailboxSyncIso(mailboxes);
   const awaitingAfterRun =
     !latestIso &&
@@ -1708,6 +1727,7 @@ function CeoLiveSyncStrip({
     liveIngestAwaitingServer,
     liveSyncStartedAtMs,
     awaitingAfterRun,
+    providerLabel,
   });
   const trackingWindowPreview = trackingWindowPreviewLine(liveTrackDate, liveTrackTime);
 
@@ -1763,7 +1783,7 @@ function CeoLiveSyncStrip({
           {latestIso ? (
             <div className="sm:col-span-2">
               <p className="rounded-lg bg-slate-50/90 px-2.5 py-1.5 text-[10px] leading-snug text-slate-600">
-                <strong className="font-medium text-slate-700">Last synced</strong> means Gmail was checked — not
+                <strong className="font-medium text-slate-700">Last synced</strong> means {providerLabel} was checked — not
                 every message becomes a row on <strong className="font-medium text-slate-700">Need your reply</strong>{' '}
                 (that tab is follow-ups only). Use <strong className="font-medium text-slate-700">All threads</strong>{' '}
                 for any tracked thread, and <strong className="font-medium text-slate-700">AI skipped</strong> if Inbox
@@ -2948,7 +2968,11 @@ function MyEmailPageInner() {
         setError(j.message ?? 'Email syncing is off in Settings.');
         return;
       }
-      const hint = summarizeIngestionForMailboxes(j.results, new Set([mb.id]));
+      const hint = summarizeIngestionForMailboxes(
+        j.results,
+        new Set([mb.id]),
+        connectedMailProviderLabel([mb]),
+      );
       setSuccess(
         j.status === 'running'
           ? `Sync already running — ${mb.name}'s inbox will refresh when it finishes.`
@@ -4165,7 +4189,11 @@ function MyEmailPageInner() {
       }
       setLiveSyncAwaitingTimestamp(Date.now());
       const mailboxIdSet = new Set(targets.map((mb) => mb.id));
-      const resultHint = summarizeIngestionForMailboxes(j.results, mailboxIdSet);
+      const resultHint = summarizeIngestionForMailboxes(
+        j.results,
+        mailboxIdSet,
+        connectedMailProviderLabel(targets),
+      );
       if (j.status === 'running') {
         setLiveSyncStartedAtMs(Date.now());
         setLiveIngestAwaitingServer(true);

@@ -54,6 +54,75 @@ export class MicrosoftGraphService {
     return `'${d.toISOString()}'`;
   }
 
+  private messageTimeMs(
+    m: GraphMessageListItem,
+    field: 'receivedDateTime' | 'sentDateTime',
+  ): number | null {
+    const raw = field === 'receivedDateTime' ? m.receivedDateTime : m.sentDateTime;
+    if (!raw) return null;
+    const ms = new Date(raw).getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  private idsAfterDate(
+    items: GraphMessageListItem[],
+    afterDate: Date,
+    field: 'receivedDateTime' | 'sentDateTime',
+  ): string[] {
+    const afterMs = afterDate.getTime();
+    return items
+      .filter((m) => {
+        const ms = this.messageTimeMs(m, field);
+        return ms != null && ms >= afterMs;
+      })
+      .map((m) => m.id)
+      .filter((id): id is string => Boolean(id));
+  }
+
+  /** Some Outlook tenants reject $filter on folder messages — fall back to client-side date filtering. */
+  private async listFolderIdsAfterDate(
+    employeeId: string,
+    folder: 'inbox' | 'sentItems',
+    afterDate: Date,
+    top: number,
+  ): Promise<string[]> {
+    const dateField = folder === 'inbox' ? 'receivedDateTime' : 'sentDateTime';
+    const afterIso = this.isoFilterAfter(afterDate);
+    const filterUrl =
+      `/me/mailFolders/${folder}/messages?$filter=${dateField} ge ${afterIso}` +
+      `&$orderby=${dateField} desc&$top=${top}&$select=id,${dateField}`;
+
+    const filteredRes = await retryWithBackoff(
+      () => this.graphFetch(employeeId, filterUrl),
+      { operationName: `graph.list.${folder}.filter(${employeeId})`, attempts: 2, timeoutMs: 15_000 },
+    );
+    if (filteredRes.ok) {
+      const data = (await filteredRes.json()) as { value?: GraphMessageListItem[] };
+      return (data.value ?? []).map((m) => m.id).filter((id): id is string => Boolean(id));
+    }
+
+    const errText = await filteredRes.text();
+    this.logger.warn(
+      `Graph filtered list failed for ${folder} (${filteredRes.status}): ${errText.slice(0, 240)}`,
+    );
+
+    const plainTop = Math.min(Math.max(top * 3, top), 200);
+    const plainUrl =
+      `/me/mailFolders/${folder}/messages?$orderby=${dateField} desc&$top=${plainTop}&$select=id,${dateField}`;
+    const plainRes = await retryWithBackoff(
+      () => this.graphFetch(employeeId, plainUrl),
+      { operationName: `graph.list.${folder}.plain(${employeeId})`, attempts: 2, timeoutMs: 15_000 },
+    );
+    if (!plainRes.ok) {
+      this.logger.warn(
+        `Graph plain list failed for ${folder} (${plainRes.status}): ${(await plainRes.text()).slice(0, 240)}`,
+      );
+      return [];
+    }
+    const plainData = (await plainRes.json()) as { value?: GraphMessageListItem[] };
+    return this.idsAfterDate(plainData.value ?? [], afterDate, dateField);
+  }
+
   async listMessageIdsPage(
     employeeId: string,
     afterDate: Date,
@@ -72,45 +141,25 @@ export class MicrosoftGraphService {
       return { ids, nextPageToken: data['@odata.nextLink'] ?? null };
     }
 
-    const afterIso = this.isoFilterAfter(afterDate);
     const top = Math.min(opts.maxResults, 200);
-    const inboxUrl =
-      `/me/mailFolders/inbox/messages?$filter=receivedDateTime ge ${afterIso}` +
-      `&$orderby=receivedDateTime desc&$top=${top}&$select=id,receivedDateTime`;
-    const sentUrl =
-      `/me/mailFolders/sentItems/messages?$filter=sentDateTime ge ${afterIso}` +
-      `&$orderby=sentDateTime desc&$top=${top}&$select=id,sentDateTime`;
-
     const idSeen = new Set<string>();
     const ids: string[] = [];
-    let nextPageToken: string | null = null;
 
-    for (const url of [inboxUrl, sentUrl]) {
+    for (const folder of ['inbox', 'sentItems'] as const) {
       try {
-        const res = await retryWithBackoff(
-          () => this.graphFetch(employeeId, url),
-          { operationName: `graph.list(${employeeId})`, attempts: 3, timeoutMs: 15_000 },
-        );
-        if (!res.ok) {
-          this.logger.warn(`Graph list failed ${url}: ${res.status} ${await res.text()}`);
-          continue;
-        }
-        const data = (await res.json()) as { value?: GraphMessageListItem[]; '@odata.nextLink'?: string };
-        for (const m of data.value ?? []) {
-          if (m.id && !idSeen.has(m.id)) {
-            idSeen.add(m.id);
-            ids.push(m.id);
+        const folderIds = await this.listFolderIdsAfterDate(employeeId, folder, afterDate, top);
+        for (const id of folderIds) {
+          if (!idSeen.has(id)) {
+            idSeen.add(id);
+            ids.push(id);
           }
         }
-        if (!nextPageToken && data['@odata.nextLink']) {
-          nextPageToken = data['@odata.nextLink'];
-        }
       } catch (err) {
-        this.logger.warn(`Graph list error: ${(err as Error).message}`);
+        this.logger.warn(`Graph list error (${folder}): ${(err as Error).message}`);
       }
     }
 
-    return { ids, nextPageToken };
+    return { ids, nextPageToken: null };
   }
 
   async listRecentInboxHead(
@@ -118,14 +167,16 @@ export class MicrosoftGraphService {
     afterDate: Date,
     maxResults: number,
   ): Promise<string[]> {
-    const afterIso = this.isoFilterAfter(afterDate);
-    const url =
-      `/me/mailFolders/inbox/messages?$filter=receivedDateTime ge ${afterIso}` +
-      `&$orderby=receivedDateTime desc&$top=${maxResults}&$select=id`;
-    const res = await this.graphFetch(employeeId, url);
-    if (!res.ok) return [];
-    const data = (await res.json()) as { value?: GraphMessageListItem[] };
-    return (data.value ?? []).map((m) => m.id).filter(Boolean);
+    try {
+      return await this.listFolderIdsAfterDate(
+        employeeId,
+        'inbox',
+        afterDate,
+        Math.min(maxResults, 200),
+      );
+    } catch {
+      return [];
+    }
   }
 
   isNoise(categories: string[] | undefined): boolean {
