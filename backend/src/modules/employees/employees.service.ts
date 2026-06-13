@@ -66,6 +66,8 @@ export interface OrgEmployeeDto {
   created_by?: string | null;
   /** Secondary directory row: same person as another dept; mail sync uses the primary row (`roster_duplicate = false`). */
   roster_duplicate?: boolean;
+  /** OAuth provider when mail is connected (`gmail_connected` / `gmail_status = CONNECTED`). */
+  mail_provider?: 'google' | 'microsoft' | null;
 }
 
 export interface EmployeeMessageDto {
@@ -1098,7 +1100,7 @@ export class EmployeesService {
 
     const { connectedEmails, portalEmails } = await this.aggregateEmailStatuses(ctx.companyId, rows);
 
-    return rows.map((r) => {
+    const mapped = rows.map((r) => {
       const emailNorm = r.email.trim().toLowerCase();
       const isConnected = connectedEmails.has(emailNorm) || (r.gmail_status ?? 'EXPIRED') === 'CONNECTED';
       return {
@@ -1120,6 +1122,7 @@ export class EmployeesService {
         roster_duplicate: r.roster_duplicate === true,
       };
     });
+    return this.attachMailProviders(mapped);
   }
 
   /**
@@ -2173,6 +2176,44 @@ export class EmployeesService {
 
   getSlaHours(employee: Employee, globalDefault = 24): number {
     return employee.slaHoursDefault ?? globalDefault;
+  }
+
+  /** Attach `mail_provider` from `employee_oauth_tokens` for connected mailboxes. */
+  async attachMailProviders(mailboxes: OrgEmployeeDto[]): Promise<OrgEmployeeDto[]> {
+    if (mailboxes.length === 0) return mailboxes;
+
+    const connected = mailboxes.filter((m) => m.gmail_connected === true);
+    if (connected.length === 0) {
+      return mailboxes.map((m) => ({ ...m, mail_provider: null }));
+    }
+
+    const ids = connected.map((m) => m.id);
+    const { data, error } = await this.supabase
+      .from('employee_oauth_tokens')
+      .select('employee_id, oauth_provider')
+      .in('employee_id', ids);
+
+    if (error) {
+      this.logger.warn(`attachMailProviders: ${error.message}`);
+      return mailboxes.map((m) => ({
+        ...m,
+        mail_provider: m.gmail_connected ? 'google' : null,
+      }));
+    }
+
+    const providerByEmployeeId = new Map<string, 'google' | 'microsoft'>();
+    for (const row of data ?? []) {
+      const employeeId = (row as { employee_id: string }).employee_id;
+      const raw = (row as { oauth_provider?: string | null }).oauth_provider?.trim().toLowerCase();
+      providerByEmployeeId.set(employeeId, raw === 'microsoft' ? 'microsoft' : 'google');
+    }
+
+    return mailboxes.map((m) => {
+      if (!m.gmail_connected) {
+        return { ...m, mail_provider: null };
+      }
+      return { ...m, mail_provider: providerByEmployeeId.get(m.id) ?? 'google' };
+    });
   }
 
   // ── Self-tracking (CEO / Manager mailbox) helpers ──

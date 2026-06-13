@@ -476,6 +476,7 @@ export class AuthController {
       const done = new URL(`${frontendBase}/auth/gmail-oauth-done`);
       done.searchParams.set('connected', '1');
       done.searchParams.set('employee_id', payload.employee_id);
+      done.searchParams.set('provider', 'google');
       done.searchParams.set('next', nextPath);
       res.redirect(done.toString());
     } catch (err) {

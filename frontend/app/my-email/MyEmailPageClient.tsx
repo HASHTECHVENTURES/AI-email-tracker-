@@ -26,7 +26,12 @@ import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { TrackedMailboxCard } from '@/components/my-email/TrackedMailboxCard';
 import { conversationReadPath } from '@/lib/conversation-read';
-import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
+import {
+  mailOAuthSuccessMessage,
+  openMailOAuthWindow,
+  subscribeGmailOAuthComplete,
+  type MailOAuthProvider,
+} from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
 
 type Mailbox = {
@@ -38,6 +43,7 @@ type Mailbox = {
   /** Set by API for CEO: this row is a department manager’s inbox (not a generic team mailbox). */
   is_manager_mailbox?: boolean;
   gmail_connected?: boolean;
+  mail_provider?: MailOAuthProvider | null;
   gmail_status?: 'CONNECTED' | 'EXPIRED' | 'REVOKED';
   last_synced_at?: string | null;
   last_gmail_sync_at?: string | null;
@@ -2654,12 +2660,15 @@ function MyEmailPageInner() {
 
     if (oauthErr) setError(oauthErrorMessage(oauthErr));
     if (connected === '1') {
-      setSuccess('Gmail connected successfully.');
+      const providerRaw = searchParams.get('provider');
+      const provider: MailOAuthProvider | null =
+        providerRaw === 'microsoft' ? 'microsoft' : providerRaw === 'google' ? 'google' : null;
+      setSuccess(mailOAuthSuccessMessage(provider));
       void loadDashboard(token);
     }
 
     const params = new URLSearchParams(searchParams.toString());
-    for (const k of ['oauth_error', 'connected', 'employee_id'])
+    for (const k of ['oauth_error', 'connected', 'employee_id', 'provider'])
       params.delete(k);
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
@@ -2668,14 +2677,15 @@ function MyEmailPageInner() {
   /** Popup OAuth: main tab keeps session; child window posts here when Google finishes. */
   useEffect(() => {
     if (!token) return;
-    return subscribeGmailOAuthComplete(({ next, connected, employee_id }) => {
+    return subscribeGmailOAuthComplete(({ next, connected, employee_id, provider }) => {
       if (connected) {
-        setSuccess('Gmail connected successfully.');
+        setSuccess(mailOAuthSuccessMessage(provider));
       }
       void loadDashboard(token);
       const q = new URLSearchParams();
       if (connected) q.set('connected', '1');
       if (employee_id) q.set('employee_id', employee_id);
+      if (provider) q.set('provider', provider);
       const qs = q.toString();
       router.replace(qs ? `${next}?${qs}` : next);
     });
@@ -2706,7 +2716,11 @@ function MyEmailPageInner() {
       setError(body.message || 'Could not start Google connection');
       return;
     }
-    openGmailOAuthWindow(body.url);
+    try {
+      openMailOAuthWindow(body.url, 'google');
+    } catch (err) {
+      setError((err as Error).message || 'Could not open Google sign-in');
+    }
   }
 
   async function connectOutlook(mailboxId: string) {
@@ -2727,7 +2741,11 @@ function MyEmailPageInner() {
       setError(body.message || 'Could not start Microsoft connection');
       return;
     }
-    openGmailOAuthWindow(body.url);
+    try {
+      openMailOAuthWindow(body.url, 'microsoft');
+    } catch (err) {
+      setError((err as Error).message || 'Could not open Microsoft sign-in');
+    }
   }
 
   /** Signed-in user’s own inbox row (CEO or department manager) — uses session profile for POST /self-tracking/mailboxes. */

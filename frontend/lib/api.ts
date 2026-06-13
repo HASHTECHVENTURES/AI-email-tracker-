@@ -400,10 +400,10 @@ export async function tryRecoverFromUnauthorized(
 export function oauthErrorMessage(code: string | null | undefined): string | null {
   if (!code) return null;
   const map: Record<string, string> = {
-    exchange_failed: 'Could not complete Google connection. Please try again.',
-    access_denied: 'Google sign-in was cancelled.',
-    not_configured: 'Google connection is not configured yet.',
-    missing_code_or_state: 'Google returned an invalid sign-in response. Please retry.',
+    exchange_failed: 'Could not complete mail connection. Please try again.',
+    access_denied: 'Sign-in was cancelled.',
+    not_configured: 'Mail connection is not configured yet.',
+    missing_code_or_state: 'The provider returned an invalid sign-in response. Please retry.',
   };
-  return map[code] ?? 'Google connection failed. Please try again.';
+  return map[code] ?? 'Mail connection failed. Please try again.';
 }

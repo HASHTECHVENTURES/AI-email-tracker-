@@ -1,10 +1,13 @@
 'use client';
 
+export type MailProvider = 'google' | 'microsoft';
+
 export type TrackedMailbox = {
   id: string;
   name: string;
   email: string;
   gmail_connected?: boolean;
+  mail_provider?: MailProvider | null;
   last_synced_at?: string | null;
   sla_hours_default?: number | null;
   tracking_start_at?: string | null;
@@ -26,13 +29,18 @@ type TrackedMailboxCardProps = {
   showConnectOutlook?: boolean;
   onRemove: () => void;
   onTogglePause?: (paused: boolean) => void;
-  /** CEO team view: pull Gmail for this mailbox immediately. */
+  /** CEO team view: pull mail for this mailbox immediately. */
   onSyncNow?: () => void;
   removing: boolean;
   togglePauseLoading?: boolean;
   syncLoading?: boolean;
   hideReconnectWhenConnected?: boolean;
 };
+
+function connectedProvider(mb: TrackedMailbox): MailProvider | null {
+  if (mb.gmail_connected !== true) return null;
+  return mb.mail_provider === 'microsoft' ? 'microsoft' : 'google';
+}
 
 export function TrackedMailboxCard({
   mb,
@@ -48,12 +56,36 @@ export function TrackedMailboxCard({
   syncLoading = false,
   hideReconnectWhenConnected = false,
 }: TrackedMailboxCardProps) {
-  const isOn = mb.tracking_paused !== true && mb.gmail_connected === true;
-  const showConnectButton =
-    showConnectGmail && !(hideReconnectWhenConnected && mb.gmail_connected);
+  const provider = connectedProvider(mb);
+  const isConnected = provider != null;
+  const isOn = mb.tracking_paused !== true && isConnected;
+
+  const showGmailButton =
+    showConnectGmail &&
+    onConnectGmail &&
+    !(hideReconnectWhenConnected && isConnected) &&
+    (!isConnected || provider === 'google');
 
   const showOutlookButton =
-    showConnectOutlook && onConnectOutlook && !(hideReconnectWhenConnected && mb.gmail_connected);
+    showConnectOutlook &&
+    onConnectOutlook &&
+    !(hideReconnectWhenConnected && isConnected) &&
+    (!isConnected || provider === 'microsoft' || provider === 'google');
+
+  const gmailButtonLabel = isConnected && provider === 'google' ? 'Reconnect Gmail' : 'Connect Gmail';
+  const outlookButtonLabel =
+    isConnected && provider === 'microsoft'
+      ? 'Reconnect Outlook'
+      : isConnected && provider === 'google'
+        ? 'Switch to Outlook'
+        : 'Connect Outlook';
+
+  const connectionLabel =
+    provider === 'microsoft'
+      ? 'Connected via Outlook'
+      : provider === 'google'
+        ? 'Connected via Gmail'
+        : 'Mail not connected';
 
   return (
     <div className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-card hover:-translate-y-[1px] hover:shadow-card-hover">
@@ -63,13 +95,13 @@ export function TrackedMailboxCard({
           <p className="truncate text-xs text-slate-500">{mb.email}</p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1.5 sm:flex-row sm:items-center">
-          {showConnectButton ? (
+          {showGmailButton ? (
             <button
               type="button"
               onClick={onConnectGmail}
               className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 hover:shadow-md"
             >
-              {mb.gmail_connected ? 'Reconnect Gmail' : 'Connect Gmail'}
+              {gmailButtonLabel}
             </button>
           ) : null}
           {showOutlookButton ? (
@@ -78,7 +110,7 @@ export function TrackedMailboxCard({
               onClick={onConnectOutlook}
               className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-900 hover:bg-sky-100 hover:shadow-sm"
             >
-              Connect Outlook
+              {outlookButtonLabel}
             </button>
           ) : null}
           <button
@@ -95,13 +127,11 @@ export function TrackedMailboxCard({
       <div className="mt-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span
-            className={`h-2 w-2 rounded-full ${mb.gmail_connected ? 'bg-emerald-500' : 'bg-slate-300'}`}
+            className={`h-2 w-2 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-slate-300'}`}
           />
-          <span className="text-xs text-slate-600">
-            {mb.gmail_connected ? 'Mail connected' : 'Mail not connected'}
-          </span>
+          <span className="text-xs text-slate-600">{connectionLabel}</span>
         </div>
-        {mb.gmail_connected && onTogglePause ? (
+        {isConnected && onTogglePause ? (
           <div className="flex items-center gap-2">
             <span className={`text-xs font-semibold ${isOn ? 'text-emerald-700' : 'text-slate-500'}`}>
               {isOn ? 'ON' : 'OFF'}
@@ -126,13 +156,13 @@ export function TrackedMailboxCard({
           </div>
         ) : null}
       </div>
-      {!showConnectGmail && !mb.gmail_connected ? (
+      {!showConnectGmail && !isConnected ? (
         <p className="mt-2 text-[10px] leading-snug text-slate-500">
-          Only the mailbox owner can connect Gmail (their login, Employees page, or team-mail sync).
+          Only the mailbox owner can connect mail (their login, Employees page, or team-mail sync).
         </p>
       ) : null}
 
-      {mb.gmail_connected ? (
+      {isConnected ? (
         <div className="mt-3 border-t border-slate-100 pt-2">
           <p className="text-[10px] leading-snug text-slate-500">
             {mb.last_synced_at ? (

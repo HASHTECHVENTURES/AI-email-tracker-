@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { GMAIL_OAUTH_COMPLETE_MSG, type GmailOAuthCompletePayload } from '@/lib/gmail-oauth';
+import { GMAIL_OAUTH_COMPLETE_MSG, type GmailOAuthCompletePayload, type MailOAuthProvider } from '@/lib/gmail-oauth';
 
 /**
  * Gmail OAuth lands here in a **popup** after the backend callback.
@@ -19,6 +19,9 @@ function GmailOauthDoneInner() {
       nextRaw && nextRaw.startsWith('/') && !nextRaw.startsWith('//') ? nextRaw : '/my-email';
     const connected = searchParams.get('connected') === '1';
     const employeeId = searchParams.get('employee_id');
+    const providerRaw = searchParams.get('provider');
+    const provider: MailOAuthProvider | null =
+      providerRaw === 'microsoft' ? 'microsoft' : providerRaw === 'google' ? 'google' : null;
 
     if (typeof window === 'undefined') return;
 
@@ -27,6 +30,7 @@ function GmailOauthDoneInner() {
       next,
       connected,
       employee_id: employeeId,
+      provider,
     };
 
     if (window.opener && !window.opener.closed) {
@@ -42,6 +46,7 @@ function GmailOauthDoneInner() {
     const q = new URLSearchParams();
     if (connected) q.set('connected', '1');
     if (employeeId) q.set('employee_id', employeeId);
+    if (provider) q.set('provider', provider);
     const qs = q.toString();
     router.replace(qs ? `${next}?${qs}` : next);
   }, [router, searchParams]);

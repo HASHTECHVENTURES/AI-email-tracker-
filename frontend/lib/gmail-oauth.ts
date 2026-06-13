@@ -1,19 +1,52 @@
 /** postMessage type when /auth/gmail-oauth-done closes the OAuth popup. */
 export const GMAIL_OAUTH_COMPLETE_MSG = 'ai_et_gmail_oauth_complete_v1';
 
+export type MailOAuthProvider = 'google' | 'microsoft';
+
 export type GmailOAuthCompletePayload = {
   type: typeof GMAIL_OAUTH_COMPLETE_MSG;
   next: string;
   connected: boolean;
   employee_id: string | null;
+  provider?: MailOAuthProvider | null;
 };
 
-/** Open Google OAuth in a popup so the main app tab keeps the Supabase session. Falls back to full navigation if popups are blocked. */
-export function openGmailOAuthWindow(authorizeUrl: string): Window | null {
+function isMicrosoftAuthorizeUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.includes('login.microsoftonline.com') || host.includes('login.live.com');
+  } catch {
+    return /login\.microsoftonline\.com|login\.live\.com/i.test(url);
+  }
+}
+
+function isGoogleAuthorizeUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.includes('accounts.google.com');
+  } catch {
+    return /accounts\.google\.com/i.test(url);
+  }
+}
+
+/** Open OAuth in a popup so the main app tab keeps the Supabase session. Falls back to full navigation if popups are blocked. */
+export function openMailOAuthWindow(
+  authorizeUrl: string,
+  provider: MailOAuthProvider,
+): Window | null {
   if (typeof window === 'undefined') return null;
+
+  if (provider === 'microsoft' && !isMicrosoftAuthorizeUrl(authorizeUrl)) {
+    throw new Error('Expected a Microsoft login URL from the server.');
+  }
+  if (provider === 'google' && !isGoogleAuthorizeUrl(authorizeUrl)) {
+    throw new Error('Expected a Google login URL from the server.');
+  }
+
+  const windowName = provider === 'microsoft' ? 'microsoft_oauth' : 'gmail_oauth';
   const w = window.open(
     authorizeUrl,
-    'gmail_oauth',
+    windowName,
     'popup=yes,width=560,height=720,left=80,top=48,scrollbars=yes,resizable=yes',
   );
   if (!w) {
@@ -28,6 +61,17 @@ export function openGmailOAuthWindow(authorizeUrl: string): Window | null {
   return w;
 }
 
+/** @deprecated Use {@link openMailOAuthWindow} with provider `google`. */
+export function openGmailOAuthWindow(authorizeUrl: string): Window | null {
+  return openMailOAuthWindow(authorizeUrl, 'google');
+}
+
+export function mailOAuthSuccessMessage(provider?: MailOAuthProvider | null): string {
+  return provider === 'microsoft'
+    ? 'Outlook connected successfully.'
+    : 'Gmail connected successfully.';
+}
+
 export function subscribeGmailOAuthComplete(
   onDone: (payload: Omit<GmailOAuthCompletePayload, 'type'>) => void,
 ): () => void {
@@ -39,6 +83,8 @@ export function subscribeGmailOAuthComplete(
       next: typeof d.next === 'string' && d.next.startsWith('/') ? d.next : '/my-email',
       connected: d.connected === true,
       employee_id: typeof d.employee_id === 'string' ? d.employee_id : null,
+      provider:
+        d.provider === 'microsoft' || d.provider === 'google' ? d.provider : null,
     });
   };
   window.addEventListener('message', fn);

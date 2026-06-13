@@ -127,6 +127,10 @@ export class SelfTrackingService {
     });
   }
 
+  private async withMailProviders(mailboxes: OrgEmployeeDto[]): Promise<OrgEmployeeDto[]> {
+    return this.employeesService.attachMailProviders(mailboxes);
+  }
+
   async getVisibleMailboxes(
     ctx: RequestContext,
     callerEmail: string,
@@ -135,7 +139,7 @@ export class SelfTrackingService {
       const teamRows = await this.employeesService.listOrgEmployees(ctx);
       const uid = ctx.userId;
       if (!uid) {
-        return teamRows;
+        return this.withMailProviders(teamRows);
       }
       const selfRows = await this.employeesService.listSelfTrackedMailboxesForUser(
         ctx.companyId,
@@ -176,10 +180,12 @@ export class SelfTrackingService {
       for (const m of teamRows) byId.set(m.id, m);
       for (const m of selfRows) byId.set(m.id, m);
       for (const m of linkedRows) byId.set(m.id, m);
-      return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+      return this.withMailProviders(
+        Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name)),
+      );
     }
     if (ctx.role === 'EMPLOYEE') {
-      return this.employeesService.getLinkedPortalEmployeeMailbox(ctx);
+      return this.withMailProviders(await this.employeesService.getLinkedPortalEmployeeMailbox(ctx));
     }
 
     const selfRows = await this.employeesService.listSelfTracked(ctx.companyId);
@@ -191,7 +197,7 @@ export class SelfTrackingService {
       for (const m of selfRows) byId.set(m.id, m);
       const merged = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
       const indicators = await this.employeesService.getManagerMailboxIndicators(ctx.companyId);
-      return merged.map((m) => {
+      const mergedWithFlags = merged.map((m) => {
         const createdBy = m.created_by ?? null;
         const emailNorm = m.email.trim().toLowerCase();
         const rosterDup = m.roster_duplicate === true;
@@ -210,9 +216,12 @@ export class SelfTrackingService {
           (emailMatchesHead && !rosterDup);
         return { ...m, is_manager_mailbox };
       });
+      return this.withMailProviders(mergedWithFlags);
     }
     const callerNorm = callerEmail.trim().toLowerCase();
-    return selfRows.filter((m) => m.email.trim().toLowerCase() === callerNorm);
+    return this.withMailProviders(
+      selfRows.filter((m) => m.email.trim().toLowerCase() === callerNorm),
+    );
   }
 
   async getDashboard(

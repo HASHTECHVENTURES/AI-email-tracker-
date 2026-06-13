@@ -6,7 +6,11 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch, oauthErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
+import {
+  mailOAuthSuccessMessage,
+  openMailOAuthWindow,
+  subscribeGmailOAuthComplete,
+} from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { AppShell } from '@/components/AppShell';
@@ -18,6 +22,7 @@ type TeamMailbox = {
   email: string;
   department_name?: string;
   gmail_connected?: boolean;
+  mail_provider?: 'google' | 'microsoft' | null;
   gmail_status?: 'CONNECTED' | 'EXPIRED' | 'REVOKED';
   last_synced_at?: string | null;
   tracking_paused?: boolean;
@@ -45,8 +50,12 @@ function relativeTime(iso: string | null | undefined): string {
   return `${Math.round(diff / 86400_000)}d ago`;
 }
 
-function gmailLabel(mb: TeamMailbox): { text: string; className: string } {
-  if (mb.gmail_connected) return { text: 'Connected', className: 'text-emerald-700' };
+function mailConnectionLabel(mb: TeamMailbox): { text: string; className: string } {
+  if (mb.gmail_connected) {
+    return mb.mail_provider === 'microsoft'
+      ? { text: 'Outlook connected', className: 'text-emerald-700' }
+      : { text: 'Gmail connected', className: 'text-emerald-700' };
+  }
   const s = mb.gmail_status;
   if (s === 'REVOKED') return { text: 'Revoked', className: 'text-red-700' };
   if (s === 'EXPIRED') return { text: 'Expired', className: 'text-amber-700' };
@@ -194,23 +203,27 @@ function TeamMailSyncInner() {
     if (!oauthErr && connected !== '1') return;
     if (oauthErr) setError(oauthErrorMessage(oauthErr));
     if (connected === '1') {
-      setSuccess('Gmail connected successfully.');
+      const providerRaw = searchParams.get('provider');
+      const provider =
+        providerRaw === 'microsoft' ? 'microsoft' : providerRaw === 'google' ? 'google' : null;
+      setSuccess(mailOAuthSuccessMessage(provider));
       void loadTeamData(token);
     }
     const params = new URLSearchParams(searchParams.toString());
-    for (const k of ['oauth_error', 'connected', 'employee_id']) params.delete(k);
+    for (const k of ['oauth_error', 'connected', 'employee_id', 'provider']) params.delete(k);
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }, [authLoading, token, searchParams, pathname, router, loadTeamData]);
 
   useEffect(() => {
     if (!token) return;
-    return subscribeGmailOAuthComplete(({ next, connected, employee_id }) => {
-      if (connected) setSuccess('Gmail connected successfully.');
+    return subscribeGmailOAuthComplete(({ next, connected, employee_id, provider }) => {
+      if (connected) setSuccess(mailOAuthSuccessMessage(provider));
       void loadTeamData(token);
       const q = new URLSearchParams();
       if (connected) q.set('connected', '1');
       if (employee_id) q.set('employee_id', employee_id);
+      if (provider) q.set('provider', provider);
       const qs = q.toString();
       router.replace(qs ? `${next}?${qs}` : next);
     });
@@ -243,7 +256,7 @@ function TeamMailSyncInner() {
         setError(body.message || 'Could not start Google connection');
         return;
       }
-      openGmailOAuthWindow(body.url);
+      openMailOAuthWindow(body.url, 'google');
     } finally {
       setConnectingId(null);
     }
@@ -270,7 +283,7 @@ function TeamMailSyncInner() {
         setError(body.message || 'Could not start Microsoft connection');
         return;
       }
-      openGmailOAuthWindow(body.url);
+      openMailOAuthWindow(body.url, 'microsoft');
     } finally {
       setConnectingId(null);
     }
@@ -382,30 +395,48 @@ function TeamMailSyncInner() {
                         >
                           Open threads
                         </Link>
-                        <button
-                          type="button"
-                          disabled={connectingId === selectedMailbox.id}
-                          onClick={() => void connectGmail(selectedMailbox.id)}
-                          className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-95 disabled:opacity-60"
-                        >
-                          {connectingId === selectedMailbox.id ? 'Opening…' : selectedMailbox.gmail_connected ? 'Reconnect Gmail' : 'Connect Gmail'}
-                        </button>
+                        {selectedMailbox.gmail_connected &&
+                        selectedMailbox.mail_provider !== 'microsoft' ? (
+                          <button
+                            type="button"
+                            disabled={connectingId === selectedMailbox.id}
+                            onClick={() => void connectGmail(selectedMailbox.id)}
+                            className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-95 disabled:opacity-60"
+                          >
+                            {connectingId === selectedMailbox.id ? 'Opening…' : 'Reconnect Gmail'}
+                          </button>
+                        ) : !selectedMailbox.gmail_connected ? (
+                          <button
+                            type="button"
+                            disabled={connectingId === selectedMailbox.id}
+                            onClick={() => void connectGmail(selectedMailbox.id)}
+                            className="rounded-xl bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-95 disabled:opacity-60"
+                          >
+                            {connectingId === selectedMailbox.id ? 'Opening…' : 'Connect Gmail'}
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           disabled={connectingId === selectedMailbox.id}
                           onClick={() => void connectOutlook(selectedMailbox.id)}
                           className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60"
                         >
-                          Connect Outlook
+                          {connectingId === selectedMailbox.id
+                            ? 'Opening…'
+                            : selectedMailbox.mail_provider === 'microsoft'
+                              ? 'Reconnect Outlook'
+                              : selectedMailbox.gmail_connected
+                                ? 'Switch to Outlook'
+                                : 'Connect Outlook'}
                         </button>
                       </div>
                     </div>
 
                     <div className="mt-4 grid gap-3 sm:grid-cols-4">
                       <div className="rounded-xl bg-slate-50 px-3 py-3">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Gmail</p>
-                        <p className={`mt-1 text-sm font-bold ${gmailLabel(selectedMailbox).className}`}>
-                          {gmailLabel(selectedMailbox).text}
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Mail</p>
+                        <p className={`mt-1 text-sm font-bold ${mailConnectionLabel(selectedMailbox).className}`}>
+                          {mailConnectionLabel(selectedMailbox).text}
                         </p>
                       </div>
                       <div className="rounded-xl bg-slate-50 px-3 py-3">
@@ -472,7 +503,7 @@ function TeamMailSyncInner() {
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {teamMailboxes.map((mb) => {
-                    const g = gmailLabel(mb);
+                    const g = mailConnectionLabel(mb);
                     return (
                       <tr key={mb.id} className="hover:bg-slate-50/80">
                         <td className="whitespace-nowrap px-3 py-3 font-medium text-slate-900">{mb.name}</td>

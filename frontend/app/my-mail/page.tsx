@@ -12,7 +12,11 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { apiFetch, oauthErrorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { openGmailOAuthWindow, subscribeGmailOAuthComplete } from '@/lib/gmail-oauth';
+import {
+  mailOAuthSuccessMessage,
+  openMailOAuthWindow,
+  subscribeGmailOAuthComplete,
+} from '@/lib/gmail-oauth';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
@@ -23,6 +27,7 @@ type Mailbox = {
   name: string;
   email: string;
   gmail_connected?: boolean;
+  mail_provider?: 'google' | 'microsoft' | null;
   gmail_status?: 'CONNECTED' | 'EXPIRED' | 'REVOKED';
   last_synced_at?: string | null;
   sla_hours_default?: number | null;
@@ -238,25 +243,29 @@ function ManagerMyMailInner() {
     if (!oauthErr && connected !== '1') return;
     if (oauthErr) setError(oauthErrorMessage(oauthErr));
     if (connected === '1') {
-      setSuccess('Gmail connected successfully.');
+      const providerRaw = searchParams.get('provider');
+      const provider =
+        providerRaw === 'microsoft' ? 'microsoft' : providerRaw === 'google' ? 'google' : null;
+      setSuccess(mailOAuthSuccessMessage(provider));
       void loadAll(token);
     }
     const params = new URLSearchParams(searchParams.toString());
-    for (const k of ['oauth_error', 'connected', 'employee_id']) params.delete(k);
+    for (const k of ['oauth_error', 'connected', 'employee_id', 'provider']) params.delete(k);
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }, [authLoading, token, searchParams, pathname, router, loadAll]);
 
   useEffect(() => {
     if (!token) return;
-    return subscribeGmailOAuthComplete(({ next, connected, employee_id }) => {
+    return subscribeGmailOAuthComplete(({ next, connected, employee_id, provider }) => {
       if (connected) {
-        setSuccess('Gmail connected successfully.');
+        setSuccess(mailOAuthSuccessMessage(provider));
       }
       void loadAll(token);
       const q = new URLSearchParams();
       if (connected) q.set('connected', '1');
       if (employee_id) q.set('employee_id', employee_id);
+      if (provider) q.set('provider', provider);
       const qs = q.toString();
       router.replace(qs ? `${next}?${qs}` : next);
     });
@@ -298,7 +307,7 @@ function ManagerMyMailInner() {
       setError(body.message || 'Could not start Google connection');
       return;
     }
-    openGmailOAuthWindow(body.url);
+    openMailOAuthWindow(body.url, 'google');
   }
 
   async function connectOutlook(mailboxId: string) {
@@ -319,7 +328,7 @@ function ManagerMyMailInner() {
       setError(body.message || 'Could not start Microsoft connection');
       return;
     }
-    openGmailOAuthWindow(body.url);
+    openMailOAuthWindow(body.url, 'microsoft');
   }
 
   async function connectMyMailbox(provider: 'google' | 'microsoft' = 'google') {
