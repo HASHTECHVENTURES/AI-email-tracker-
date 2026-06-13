@@ -62,7 +62,6 @@ export function TrackedMailboxCard({
 
   const showGmailButton =
     showConnectGmail &&
-    onConnectGmail &&
     !(hideReconnectWhenConnected && isConnected) &&
     (!isConnected || provider === 'google');
 
