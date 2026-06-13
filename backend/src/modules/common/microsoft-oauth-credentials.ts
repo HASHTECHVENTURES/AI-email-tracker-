@@ -75,8 +75,8 @@ export function buildMicrosoftAuthorizeUrl(state: string, loginHint?: string): s
     response_mode: 'query',
     scope: MICROSOFT_MAIL_SCOPES.join(' '),
     state,
-    /** Always show account picker so a cached @gmail.com Microsoft login is not auto-selected. */
-    prompt: 'select_account consent',
+    /** Show account picker so a cached @gmail.com Microsoft login is not auto-selected. */
+    prompt: 'select_account',
   });
   const hint = loginHint?.trim();
   if (hint) {
