@@ -50,7 +50,23 @@ export const MICROSOFT_MAIL_SCOPES = [
   'Mail.Read',
 ];
 
-export function buildMicrosoftAuthorizeUrl(state: string): string {
+/** Microsoft consumer domains — safe to pass as OAuth login_hint. */
+export function microsoftLoginHintForEmail(email: string | undefined | null): string | undefined {
+  const norm = email?.trim().toLowerCase() ?? '';
+  if (!norm.includes('@')) return undefined;
+  const domain = norm.split('@')[1] ?? '';
+  const consumerDomains = new Set([
+    'outlook.com',
+    'hotmail.com',
+    'live.com',
+    'msn.com',
+    'outlook.co.uk',
+    'hotmail.co.uk',
+  ]);
+  return consumerDomains.has(domain) ? norm : undefined;
+}
+
+export function buildMicrosoftAuthorizeUrl(state: string, loginHint?: string): string {
   const { clientId, redirectUri, tenantId } = getMicrosoftOAuthCredentials();
   const params = new URLSearchParams({
     client_id: clientId,
@@ -59,7 +75,12 @@ export function buildMicrosoftAuthorizeUrl(state: string): string {
     response_mode: 'query',
     scope: MICROSOFT_MAIL_SCOPES.join(' '),
     state,
-    prompt: 'consent',
+    /** Always show account picker so a cached @gmail.com Microsoft login is not auto-selected. */
+    prompt: 'select_account consent',
   });
+  const hint = loginHint?.trim();
+  if (hint) {
+    params.set('login_hint', hint);
+  }
   return `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/authorize?${params.toString()}`;
 }

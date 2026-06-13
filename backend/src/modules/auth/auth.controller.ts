@@ -28,6 +28,7 @@ import {
   getMicrosoftOAuthCredentials,
   isMicrosoftOAuthConfigured,
   MICROSOFT_MAIL_SCOPES,
+  microsoftLoginHintForEmail,
 } from '../common/microsoft-oauth-credentials';
 
 function mePayload(
@@ -205,7 +206,9 @@ export class AuthController {
       userId: req.user.id,
       role: req.user.role,
     });
-    return { url: buildMicrosoftAuthorizeUrl(state) };
+    const employee = await this.employeesService.getById(req.user.companyId, normalizedEmployeeId);
+    const loginHint = microsoftLoginHintForEmail(employee?.email);
+    return { url: buildMicrosoftAuthorizeUrl(state, loginHint) };
   }
 
   @PublicRoute()
