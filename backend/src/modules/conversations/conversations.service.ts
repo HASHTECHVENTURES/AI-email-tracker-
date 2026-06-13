@@ -18,6 +18,7 @@ import {
   looksLikeClientDeliverableFyi,
   looksLikeClientSharePromiseFyi,
   looksLikeAutomatedSystemNotification,
+  looksLikeInboundDirectedAtSomeoneElse,
   isInternalColleagueSender,
 } from '../email-ingestion/relevance-guards';
 
@@ -669,7 +670,8 @@ export class ConversationsService {
         (lastEmployeeReplyAt !== null &&
           lastClientMsgAt !== null &&
           lastClientMsgAt > lastEmployeeReplyAt &&
-          looksLikeShortAcknowledgment(inboundFields))
+          (looksLikeShortAcknowledgment(inboundFields) ||
+            looksLikeInboundDirectedAtSomeoneElse(inboundFields, employee.email)))
       : false;
 
     const latestInboundIsInternal = lastInbound

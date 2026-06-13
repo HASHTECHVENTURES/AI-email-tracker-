@@ -179,7 +179,7 @@ export function looksLikeConversationClosure(msg: InboundNoiseFields): boolean {
     /\b(?:no\s+further\s+action|no\s+action\s+(?:needed|required)|no\s+reply\s+(?:needed|required)|nothing\s+else\s+needed|no\s+response\s+(?:needed|required))\b/i;
 
   const clientClosing =
-    /\b(?:we(?:'re| are)\s+(?:all\s+set|good|done|sorted)|that(?:'s|s)\s+(?:all|it)|all\s+(?:good|set|done|sorted)|consider\s+(?:this|it)\s+(?:closed|resolved|done)|got\s+it|noted|received|perfect|works?\s+for\s+(?:me|us)|looks?\s+good|sounds?\s+good|great,?\s+thanks?|no\s+(?:worries|problem))\b/i;
+    /\b(?:we(?:'re| are)\s+(?:all\s+set|good|done|sorted)|that(?:'s|s)\s+(?:all|it)|all\s+(?:good|set|done|sorted)|consider\s+(?:this|it)\s+(?:closed|resolved|done)|got\s+it|noted|received|perfect|works?\s+for\s+(?:me|us)|looks?\s+good|sounds?\s+good|great,?\s+thanks?|no\s+(?:worries|problem)|working\s+as\s+expected|thank\s+you\s+for\s+(?:the\s+)?quick\s+resolution)\b/i;
 
   const thanksClosure =
     /\bthanks?,?\s+(?:that(?:'s|s)\s+all|we(?:'re| are)\s+good|no\s+need|all\s+good|all\s+set|nothing\s+else|no\s+further|so\s+much|a\s+lot|for\s+(?:the\s+)?(?:update|info|help|clarification|confirmation|quick|prompt))\b/i;
@@ -298,9 +298,24 @@ export function looksLikeAutomatedSystemNotification(msg: InboundNoiseFields): b
   const combined = `${sub} ${head}`;
 
   if (
-    /(?:hrservicedesk|helpdesk|servicedesk|support-desk|ticketingsystem|zendesk|freshdesk|jira-mail|atlassian)\b/i.test(
+    /(?:hrservicedesk|helpdesk|servicedesk|support-desk|ticketingsystem|zendesk|freshdesk|jira-mail|atlassian|service-now|servicenow|netmagic|mailalerts@)\b/i.test(
       from,
     )
+  ) {
+    return true;
+  }
+
+  if (
+    /^case:\s*cs\d+\s+has been created\b/i.test(sub) ||
+    /\bauto-?ticket\b/i.test(sub) ||
+    /\bservice alert\b/i.test(sub)
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(?:resignation|approval)\s+(?:is\s+)?(?:still\s+)?pending\b/i.test(combined) &&
+    /\b(?:reminder|escalation|final reminder)\b/i.test(combined)
   ) {
     return true;
   }
@@ -386,7 +401,11 @@ export function looksLikePromotionalMail(
   if (hasNoiseGmailLabel) return true;
 
   if (/businessprofile-noreply@google\.com/i.test(from)) return true;
-  if (/@(?:e\.read\.ai|fathom\.video|email\.openai\.com|e\.shrm\.org|ippgroup\.in)\b/i.test(from)) {
+  if (
+    /@(?:e\.read\.ai|fathom\.video|email\.openai\.com|e\.shrm\.org|ippgroup\.in|easemytrip\.com|cloudsupport-help\.freshdesk\.com)\b/i.test(
+      from,
+    )
+  ) {
     return true;
   }
 
@@ -413,10 +432,14 @@ export function looksLikePromotionalMail(
   }
 
   if (
-    /(newsletter|digest|unsubscribe|promo code|promotion|campaign|webinar|view in browser|flash sale|limited time offer|\d+%\s*off|save \d+%|coupon|free shipping|shop now|exclusive deal)/i.test(
+    /(newsletter|digest|unsubscribe|promo code|promotion|campaign|webinar|view in browser|flash sale|limited time offer|\d+%\s*off|save\s+(?:up\s+to\s+)?\d+%|coupon|free shipping|shop now|exclusive deal|change of view)/i.test(
       sub,
     )
   ) {
+    return true;
+  }
+
+  if (/save\s+up\s+to\s+\d+%/i.test(b)) {
     return true;
   }
 
@@ -545,5 +568,124 @@ export function looksLikeDirectHumanMail(
 
   if (!isDirectToMailbox || !isSmallAudience) return false;
   if (automatedSender || obviousBroadcastSubject || obviousBroadcastBody) return false;
+  if (looksLikeAutomatedSystemNotification(target)) return false;
+  if (looksLikeInboundNoReplyNoise(target, hasNoiseGmailLabel)) return false;
   return true;
+}
+
+/**
+ * Latest inbound opens with "Dear {Name}" directed at someone other than the tracked mailbox
+ * (e.g. "Dear Mohit, please check" on Anurag's thread after Anurag already replied).
+ */
+export function looksLikeInboundDirectedAtSomeoneElse(
+  msg: InboundNoiseFields,
+  employeeEmail: string,
+): boolean {
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+
+  const head = extractLatestInboundComposeBody(readInboundFields(msg).body).slice(0, 400);
+  const dearMatch = head.match(/^dear\s+([a-z][\w.]*)/i);
+  if (!dearMatch) return false;
+
+  const named = dearMatch[1].toLowerCase();
+  const empLocal = employeeEmail.trim().toLowerCase().split('@')[0] ?? '';
+  const empFirst = empLocal.split(/[._-]/)[0] ?? '';
+  if (!empFirst || named === empFirst || named.startsWith(empFirst)) return false;
+
+  return /\b(?:please|kindly|pls)\s+check\b/i.test(head);
+}
+
+export type RuleBasedIngestAction = {
+  relevant: boolean;
+  reason: string;
+  confidence: number;
+  aiAction: 'NEED_REPLY' | 'CC' | 'BCC' | 'CALENDAR' | 'LOW' | 'SKIP';
+};
+
+/**
+ * Free rule-based classification — no Gemini. Returns null when AI is still needed.
+ */
+export function ruleBasedIngestClassification(
+  target: EmailMessage,
+  employeeEmail: string,
+  hasNoiseGmailLabel: boolean,
+): RuleBasedIngestAction | null {
+  if (target.direction === 'OUTBOUND') {
+    return {
+      relevant: true,
+      reason: 'Outbound — your sent message (reply detection / SLA)',
+      confidence: 1,
+      aiAction: 'NEED_REPLY',
+    };
+  }
+
+  const calendarIngest = ingestForceRelevantCalendarOrMeeting(target);
+  if (calendarIngest) {
+    return { ...calendarIngest, aiAction: 'CALENDAR' };
+  }
+
+  const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
+  if (noiseSkip) {
+    return { relevant: false, reason: noiseSkip, confidence: 1, aiAction: 'SKIP' };
+  }
+
+  if (looksLikeClientDeliverableFyi(target)) {
+    return {
+      relevant: true,
+      reason: 'Client attachment or template share — informational only.',
+      confidence: 1,
+      aiAction: 'LOW',
+    };
+  }
+
+  if (looksLikeAutomatedSystemNotification(target)) {
+    return {
+      relevant: true,
+      reason: 'Automated ticket/CRM notification — no reply needed.',
+      confidence: 1,
+      aiAction: 'LOW',
+    };
+  }
+
+  if (looksLikeConversationClosure(target)) {
+    return {
+      relevant: true,
+      reason: 'Client indicated the conversation is closed — no reply needed.',
+      confidence: 1,
+      aiAction: 'LOW',
+    };
+  }
+
+  if (isInternalColleagueSender(employeeEmail, target.fromEmail)) {
+    return {
+      relevant: true,
+      reason: 'Internal colleague — no client reply expected.',
+      confidence: 1,
+      aiAction: 'LOW',
+    };
+  }
+
+  if (target.direction === 'INBOUND') {
+    const m = employeeEmail.trim().toLowerCase();
+    const inTo = (target.toEmails ?? []).some((e) => e.trim().toLowerCase() === m);
+    if (!inTo) {
+      const inCc = (target.ccEmails ?? []).some((e) => e.trim().toLowerCase() === m);
+      if (inCc) {
+        return {
+          relevant: true,
+          reason: 'Mailbox only in CC — no reply expected.',
+          confidence: 1,
+          aiAction: 'CC',
+        };
+      }
+      return {
+        relevant: true,
+        reason: 'Mailbox BCC — informational only.',
+        confidence: 1,
+        aiAction: 'BCC',
+      };
+    }
+  }
+
+  return null;
 }

@@ -25,13 +25,10 @@ import {
 import { MicrosoftGraphService } from './microsoft-graph.service';
 import { buildSharedIngestRelevancePrompt } from './relevance-prompt.builder';
 import {
-  ingestForceRelevantCalendarOrMeeting,
-  ingestSkipReasonForInboundNoise,
   looksLikeDirectHumanMail,
-  looksLikeClientDeliverableFyi,
-  looksLikeAutomatedSystemNotification,
   finalizeIngestRelevanceFromAi,
-  isInternalColleagueSender,
+  ruleBasedIngestClassification,
+  ingestSkipReasonForInboundNoise,
 } from './relevance-guards';
 import { RELEVANCE_MODEL_TEMPERATURE, RELEVANCE_SYSTEM_INSTRUCTION } from './relevance-prompt.builder';
 import { OauthTokenService } from '../auth/oauth-token.service';
@@ -1239,66 +1236,9 @@ export class EmailIngestionService {
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
   ): Promise<IngestClassificationDecision> {
-    if (target.direction === 'OUTBOUND') {
-      return {
-        relevant: true,
-        reason: 'Outbound — your sent message (reply detection / SLA)',
-        confidence: 1,
-        aiAction: 'NEED_REPLY',
-      };
-    }
-    const calendarIngest = ingestForceRelevantCalendarOrMeeting(target);
-    if (calendarIngest) {
-      return { ...calendarIngest, aiAction: 'CALENDAR' };
-    }
-    const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
-    if (noiseSkip) {
-      return { relevant: false, reason: noiseSkip, confidence: 1, aiAction: 'SKIP' };
-    }
-
-    if (target.direction === 'INBOUND' && looksLikeClientDeliverableFyi(target)) {
-      return {
-        relevant: true,
-        reason: 'Client attachment or template share — informational only.',
-        confidence: 1,
-        aiAction: 'LOW',
-      };
-    }
-
-    if (target.direction === 'INBOUND' && looksLikeAutomatedSystemNotification(target)) {
-      return {
-        relevant: true,
-        reason: 'Automated ticket/CRM notification — no reply needed.',
-        confidence: 1,
-        aiAction: 'LOW',
-      };
-    }
-
-    // Internal colleague on same email domain — not a client SLA thread.
-    if (
-      target.direction === 'INBOUND' &&
-      isInternalColleagueSender(employeeEmail, target.fromEmail)
-    ) {
-      return {
-        relevant: true,
-        reason: 'Internal colleague — no client reply expected.',
-        confidence: 1,
-        aiAction: 'LOW',
-      };
-    }
-
-    // CC-only / BCC pre-filter: mailbox not in To → CC tab (no Gemini needed)
-    if (target.direction === 'INBOUND') {
-      const m = employeeEmail.trim().toLowerCase();
-      const inTo = (target.toEmails ?? []).some((e) => e.trim().toLowerCase() === m);
-      if (!inTo) {
-        const inCc = (target.ccEmails ?? []).some((e) => e.trim().toLowerCase() === m);
-        if (inCc) {
-          return { relevant: true, reason: 'Mailbox only in CC — no reply expected.', confidence: 1, aiAction: 'CC' };
-        }
-        // Not in To or Cc → BCC'd (Gmail does not expose Bcc header to recipients)
-        return { relevant: true, reason: 'Mailbox BCC — informational only.', confidence: 1, aiAction: 'BCC' };
-      }
+    const ruled = ruleBasedIngestClassification(target, employeeEmail, hasNoiseGmailLabel);
+    if (ruled) {
+      return ruled;
     }
 
     if (allowGeminiRelevance && this.relevanceModel) {
@@ -1340,10 +1280,11 @@ export class EmailIngestionService {
         };
       }
       return {
-        relevant: true,
-        reason: 'AI temporarily unavailable — kept as Need Reply (safe default).',
+        relevant: false,
+        reason: 'Inbox AI unavailable — skipped to avoid false Need reply.',
         confidence: null,
-        aiAction: 'NEED_REPLY',
+        aiAction: 'SKIP',
+        transientAiUnavailable: true,
       };
     }
 
@@ -1360,13 +1301,15 @@ export class EmailIngestionService {
         reason:
           'Safety fallback: direct human mailbox message kept while Inbox AI is unavailable.',
         confidence: null,
+        aiAction: 'NEED_REPLY',
       };
     }
     return {
-      relevant: true,
-      reason: 'AI temporarily unavailable — kept as Need Reply (safe default).',
+      relevant: false,
+      reason: 'Inbox AI unavailable — skipped to avoid false Need reply.',
       confidence: null,
-      aiAction: 'NEED_REPLY',
+      aiAction: 'SKIP',
+      transientAiUnavailable: true,
     };
   }
 
