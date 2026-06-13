@@ -1734,6 +1734,22 @@ function CeoLiveSyncStrip({
         <p className="text-sm font-semibold tabular-nums">{liveCountdown.headline}</p>
         <p className="mt-1 text-[11px] opacity-90">{liveCountdown.detail}</p>
       </div>
+      <div className="mb-4 rounded-xl border border-emerald-200/80 bg-emerald-50/70 px-3 py-2.5 text-[11px] leading-relaxed text-emerald-950">
+        <p className="font-semibold text-emerald-900">Quick reply rules</p>
+        <ol className="mt-1.5 list-decimal space-y-1 pl-4">
+          <li>
+            Replied in Gmail/Outlook? Wait ~2 minutes or press <strong className="font-medium">Sync now</strong> — the
+            thread should move to Done.
+          </li>
+          <li>
+            Handled on phone or WhatsApp? Click <strong className="font-medium">Resolve</strong> on that row.
+          </li>
+          <li>
+            Newsletter or junk in Need reply? Click <strong className="font-medium">Resolve</strong> and tell your
+            manager the sender.
+          </li>
+        </ol>
+      </div>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="grid flex-1 gap-4 sm:grid-cols-2">
           <div>

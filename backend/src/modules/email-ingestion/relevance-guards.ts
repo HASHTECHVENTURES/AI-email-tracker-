@@ -138,6 +138,10 @@ export function looksLikeMeetingOrEventMail(msg: InboundNoiseFields): boolean {
 
   if (subjectHit || strongBodyHit) return true;
 
+  if (/\bmicrosoft teams meeting\b/i.test(b) && /teams\.microsoft\.com/i.test(b)) {
+    return true;
+  }
+
   const hasMeetingLink =
     /https?:\/\/[^\s]*meet\.google\.com/i.test(b) ||
     /https?:\/\/[^\s]*zoom\.us\/(?:j|my)\//i.test(b) ||
