@@ -262,7 +262,7 @@ function TeamMailSyncInner() {
     }
   }
 
-  async function connectOutlook(mailboxId: string) {
+  async function connectOutlook(mailboxId: string, opts?: { reconnect?: boolean }) {
     const supabase = createClient();
     const {
       data: { session },
@@ -271,8 +271,10 @@ function TeamMailSyncInner() {
     setConnectingId(mailboxId);
     setError(null);
     try {
+      const qs = new URLSearchParams({ employee_id: mailboxId });
+      if (opts?.reconnect) qs.set('reconnect', '1');
       const res = await apiFetch(
-        `/auth/microsoft/authorize-url?employee_id=${encodeURIComponent(mailboxId)}`,
+        `/auth/microsoft/authorize-url?${qs.toString()}`,
         session.access_token,
       );
       const body = (await res.json().catch(() => ({}))) as { url?: string; message?: string };
@@ -418,7 +420,13 @@ function TeamMailSyncInner() {
                         <button
                           type="button"
                           disabled={connectingId === selectedMailbox.id}
-                          onClick={() => void connectOutlook(selectedMailbox.id)}
+                          onClick={() =>
+                            void connectOutlook(selectedMailbox.id, {
+                              reconnect:
+                                selectedMailbox.gmail_connected === true &&
+                                selectedMailbox.mail_provider === 'google',
+                            })
+                          }
                           className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60"
                         >
                           {connectingId === selectedMailbox.id
@@ -542,7 +550,12 @@ function TeamMailSyncInner() {
                             <button
                               type="button"
                               disabled={connectingId === mb.id}
-                              onClick={() => void connectOutlook(mb.id)}
+                              onClick={() =>
+                                void connectOutlook(mb.id, {
+                                  reconnect:
+                                    mb.gmail_connected === true && mb.mail_provider === 'google',
+                                })
+                              }
                               className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60"
                             >
                               Outlook

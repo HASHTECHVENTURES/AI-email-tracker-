@@ -72,6 +72,19 @@ export function mailOAuthSuccessMessage(provider?: MailOAuthProvider | null): st
     : 'Gmail connected successfully.';
 }
 
+/** Turn raw OAuth / sync token errors into actionable copy for the UI. */
+export function humanizeMailSyncError(message: string | null | undefined): string {
+  const msg = (message ?? '').trim();
+  if (!msg) return 'Something went wrong.';
+  if (/invalid_grant/i.test(msg)) {
+    return 'Mail access expired or Gmail/Outlook tokens got mixed up. On your mailbox card, click Reconnect Outlook (or Switch to Outlook) and sign in again with your Outlook account.';
+  }
+  if (/token refresh failed/i.test(msg)) {
+    return 'Could not refresh mail access. Reconnect Outlook or Gmail on your mailbox card, then press Sync now.';
+  }
+  return msg;
+}
+
 export function subscribeGmailOAuthComplete(
   onDone: (payload: Omit<GmailOAuthCompletePayload, 'type'>) => void,
 ): () => void {

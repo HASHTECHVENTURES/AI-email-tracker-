@@ -310,14 +310,16 @@ function ManagerMyMailInner() {
     openMailOAuthWindow(body.url, 'google');
   }
 
-  async function connectOutlook(mailboxId: string) {
+  async function connectOutlook(mailboxId: string, opts?: { reconnect?: boolean }) {
     const supabase = createClient();
     const {
       data: { session },
     } = await supabase.auth.getSession();
     if (!session) return;
+    const qs = new URLSearchParams({ employee_id: mailboxId });
+    if (opts?.reconnect) qs.set('reconnect', '1');
     const res = await apiFetch(
-      `/auth/microsoft/authorize-url?employee_id=${encodeURIComponent(mailboxId)}`,
+      `/auth/microsoft/authorize-url?${qs.toString()}`,
       session.access_token,
     );
     const body = (await res.json().catch(() => ({}))) as {
@@ -549,7 +551,12 @@ function ManagerMyMailInner() {
                     mb={mb}
                     ceoEmailNorm={headEmailNorm}
                     onConnectGmail={() => void connectGmail(mb.id)}
-                    onConnectOutlook={() => void connectOutlook(mb.id)}
+                    onConnectOutlook={() =>
+                      void connectOutlook(mb.id, {
+                        reconnect:
+                          mb.gmail_connected === true && mb.mail_provider === 'google',
+                      })
+                    }
                     onRemove={() => void removeMailbox(mb)}
                     onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
                     removing={deletingId === mb.id}

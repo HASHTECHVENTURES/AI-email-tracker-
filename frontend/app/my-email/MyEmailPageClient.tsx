@@ -27,6 +27,7 @@ import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { TrackedMailboxCard } from '@/components/my-email/TrackedMailboxCard';
 import { conversationReadPath } from '@/lib/conversation-read';
 import {
+  humanizeMailSyncError,
   mailOAuthSuccessMessage,
   openMailOAuthWindow,
   subscribeGmailOAuthComplete,
@@ -712,7 +713,7 @@ function HistoricalBackfillProgressBlock({
         <p className="font-semibold">
           {userStop ? 'Stopped' : interrupted ? 'Connection interrupted' : 'Analysis stopped'}
         </p>
-        <p className="mt-1">{ui.error ?? 'Something went wrong.'}</p>
+        <p className="mt-1">{humanizeMailSyncError(ui.error)}</p>
         {interrupted && onDismissInterrupted ? (
           <button
             type="button"
@@ -2723,14 +2724,16 @@ function MyEmailPageInner() {
     }
   }
 
-  async function connectOutlook(mailboxId: string) {
+  async function connectOutlook(mailboxId: string, opts?: { reconnect?: boolean }) {
     const supabase = createClient();
     const {
       data: { session },
     } = await supabase.auth.getSession();
     if (!session) return;
+    const qs = new URLSearchParams({ employee_id: mailboxId });
+    if (opts?.reconnect) qs.set('reconnect', '1');
     const res = await apiFetch(
-      `/auth/microsoft/authorize-url?employee_id=${encodeURIComponent(mailboxId)}`,
+      `/auth/microsoft/authorize-url?${qs.toString()}`,
       session.access_token,
     );
     const body = (await res.json().catch(() => ({}))) as {
@@ -2788,7 +2791,7 @@ function MyEmailPageInner() {
             : 'Opening Google to connect your inbox…',
         );
         if (provider === 'microsoft') {
-          await connectOutlook(id);
+          await connectOutlook(id, { reconnect: false });
         } else {
           await connectGmail(id);
         }
@@ -5248,7 +5251,12 @@ function MyEmailPageInner() {
                           mb={mb}
                           ceoEmailNorm={ceoEmailNorm}
                           onConnectGmail={() => void connectGmail(mb.id)}
-                          onConnectOutlook={() => void connectOutlook(mb.id)}
+                          onConnectOutlook={() =>
+                            void connectOutlook(mb.id, {
+                              reconnect:
+                                mb.gmail_connected === true && mb.mail_provider === 'google',
+                            })
+                          }
                           onRemove={() => void removeMailbox(mb.id)}
                           onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
                           removing={deletingId === mb.id}
@@ -5477,7 +5485,12 @@ function MyEmailPageInner() {
                           mb={mb}
                           showConnectGmail={false}
                           onConnectGmail={() => void connectGmail(mb.id)}
-                          onConnectOutlook={() => void connectOutlook(mb.id)}
+                          onConnectOutlook={() =>
+                            void connectOutlook(mb.id, {
+                              reconnect:
+                                mb.gmail_connected === true && mb.mail_provider === 'google',
+                            })
+                          }
                           onRemove={() => void removeMailbox(mb.id)}
                           onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
                           onSyncNow={

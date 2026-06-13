@@ -119,15 +119,26 @@ export class OauthTokenService {
     );
   }
 
-  /** When Google omits refresh_token on re-consent, reuse the stored one. */
-  async getExistingRefreshTokenPlaintext(employeeId: string): Promise<string | null> {
+  /** When a provider omits refresh_token on re-consent, reuse the stored one for the same provider only. */
+  async getExistingRefreshTokenPlaintext(
+    employeeId: string,
+    expectedProvider?: OAuthProvider,
+  ): Promise<string | null> {
     const tokenEmployeeId = (await this.resolveTokenEmployeeId(employeeId)) ?? employeeId;
     const { data, error } = await this.supabase
       .from('employee_oauth_tokens')
-      .select('refresh_token_enc')
+      .select('refresh_token_enc, oauth_provider')
       .eq('employee_id', tokenEmployeeId)
       .maybeSingle();
     if (error || !data) return null;
+    if (expectedProvider) {
+      const stored =
+        (data as { oauth_provider?: string | null }).oauth_provider?.trim().toLowerCase() ===
+        'microsoft'
+          ? 'microsoft'
+          : 'google';
+      if (stored !== expectedProvider) return null;
+    }
     try {
       return this.encryptionService.decrypt(
         (data as Pick<OAuthTokenRow, 'refresh_token_enc'>).refresh_token_enc,
@@ -243,7 +254,7 @@ export class OauthTokenService {
 
   private async refreshMicrosoft(employeeId: string, row: OAuthTokenRow): Promise<string> {
     this.logger.log(`Refreshing Microsoft OAuth token for employee ${employeeId}`);
-    const { clientId, clientSecret, tenantId } = getMicrosoftOAuthCredentials();
+    const { clientId, clientSecret, tenantId, redirectUri } = getMicrosoftOAuthCredentials();
     const refreshToken = this.encryptionService.decrypt(row.refresh_token_enc);
 
     try {
@@ -253,6 +264,7 @@ export class OauthTokenService {
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
         scope: MICROSOFT_MAIL_SCOPES.join(' '),
+        redirect_uri: redirectUri,
       });
       const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`;
       const res = await retryWithBackoff(

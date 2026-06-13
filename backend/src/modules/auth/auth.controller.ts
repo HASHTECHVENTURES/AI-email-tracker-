@@ -180,7 +180,11 @@ export class AuthController {
 
   /** Returns Microsoft OAuth URL (caller redirects browser). Requires Bearer auth. */
   @Get('microsoft/authorize-url')
-  async microsoftAuthorizeUrl(@Req() req: Request, @Query('employee_id') employeeId: string) {
+  async microsoftAuthorizeUrl(
+    @Req() req: Request,
+    @Query('employee_id') employeeId: string,
+    @Query('reconnect') reconnect?: string,
+  ) {
     if (!req.user) {
       throw new UnauthorizedException('Sign in required');
     }
@@ -208,7 +212,14 @@ export class AuthController {
     });
     const employee = await this.employeesService.getById(req.user.companyId, normalizedEmployeeId);
     const loginHint = microsoftLoginHintForEmail(employee?.email);
-    return { url: buildMicrosoftAuthorizeUrl(state, loginHint) };
+    const hasToken = await this.oauthTokenService.hasToken(normalizedEmployeeId);
+    const existingProvider = hasToken
+      ? await this.oauthTokenService.getOAuthProvider(normalizedEmployeeId)
+      : null;
+    const forceConsent =
+      reconnect === '1' || reconnect === 'true' || existingProvider === 'google';
+    const prompt = forceConsent ? 'consent' : 'select_account';
+    return { url: buildMicrosoftAuthorizeUrl(state, loginHint, prompt) };
   }
 
   @PublicRoute()
@@ -306,9 +317,12 @@ export class AuthController {
       if (!tokens.refresh_token) {
         const existing = await this.oauthTokenService.getExistingRefreshTokenPlaintext(
           payload.employee_id,
+          'microsoft',
         );
         if (!existing) {
-          throw new BadRequestException('missing_refresh_token');
+          throw new BadRequestException(
+            'missing_refresh_token: Microsoft did not issue a refresh token. Click Switch to Outlook again and accept all permissions.',
+          );
         }
         tokens.refresh_token = existing;
       }
@@ -436,6 +450,7 @@ export class AuthController {
         refreshToken =
           (await this.oauthTokenService.getExistingRefreshTokenPlaintext(
             payload.employee_id,
+            'google',
           )) ?? undefined;
       }
       if (!refreshToken) {

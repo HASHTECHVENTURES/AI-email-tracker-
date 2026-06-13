@@ -66,7 +66,11 @@ export function microsoftLoginHintForEmail(email: string | undefined | null): st
   return consumerDomains.has(domain) ? norm : undefined;
 }
 
-export function buildMicrosoftAuthorizeUrl(state: string, loginHint?: string): string {
+export function buildMicrosoftAuthorizeUrl(
+  state: string,
+  loginHint?: string,
+  prompt: 'select_account' | 'consent' = 'select_account',
+): string {
   const { clientId, redirectUri, tenantId } = getMicrosoftOAuthCredentials();
   const params = new URLSearchParams({
     client_id: clientId,
@@ -75,8 +79,7 @@ export function buildMicrosoftAuthorizeUrl(state: string, loginHint?: string): s
     response_mode: 'query',
     scope: MICROSOFT_MAIL_SCOPES.join(' '),
     state,
-    /** Show account picker so a cached @gmail.com Microsoft login is not auto-selected. */
-    prompt: 'select_account',
+    prompt,
   });
   const hint = loginHint?.trim();
   if (hint) {
