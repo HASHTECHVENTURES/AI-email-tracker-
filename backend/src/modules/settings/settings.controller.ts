@@ -35,6 +35,9 @@ export class SettingsController {
     if (body.key === 'email_ingest_without_ai_confirmed' && ctx.role !== 'CEO') {
       throw new ForbiddenException('Only the CEO can confirm import without Inbox AI');
     }
+    if (body.key === 'email_exclude_patterns' && req.user?.role !== 'CEO') {
+      throw new ForbiddenException('Only the CEO can edit the sender blocklist');
+    }
     await this.settingsService.set(body.key, body.value);
     return { status: 'ok' };
   }

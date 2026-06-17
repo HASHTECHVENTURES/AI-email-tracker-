@@ -29,6 +29,8 @@ import {
   finalizeIngestRelevanceFromAi,
   ruleBasedIngestClassification,
   ingestSkipReasonForInboundNoise,
+  mergeExcludePatterns,
+  type IngestNoiseOptions,
 } from './relevance-guards';
 import { RELEVANCE_MODEL_TEMPERATURE, RELEVANCE_SYSTEM_INSTRUCTION } from './relevance-prompt.builder';
 import { OauthTokenService } from '../auth/oauth-token.service';
@@ -654,6 +656,10 @@ export class EmailIngestionService {
       cycleSettings.email_ai_relevance_enabled &&
       employee.aiEnabled !== false;
     const ingestWithoutAiConfirmed = cycleSettings.email_ingest_without_ai_confirmed;
+    const mergedExcludePatterns = mergeExcludePatterns(
+      cycleSettings.email_exclude_patterns,
+      employee.excludePatterns,
+    );
     const inboundAiRequired = !ingestWithoutAiConfirmed;
     if (inboundAiRequired && !allowGeminiRelevance) {
       const reasons: string[] = [];
@@ -964,6 +970,7 @@ export class EmailIngestionService {
             isNoise,
             allowGeminiRelevance,
             ingestWithoutAiConfirmed,
+            mergedExcludePatterns,
           ));
         if (cachedDecision) {
           this.logger.debug(
@@ -1235,8 +1242,18 @@ export class EmailIngestionService {
     hasNoiseGmailLabel: boolean,
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
+    mergedExcludePatterns: string[] = [],
   ): Promise<IngestClassificationDecision> {
-    const ruled = ruleBasedIngestClassification(target, employeeEmail, hasNoiseGmailLabel);
+    const noiseOptions: IngestNoiseOptions = {
+      excludePatterns: mergedExcludePatterns,
+      threadSlice,
+    };
+    const ruled = ruleBasedIngestClassification(
+      target,
+      employeeEmail,
+      hasNoiseGmailLabel,
+      noiseOptions,
+    );
     if (ruled) {
       return ruled;
     }
@@ -1255,6 +1272,7 @@ export class EmailIngestionService {
           employeeEmail,
           hasNoiseGmailLabel,
           parsed,
+          noiseOptions,
         );
         return {
           relevant: finalized.relevant,
@@ -1270,7 +1288,7 @@ export class EmailIngestionService {
           confidence: null,
         };
       }
-      if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+      if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel, noiseOptions)) {
         return {
           relevant: true,
           reason:
@@ -1295,7 +1313,7 @@ export class EmailIngestionService {
         confidence: null,
       };
     }
-    if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+    if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel, noiseOptions)) {
       return {
         relevant: true,
         reason:
@@ -1555,6 +1573,10 @@ export class EmailIngestionService {
           )
         : [msg];
     const isNoise = await this.isMailNoiseAsync(msg, employee.id);
+    const mergedExcludePatterns = mergeExcludePatterns(
+      cycleSettings.email_exclude_patterns,
+      employee.excludePatterns,
+    );
     const decision = await this.classifyMessageForIngest(
       msg,
       threadSlice,
@@ -1562,6 +1584,7 @@ export class EmailIngestionService {
       isNoise,
       allowGeminiRelevance,
       cycleSettings.email_ingest_without_ai_confirmed,
+      mergedExcludePatterns,
     );
 
     if (decision.relevant) {

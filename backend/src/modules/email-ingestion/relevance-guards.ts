@@ -1,6 +1,26 @@
 import type { EmailMessage } from '../common/types';
 import { PROMO_CONFIDENCE_THRESHOLD } from './relevance-prompt.builder';
 
+/** Options for layered ingest noise (no domain hardcoding). */
+export type IngestNoiseOptions = {
+  excludePatterns?: string[];
+  threadSlice?: EmailMessage[];
+};
+
+/** Merge company + mailbox blocklists (deduped). */
+export function mergeExcludePatterns(
+  companyPatterns: string[] | undefined | null,
+  mailboxPatterns: string[] | undefined | null,
+): string[] {
+  return [
+    ...new Set(
+      [...(companyPatterns ?? []), ...(mailboxPatterns ?? [])]
+        .map((p) => p.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
 /** Minimal fields for noise heuristics (ingest + conversation recompute). */
 export type InboundNoiseFields = {
   direction?: string;
@@ -9,6 +29,9 @@ export type InboundNoiseFields = {
   subject?: string | null;
   body_text?: string | null;
   bodyText?: string | null;
+  mailListUnsubscribe?: boolean;
+  mailPrecedenceBulk?: boolean;
+  providerMessageId?: string;
 };
 
 function readInboundFields(msg: InboundNoiseFields): {
@@ -389,14 +412,124 @@ export function looksLikeMeetingRecapOrReportMail(msg: InboundNoiseFields): bool
   );
 }
 
+/**
+ * Company or mailbox blocklist — substring match on from, subject, or body preview.
+ * Patterns are user-managed in Settings (no code deploy for new spammers).
+ */
+export function matchesExcludePatterns(
+  msg: InboundNoiseFields,
+  patterns: string[] | undefined | null,
+): boolean {
+  if (!patterns?.length) return false;
+  const { from, subject, body } = readInboundFields(msg);
+  const haystack = `${from} ${subject.toLowerCase()} ${body.slice(0, 500).toLowerCase()}`;
+  return patterns.some((raw) => {
+    const pat = raw.trim().toLowerCase();
+    return pat.length > 0 && haystack.includes(pat);
+  });
+}
+
+/** RFC 2369 List-Unsubscribe or Precedence: bulk/list — strong newsletter signal. */
+export function hasBulkMailHeaders(msg: InboundNoiseFields): boolean {
+  if (msg.mailListUnsubscribe === true || msg.mailPrecedenceBulk === true) return true;
+  return false;
+}
+
+/** True when the employee already replied earlier in this thread (existing relationship). */
+export function threadHasPriorEmployeeReply(
+  threadSlice: EmailMessage[] | undefined,
+  targetMessageId: string | undefined,
+): boolean {
+  if (!threadSlice?.length || !targetMessageId) return false;
+  const ordered = [...threadSlice].sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
+  const targetIdx = ordered.findIndex((m) => m.providerMessageId === targetMessageId);
+  const before = targetIdx >= 0 ? ordered.slice(0, targetIdx) : ordered.slice(0, -1);
+  return before.some((m) => m.direction === 'OUTBOUND');
+}
+
+/**
+ * Generic cold outreach / recruiter spam / event promo — no domain allowlists.
+ * Skipped only on new threads (no prior employee reply in context).
+ */
+export function looksLikeGenericColdOutreach(
+  msg: InboundNoiseFields,
+  priorEmployeeReply: boolean,
+): boolean {
+  if (priorEmployeeReply) return false;
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+
+  const { subject, body } = readInboundFields(msg);
+  const sub = subject.toLowerCase();
+  const chunk = extractLatestInboundComposeBody(body).slice(0, 1_200);
+
+  if (/\bhotlist\b/i.test(sub)) return true;
+  if (/(?:\||\/)\s*(?:developer|engineer|lead|manager|architect|devops|sap|\.net)/i.test(sub)) {
+    return true;
+  }
+
+  if (
+    /\b(?:summit|unconference|webinar|blockbuster show|early bird|talent acquisition leader)\b/i.test(
+      sub,
+    )
+  ) {
+    return true;
+  }
+
+  const coldPhrases =
+    /\b(?:since i have not heard back|i will close your file|building on my previous note|slipped through the cracks|reaching out to introduce|quick intro|quick question|i(?:'d)? love to (?:connect|chat)|can we schedule (?:a )?(?:call|meeting)|wanted to (?:reach out|introduce))\b/i;
+  if (coldPhrases.test(chunk)) return true;
+
+  return false;
+}
+
+/**
+ * Gmail Promotions / Social / Forums — hard skip for new inbound threads only.
+ * Keeps misfiled client mail when the employee already replied in-thread.
+ */
+export function shouldHardSkipGmailCategoryNoise(
+  msg: InboundNoiseFields,
+  hasNoiseGmailLabel: boolean,
+  priorEmployeeReply: boolean,
+): boolean {
+  if (!hasNoiseGmailLabel) return false;
+  if (priorEmployeeReply) return false;
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+  return true;
+}
+
+/**
+ * Layered high-confidence noise: blocklist → bulk headers → Gmail category → cold outreach templates.
+ * All rule-based — zero API credits.
+ */
+export function looksLikeHighConfidenceIngestNoise(
+  msg: InboundNoiseFields,
+  hasNoiseGmailLabel: boolean,
+  options?: IngestNoiseOptions,
+): boolean {
+  const patterns = options?.excludePatterns ?? [];
+  if (matchesExcludePatterns(msg, patterns)) return true;
+  if (hasBulkMailHeaders(msg)) return true;
+
+  const targetId = msg.providerMessageId;
+  const priorReply = threadHasPriorEmployeeReply(options?.threadSlice, targetId);
+
+  if (shouldHardSkipGmailCategoryNoise(msg, hasNoiseGmailLabel, priorReply)) return true;
+  if (looksLikeGenericColdOutreach(msg, priorReply)) return true;
+
+  return false;
+}
+
 /** Marketing / promo / newsletter-style mail (Gmail Promotions label is a strong signal). */
 export function looksLikePromotionalMail(
   msg: InboundNoiseFields,
   hasNoiseGmailLabel = false,
+  options?: IngestNoiseOptions,
 ): boolean {
   if (looksLikeMeetingRecapOrReportMail(msg)) return true;
 
   if (looksLikeMeetingOrEventMail(msg)) return false;
+
+  if (looksLikeHighConfidenceIngestNoise(msg, hasNoiseGmailLabel, options)) return true;
 
   const { from, subject, body } = readInboundFields(msg);
   const sub = subject.toLowerCase();
@@ -465,9 +598,10 @@ export function looksLikePromotionalMail(
 export function looksLikeInboundNoReplyNoise(
   msg: InboundNoiseFields,
   hasNoiseGmailLabel = false,
+  options?: IngestNoiseOptions,
 ): boolean {
   if (msg.direction && msg.direction !== 'INBOUND') return false;
-  return looksLikePromotionalMail(msg, hasNoiseGmailLabel);
+  return looksLikePromotionalMail(msg, hasNoiseGmailLabel, options);
 }
 
 /** Calendar/meeting mail must be ingested and appear in Need your reply (never auto-skipped as promo). */
@@ -488,8 +622,23 @@ export function ingestForceRelevantCalendarOrMeeting(
 export function ingestSkipReasonForInboundNoise(
   msg: InboundNoiseFields,
   hasNoiseGmailLabel: boolean,
+  options?: IngestNoiseOptions,
 ): string | null {
-  if (!looksLikeInboundNoReplyNoise(msg, hasNoiseGmailLabel)) return null;
+  if (matchesExcludePatterns(msg, options?.excludePatterns)) {
+    return 'Sender matches blocklist pattern — not a customer reply thread.';
+  }
+  if (hasBulkMailHeaders(msg)) {
+    return 'Newsletter or bulk mailing-list message — not a customer reply thread.';
+  }
+  const targetId = msg.providerMessageId;
+  const priorReply = threadHasPriorEmployeeReply(options?.threadSlice, targetId);
+  if (shouldHardSkipGmailCategoryNoise(msg, hasNoiseGmailLabel, priorReply)) {
+    return 'Gmail Promotions/Social tab — not a customer reply thread.';
+  }
+  if (looksLikeGenericColdOutreach(msg, priorReply)) {
+    return 'Cold outreach or event promo — not a customer reply thread.';
+  }
+  if (!looksLikeInboundNoReplyNoise(msg, hasNoiseGmailLabel, options)) return null;
   return 'Promotional or marketing mail — not a customer reply thread.';
 }
 
@@ -513,10 +662,14 @@ export function finalizeIngestRelevanceFromAi(
   employeeEmail: string,
   hasNoiseGmailLabel: boolean,
   parsed: IngestRelevanceAiVerdict,
+  options?: IngestNoiseOptions,
 ): IngestRelevanceAiVerdict {
   if (parsed.relevant) {
-    const postAiNoise = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
+    const postAiNoise = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel, options);
     if (postAiNoise && !looksLikeMeetingOrEventMail(target)) {
+      if (looksLikeHighConfidenceIngestNoise(target, hasNoiseGmailLabel, options)) {
+        return { relevant: false, reason: postAiNoise, confidence: parsed.confidence };
+      }
       const confidence = parsed.confidence ?? 0.5;
       if (confidence >= PROMO_CONFIDENCE_THRESHOLD) {
         return { relevant: true, reason: parsed.reason, confidence: parsed.confidence };
@@ -531,7 +684,7 @@ export function finalizeIngestRelevanceFromAi(
       confidence: parsed.confidence,
     };
   }
-  if (!parsed.relevant && looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+  if (!parsed.relevant && looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel, options)) {
     return {
       relevant: true,
       reason:
@@ -546,11 +699,13 @@ export function looksLikeDirectHumanMail(
   target: EmailMessage,
   employeeEmail: string,
   hasNoiseGmailLabel: boolean,
+  options?: IngestNoiseOptions,
 ): boolean {
   if (target.direction !== 'INBOUND') return false;
   if (looksLikeMeetingOrEventMail(target)) return true;
   if (hasNoiseGmailLabel) return false;
-  if (looksLikeInboundNoReplyNoise(target, hasNoiseGmailLabel)) return false;
+  if (looksLikeHighConfidenceIngestNoise(target, hasNoiseGmailLabel, options)) return false;
+  if (looksLikeInboundNoReplyNoise(target, hasNoiseGmailLabel, options)) return false;
 
   const norm = (v: string) => v.trim().toLowerCase();
   const mailbox = norm(employeeEmail);
@@ -573,7 +728,7 @@ export function looksLikeDirectHumanMail(
   if (!isDirectToMailbox || !isSmallAudience) return false;
   if (automatedSender || obviousBroadcastSubject || obviousBroadcastBody) return false;
   if (looksLikeAutomatedSystemNotification(target)) return false;
-  if (looksLikeInboundNoReplyNoise(target, hasNoiseGmailLabel)) return false;
+  if (looksLikeInboundNoReplyNoise(target, hasNoiseGmailLabel, options)) return false;
   return true;
 }
 
@@ -613,6 +768,7 @@ export function ruleBasedIngestClassification(
   target: EmailMessage,
   employeeEmail: string,
   hasNoiseGmailLabel: boolean,
+  options?: IngestNoiseOptions,
 ): RuleBasedIngestAction | null {
   if (target.direction === 'OUTBOUND') {
     return {
@@ -628,7 +784,7 @@ export function ruleBasedIngestClassification(
     return { ...calendarIngest, aiAction: 'CALENDAR' };
   }
 
-  const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
+  const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel, options);
   if (noiseSkip) {
     return { relevant: false, reason: noiseSkip, confidence: 1, aiAction: 'SKIP' };
   }

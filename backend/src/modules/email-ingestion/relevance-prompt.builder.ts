@@ -38,6 +38,8 @@ SKIP → Skipped (not stored). Newsletters, promos, spam, platform noise.
 - Ticket/CRM auto-notifications (request logged, opportunity assigned, vtiger) → LOW.
 - ServiceNow/NTT infra alerts, iProcess workflow reminders, travel promos (EaseMyTrip) → SKIP or LOW.
 - Cold outreach without real name + company + specific ask → SKIP.
+- Substack/YourStory newsletters, recruiter HOTLIST mail, summit/UnConference promos (SHRM, Influence Exchange) → SKIP.
+- Cold sales follow-ups ("since I have not heard back", "building on my previous note") → SKIP.
 - Sponsorship/summit/conference invites, Google performance reports, Read.ai/Fathom recaps → SKIP.
 - When uncertain → NEED_REPLY.
 

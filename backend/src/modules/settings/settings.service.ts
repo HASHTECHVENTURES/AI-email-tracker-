@@ -60,6 +60,17 @@ export interface SystemSettings {
   api_quota_exhausted: boolean;
   /** ISO timestamp when api_quota_exhausted was last set to true. */
   api_quota_exhausted_at: string | null;
+  /**
+   * Company-wide sender/subject blocklist (substring match at ingest).
+   * Stored in system_settings as newline-separated text; exposed as parsed array.
+   */
+  email_exclude_patterns: string[];
+}
+
+/** Parse CEO blocklist from settings storage (newline or comma separated). */
+export function parseExcludePatternsList(raw: string | undefined | null): string[] {
+  if (!raw?.trim()) return [];
+  return [...new Set(raw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean))];
 }
 
 export interface RuntimeStatus {
@@ -116,6 +127,7 @@ export class SettingsService {
         default_sla_hours: 24,
         api_quota_exhausted: false,
         api_quota_exhausted_at: null,
+        email_exclude_patterns: [],
       };
     }
 
@@ -139,6 +151,7 @@ export class SettingsService {
       default_sla_hours,
       api_quota_exhausted: false,
       api_quota_exhausted_at: null,
+      email_exclude_patterns: parseExcludePatternsList(map.get('email_exclude_patterns')),
     };
   }
 

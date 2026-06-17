@@ -2008,7 +2008,7 @@ export class EmployeesService {
     const { data, error } = await this.supabase
       .from('employees')
       .select(
-        'id, name, email, company_id, department_id, sla_hours_default, is_active, ai_enabled, tracking_start_at, tracking_paused, roster_duplicate, mailbox_type, last_synced_at',
+        'id, name, email, company_id, department_id, sla_hours_default, is_active, ai_enabled, tracking_start_at, tracking_paused, roster_duplicate, mailbox_type, last_synced_at, exclude_patterns',
       )
       .eq('company_id', companyId)
       .eq('is_active', true)
@@ -2032,6 +2032,9 @@ export class EmployeesService {
       trackingPaused: row.tracking_paused === true,
       mailboxType: (row.mailbox_type as 'SELF' | 'TEAM' | null | undefined) ?? null,
       lastSyncedAt: row.last_synced_at ?? null,
+      excludePatterns: Array.isArray(row.exclude_patterns)
+        ? row.exclude_patterns.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+        : [],
     }));
   }
 
@@ -2039,7 +2042,7 @@ export class EmployeesService {
     const { data, error } = await this.supabase
       .from('employees')
       .select(
-        'id, name, email, company_id, department_id, sla_hours_default, is_active, ai_enabled, tracking_start_at, tracking_paused',
+        'id, name, email, company_id, department_id, sla_hours_default, is_active, ai_enabled, tracking_start_at, tracking_paused, exclude_patterns',
       )
       .eq('company_id', companyId)
       .eq('id', employeeId)
@@ -2064,6 +2067,9 @@ export class EmployeesService {
       trackingStartAt: row.tracking_start_at ?? null,
       trackingPaused: row.tracking_paused === true,
       startTrackingAt: row.tracking_start_at ?? null,
+      excludePatterns: Array.isArray(row.exclude_patterns)
+        ? row.exclude_patterns.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+        : [],
     };
   }
 

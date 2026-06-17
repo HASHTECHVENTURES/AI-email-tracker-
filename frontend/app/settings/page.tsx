@@ -24,6 +24,7 @@ type Settings = {
   email_crawl_team_mailboxes_enabled: boolean;
   email_crawl_employee_mailboxes_enabled: boolean;
   default_sla_hours: number;
+  email_exclude_patterns?: string[];
   api_quota_exhausted?: boolean;
   api_quota_exhausted_at?: string | null;
 };
@@ -97,7 +98,9 @@ export default function SettingsPage() {
   const [runtime, setRuntime] = useState<Runtime | null>(null);
   const [sysStatus, setSysStatus] = useState<SystemStatusLite | null>(null);
   const [slaDraft, setSlaDraft] = useState('');
+  const [excludeDraft, setExcludeDraft] = useState('');
   const [savingSla, setSavingSla] = useState(false);
+  const [savingExclude, setSavingExclude] = useState(false);
   const [savingMasterCombined, setSavingMasterCombined] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -140,6 +143,7 @@ export default function SettingsPage() {
         email_crawl_employee_mailboxes_enabled: s.email_crawl_employee_mailboxes_enabled !== false,
       });
       setSlaDraft(String(s.default_sla_hours ?? 24));
+      setExcludeDraft((s.email_exclude_patterns ?? []).join('\n'));
       setSettingsLoadState('ready');
     } else {
       if (await tryRecoverFromUnauthorized(sRes, ctxSignOut)) return;
@@ -249,6 +253,28 @@ export default function SettingsPage() {
       await load(token);
     } finally {
       setSavingSla(false);
+    }
+  }
+
+  async function saveExcludePatterns() {
+    if (!me || me.role !== 'CEO' || !token) return;
+    setError(null);
+    setNotice(null);
+    setSavingExclude(true);
+    try {
+      const res = await apiFetch('/settings', token, {
+        method: 'PUT',
+        body: JSON.stringify({ key: 'email_exclude_patterns', value: excludeDraft }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        setError((b.message as string) || 'Could not save blocklist');
+        return;
+      }
+      setNotice('Sender blocklist updated. Matching mail is skipped at ingest without AI credits.');
+      await load(token);
+    } finally {
+      setSavingExclude(false);
     }
   }
 
@@ -492,6 +518,37 @@ export default function SettingsPage() {
               className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
               {savingSla ? 'Saving…' : 'Save'}
+            </button>
+          ) : (
+            <span className="text-xs text-slate-400">CEO only</span>
+          )}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
+        <h2 className="text-base font-semibold text-slate-900">Sender blocklist</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          One pattern per line (domain, email fragment, or subject keyword). Matched inbound mail is
+          skipped by rules at ingest — no Gemini API call. Examples: <code className="text-xs">substack.com</code>,{' '}
+          <code className="text-xs">hotlist</code>, <code className="text-xs">noreply@</code>.
+        </p>
+        <div className="mt-4 space-y-3">
+          <textarea
+            value={excludeDraft}
+            onChange={(e) => setExcludeDraft(e.target.value)}
+            disabled={!isCeo || settingsLoadState !== 'ready'}
+            rows={6}
+            placeholder={'substack.com\nyourstory.com\nhotlist\nnoreply@'}
+            className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm disabled:bg-slate-50"
+          />
+          {isCeo ? (
+            <button
+              type="button"
+              onClick={() => void saveExcludePatterns()}
+              disabled={savingExclude || settingsLoadState !== 'ready'}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {savingExclude ? 'Saving…' : 'Save blocklist'}
             </button>
           ) : (
             <span className="text-xs text-slate-400">CEO only</span>

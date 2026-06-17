@@ -260,6 +260,10 @@ export class GmailService {
     const replyToRaw = getHeader('Reply-To');
     const subject = getHeader('Subject');
     const dateStr = getHeader('Date');
+    const listUnsubRaw = getHeader('List-Unsubscribe') || getHeader('List-Unsubscribe-Post');
+    const precedenceRaw = getHeader('Precedence').toLowerCase();
+    const mailListUnsubscribe = listUnsubRaw.trim().length > 0;
+    const mailPrecedenceBulk = /^(?:bulk|list|junk)$/.test(precedenceRaw.trim());
 
     const fromEmail = this.extractEmail(fromRaw);
     const fromName = this.extractDisplayName(fromRaw);
@@ -298,6 +302,8 @@ export class GmailService {
       bodyText,
       sentAt,
       labelIds,
+      mailListUnsubscribe,
+      mailPrecedenceBulk,
     };
   }
 

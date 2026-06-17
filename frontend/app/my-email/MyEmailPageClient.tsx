@@ -274,7 +274,7 @@ function isNoFollowUpNoise(c: ConversationRow): boolean {
     return true;
   }
   if (
-    /(unsubscribe|view in browser|promo code|flash sale|limited time offer|\d+%\s*off|marketing newsletter)/i.test(
+    /(unsubscribe|view in browser|promo code|flash sale|limited time offer|\d+%\s*off|marketing newsletter|substack|hotlist|unconference|prediction markets)/i.test(
       text,
     )
   ) {

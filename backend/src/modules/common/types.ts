@@ -25,6 +25,8 @@ export interface Employee {
   mailboxType?: 'SELF' | 'TEAM' | null;
   /** Last successful Gmail ingest for this mailbox (used to prioritize stale team inboxes in cron). */
   lastSyncedAt?: string | null;
+  /** Substrings matched against from/subject/body at ingest (per-mailbox blocklist). */
+  excludePatterns?: string[];
 }
 
 export interface EmailMessage {
@@ -45,6 +47,10 @@ export interface EmailMessage {
   sentAt: Date;
   /** Gmail label IDs — used for noise filtering (CATEGORY_PROMOTIONS etc.) */
   labelIds?: string[];
+  /** Parsed from List-Unsubscribe / List-Unsubscribe-Post headers. */
+  mailListUnsubscribe?: boolean;
+  /** Parsed from Precedence: bulk | list | junk. */
+  mailPrecedenceBulk?: boolean;
   /** Set after Gemini inbox relevance — persisted on `email_messages.relevance_reason`. */
   relevanceReason?: string | null;
   /** AI classification action: NEED_REPLY, CC, LOW, SKIP. Set during ingestion. */

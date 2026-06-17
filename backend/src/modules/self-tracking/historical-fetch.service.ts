@@ -14,10 +14,11 @@ import {
   RELEVANCE_SYSTEM_INSTRUCTION,
 } from '../email-ingestion/relevance-prompt.builder';
 import {
-  ingestForceRelevantCalendarOrMeeting,
-  ingestSkipReasonForInboundNoise,
   looksLikeDirectHumanMail,
   finalizeIngestRelevanceFromAi,
+  ruleBasedIngestClassification,
+  mergeExcludePatterns,
+  type IngestNoiseOptions,
 } from '../email-ingestion/relevance-guards';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { ConversationsService } from '../conversations/conversations.service';
@@ -164,7 +165,7 @@ export class HistoricalFetchService {
 
     const { data: empRow } = await this.supabase
       .from('employees')
-      .select('id, name, email, company_id, ai_enabled')
+      .select('id, name, email, company_id, ai_enabled, exclude_patterns')
       .eq('id', employeeId)
       .eq('company_id', ctx.companyId)
       .maybeSingle();
@@ -173,7 +174,14 @@ export class HistoricalFetchService {
       throw new BadRequestException('Mailbox not found or not in your company');
     }
 
-    const employee = empRow as { id: string; name: string; email: string; company_id: string; ai_enabled?: boolean };
+    const employee = empRow as {
+      id: string;
+      name: string;
+      email: string;
+      company_id: string;
+      ai_enabled?: boolean;
+      exclude_patterns?: string[] | null;
+    };
 
     this.logger.log(
       `Historical fetch for ${employee.name} (${employee.email}): ${startIso} → ${endIso}`,
@@ -240,6 +248,10 @@ export class HistoricalFetchService {
       settings.email_ai_relevance_enabled &&
       employee.ai_enabled !== false;
     const ingestWithoutAiConfirmed = settings.email_ingest_without_ai_confirmed;
+    const mergedExcludePatterns = mergeExcludePatterns(
+      settings.email_exclude_patterns,
+      Array.isArray(employee.exclude_patterns) ? employee.exclude_patterns : [],
+    );
     const inboundAiRequired = !ingestWithoutAiConfirmed;
     if (inboundAiRequired && !allowGeminiRelevance) {
       const reasons: string[] = [];
@@ -399,6 +411,7 @@ export class HistoricalFetchService {
             this.gmailService.isNoise(msg.labelIds),
             allowGeminiRelevance,
             ingestWithoutAiConfirmed,
+            mergedExcludePatterns,
           ));
 
         onProgress?.({
@@ -692,38 +705,25 @@ export class HistoricalFetchService {
     hasNoiseGmailLabel: boolean,
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
+    mergedExcludePatterns: string[] = [],
   ): Promise<{
     relevant: boolean;
     reason: string | null;
     inboundAiHardStop?: boolean;
     transientAiUnavailable?: boolean;
   }> {
-    if (target.direction === 'OUTBOUND') {
-      return {
-        relevant: true,
-        reason: 'Outbound — your sent message (reply detection / SLA)',
-      };
-    }
-    const calendarIngest = ingestForceRelevantCalendarOrMeeting(target);
-    if (calendarIngest) {
-      return calendarIngest;
-    }
-    const noiseSkip = ingestSkipReasonForInboundNoise(target, hasNoiseGmailLabel);
-    if (noiseSkip) {
-      return { relevant: false, reason: noiseSkip };
-    }
-
-    // CC-only / BCC pre-filter: mailbox not in To → CC tab (no Gemini needed)
-    if (target.direction === 'INBOUND') {
-      const m = employeeEmail.trim().toLowerCase();
-      const inTo = (target.toEmails ?? []).some((e) => e.trim().toLowerCase() === m);
-      if (!inTo) {
-        const inCc = (target.ccEmails ?? []).some((e) => e.trim().toLowerCase() === m);
-        if (inCc) {
-          return { relevant: true, reason: 'Mailbox only in CC — no reply expected.' };
-        }
-        return { relevant: true, reason: 'Mailbox BCC — informational only.' };
-      }
+    const noiseOptions: IngestNoiseOptions = {
+      excludePatterns: mergedExcludePatterns,
+      threadSlice,
+    };
+    const ruled = ruleBasedIngestClassification(
+      target,
+      employeeEmail,
+      hasNoiseGmailLabel,
+      noiseOptions,
+    );
+    if (ruled) {
+      return { relevant: ruled.relevant, reason: ruled.reason };
     }
 
     if (allowGeminiRelevance && this.relevanceModel) {
@@ -740,6 +740,7 @@ export class HistoricalFetchService {
           employeeEmail,
           hasNoiseGmailLabel,
           parsed,
+          noiseOptions,
         );
         return {
           relevant: finalized.relevant,
@@ -747,7 +748,7 @@ export class HistoricalFetchService {
         };
       }
       if (this.monthlyQuotaExhausted && !ingestWithoutAiConfirmed) {
-        if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+        if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel, noiseOptions)) {
           return {
             relevant: true,
             reason:
@@ -764,7 +765,7 @@ export class HistoricalFetchService {
       if (ingestWithoutAiConfirmed) {
         return { relevant: true, reason: 'Unfiltered import — Inbox AI unavailable' };
       }
-      if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+      if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel, noiseOptions)) {
         return {
           relevant: true,
           reason:
@@ -781,7 +782,7 @@ export class HistoricalFetchService {
     if (ingestWithoutAiConfirmed) {
       return { relevant: true, reason: 'Unfiltered import — Inbox AI unavailable' };
     }
-    if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel)) {
+    if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel, noiseOptions)) {
       return {
         relevant: true,
         reason:
