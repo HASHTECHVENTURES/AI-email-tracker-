@@ -60,6 +60,70 @@ export function isInternalColleagueSender(
   return Boolean(empDomain && fromDomain && empDomain === fromDomain);
 }
 
+/**
+ * Same-domain mail that is FYI, auto-generated, or already closed — not a real to-do.
+ * Keeps Need Reply free of false alarms (attendance alerts, approved-leave notices, etc.).
+ */
+export function looksLikeInternalFyiOrAutomated(msg: InboundNoiseFields): boolean {
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+
+  const { from, subject, body } = readInboundFields(msg);
+  const sub = subject.toLowerCase();
+  const chunk = extractLatestInboundComposeBody(body).slice(0, 900).toLowerCase();
+  const combined = `${sub} ${chunk}`;
+
+  if (looksLikeShortAcknowledgment(msg) || looksLikeConversationClosure(msg)) {
+    return true;
+  }
+
+  if (
+    /\b(?:hrms\s+attendance\s+alert|process\s+activity\s+list|happy\s+birthday)\b/i.test(sub) ||
+    /\b(?:leave|cl|half\s+cl|casual\s+leave|sick\s+leave|wfh|work\s+from\s+home).{0,100}\bapproved\s+by\b/i.test(
+      sub,
+    ) ||
+    /\brequest\s+by\b.{0,100}\bapproved\s+by\b/i.test(sub)
+  ) {
+    return true;
+  }
+
+  const fromLocal = (from.split('@')[0] ?? '').toLowerCase();
+  if (
+    /^(?:support|hr|payroll|noreply|no-reply|notifications?|alerts?)$/.test(fromLocal) &&
+    /\b(?:alert|notification|reminder|digest|activity\s+list|attendance|birthday|approved\s+by)\b/i.test(
+      combined,
+    ) &&
+    !looksLikeInboundReplyQuestion(msg)
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(?:fyi|for your information|for ur information)\b/i.test(chunk) &&
+    !looksLikeInboundReplyQuestion(msg)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/** Same-domain mail that clearly expects a human reply (question, urgent ask, leave query, etc.). */
+export function looksLikeInternalActionRequired(msg: InboundNoiseFields): boolean {
+  if (msg.direction && msg.direction !== 'INBOUND') return false;
+  if (looksLikeInternalFyiOrAutomated(msg)) return false;
+
+  if (looksLikeInboundReplyQuestion(msg)) return true;
+
+  const { subject, body } = readInboundFields(msg);
+  const sub = subject.toLowerCase();
+  const chunk = extractLatestInboundComposeBody(body).slice(0, 900).toLowerCase();
+  const combined = `${sub}\n${chunk}`;
+
+  return /\b(?:urgent|asap|action required|approval required|please help|need help|leave query|leave balance|pending your|awaiting your|kindly help|please assist|look into|do the needful|resolve this|fix this)\b/i.test(
+    combined,
+  );
+}
+
 function normalizeInboundAckBody(body: string): string {
   return body
     .replace(/[-–—]+\s*(?:forwarded|original)\s+message.*$/is, '')
@@ -817,11 +881,27 @@ export function ruleBasedIngestClassification(
   }
 
   if (isInternalColleagueSender(employeeEmail, target.fromEmail)) {
+    if (looksLikeInternalFyiOrAutomated(target)) {
+      return {
+        relevant: true,
+        reason: 'Internal FYI or automated notice — no reply needed.',
+        confidence: 1,
+        aiAction: 'LOW',
+      };
+    }
+    if (looksLikeInternalActionRequired(target)) {
+      return {
+        relevant: true,
+        reason: 'Internal colleague message — reply may be needed.',
+        confidence: 1,
+        aiAction: 'NEED_REPLY',
+      };
+    }
     return {
       relevant: true,
-      reason: 'Internal colleague message — reply may be needed.',
+      reason: 'Internal colleague message — informational only.',
       confidence: 1,
-      aiAction: 'NEED_REPLY',
+      aiAction: 'LOW',
     };
   }
 

@@ -263,7 +263,7 @@ function isNoFollowUpNoise(c: ConversationRow): boolean {
   }
   // Hide closed/low-signal threads. Valid internal mail uses “reply may be needed” (backend NEED_REPLY).
   if (
-    /(conversation.?(?:is\s+)?closed|no reply needed|no client reply needed|no further action|client indicated.*closed|ai detected.*closed|internal colleague.*no (client )?reply|automated ticket|crm notification|files or templates)/i.test(
+    /(conversation.?(?:is\s+)?closed|no reply needed|no client reply needed|informational only|internal fyi|no further action|client indicated.*closed|ai detected.*closed|internal colleague.*no (client )?reply|automated ticket|crm notification|files or templates)/i.test(
       text,
     )
   ) {
