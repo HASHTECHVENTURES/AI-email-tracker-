@@ -46,7 +46,7 @@ function readInboundFields(msg: InboundNoiseFields): {
   };
 }
 
-/** Same org domain as the tracked mailbox (e.g. colleague @opportune.in → niket@opportune.in). */
+/** Same org domain as the tracked mailbox (e.g. colleague @company.com → employee@company.com). Works per company — any domain. */
 export function isInternalColleagueSender(
   employeeEmail: string,
   inboundFromEmail: string | null | undefined,
@@ -819,9 +819,9 @@ export function ruleBasedIngestClassification(
   if (isInternalColleagueSender(employeeEmail, target.fromEmail)) {
     return {
       relevant: true,
-      reason: 'Internal colleague — no client reply expected.',
+      reason: 'Internal colleague message — reply may be needed.',
       confidence: 1,
-      aiAction: 'LOW',
+      aiAction: 'NEED_REPLY',
     };
   }
 

@@ -19,7 +19,6 @@ import {
   looksLikeClientSharePromiseFyi,
   looksLikeAutomatedSystemNotification,
   looksLikeInboundDirectedAtSomeoneElse,
-  isInternalColleagueSender,
 } from '../email-ingestion/relevance-guards';
 
 /** Skip-ledger marker so Gmail sync does not recreate a user-resolved thread. */
@@ -674,10 +673,6 @@ export class ConversationsService {
             looksLikeInboundDirectedAtSomeoneElse(inboundFields, employee.email)))
       : false;
 
-    const latestInboundIsInternal = lastInbound
-      ? isInternalColleagueSender(employee.email, lastInbound.from_email)
-      : false;
-
     const contactEmail = (
       lastInbound?.reply_to_email?.trim() ||
       lastInbound?.from_email?.trim() ||
@@ -723,7 +718,6 @@ export class ConversationsService {
         latestInboundIsNoise ||
         latestInboundIsCalendar ||
         latestInboundIsClosure ||
-        latestInboundIsInternal ||
         latestInboundIsAutomatedSystem ||
         userCcOnly ||
         userBccOnly ||
@@ -736,7 +730,6 @@ export class ConversationsService {
           : latestInboundIsNoise ||
               latestInboundIsCalendar ||
               latestInboundIsClosure ||
-              latestInboundIsInternal ||
               latestInboundIsAutomatedSystem ||
               aiAction === 'LOW'
             ? 'DONE'
@@ -750,7 +743,6 @@ export class ConversationsService {
           : latestInboundIsNoise ||
               latestInboundIsCalendar ||
               latestInboundIsClosure ||
-              latestInboundIsInternal ||
               latestInboundIsAutomatedSystem ||
               aiAction === 'LOW'
             ? 'RESOLVED'
@@ -759,8 +751,6 @@ export class ConversationsService {
         ? 'Client sent files or templates — no reply needed.'
         : latestInboundIsClosure
           ? 'Client indicated the conversation is closed — no reply needed.'
-          : latestInboundIsInternal
-          ? 'Internal colleague message — no client reply needed.'
           : latestInboundIsCalendar
             ? 'Calendar/meeting invite — no reply needed.'
             : latestInboundIsNoise
@@ -776,8 +766,6 @@ export class ConversationsService {
         ? 'Client sent files or templates — no reply needed.'
         : latestInboundIsClosure
           ? 'Client indicated the conversation is closed — no reply needed.'
-          : latestInboundIsInternal
-          ? 'Internal colleague message — no client reply needed.'
           : latestInboundIsCalendar
             ? 'Calendar/meeting invite — no reply needed.'
             : latestInboundIsNoise
@@ -797,7 +785,6 @@ export class ConversationsService {
         looksAutomated ||
         latestInboundIsNoise ||
         latestInboundIsClosure ||
-        latestInboundIsInternal ||
         latestInboundIsAutomatedSystem ||
         userCcOnly ||
         userBccOnly ||
