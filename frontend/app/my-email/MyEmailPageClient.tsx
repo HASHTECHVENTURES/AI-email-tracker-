@@ -255,14 +255,17 @@ function isNoFollowUpNoise(c: ConversationRow): boolean {
   ) {
     return true;
   }
-  const text = `${c.thread_subject ?? ''} ${c.summary ?? ''} ${c.short_reason ?? ''}`.toLowerCase();
+  const text = `${c.thread_subject ?? ''} ${c.summary ?? ''} ${c.short_reason ?? ''} ${c.reason ?? ''}`.toLowerCase();
   if (
     /(calendar\/meeting invite|calendar or meeting)/i.test(text)
   ) {
     return true;
   }
+  // Hide closed/low-signal threads. Valid internal mail uses “reply may be needed” (backend NEED_REPLY).
   if (
-    /(conversation.?(?:is\s+)?closed|no reply needed|no further action|client indicated.*closed|ai detected.*closed|internal colleague|automated ticket|crm notification|files or templates)/i.test(text)
+    /(conversation.?(?:is\s+)?closed|no reply needed|no client reply needed|no further action|client indicated.*closed|ai detected.*closed|internal colleague.*no (client )?reply|automated ticket|crm notification|files or templates)/i.test(
+      text,
+    )
   ) {
     return true;
   }
