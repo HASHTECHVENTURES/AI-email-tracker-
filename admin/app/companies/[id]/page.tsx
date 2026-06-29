@@ -215,12 +215,11 @@ function AdminCompanyDetailPageContent() {
       <section className="mb-8">
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Mailboxes</h2>
         <div className="overflow-x-auto rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-          <table className="w-full min-w-[700px] text-left text-sm">
+          <table className="w-full min-w-[520px] text-left text-sm">
             <thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase text-slate-400">
               <tr>
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Department</th>
-                <th className="px-4 py-3">Gmail</th>
                 <th className="px-4 py-3 text-right">Msgs</th>
                 <th className="px-4 py-3 text-right">Convos</th>
               </tr>
@@ -233,7 +232,6 @@ function AdminCompanyDetailPageContent() {
                     <div className="text-xs text-slate-500">{e.email}</div>
                   </td>
                   <td className="px-4 py-3 text-slate-600">{e.department_name ?? '—'}</td>
-                  <td className="px-4 py-3 text-slate-600">{e.gmail_status ?? '—'}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{e.message_count}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{e.conversation_count}</td>
                 </tr>
