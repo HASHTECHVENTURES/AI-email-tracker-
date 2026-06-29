@@ -318,6 +318,19 @@ export class SelfTrackingService {
     };
 
     const rows = (data ?? []) as Row[];
+
+    const { data: storedThreadRows } = await this.supabase
+      .from('email_messages')
+      .select('employee_id, provider_thread_id')
+      .eq('company_id', ctx.companyId)
+      .in('employee_id', expandedIds);
+    const storedThreadKeys = new Set(
+      (storedThreadRows ?? []).map(
+        (r) =>
+          `${(r as { employee_id: string }).employee_id}:${(r as { provider_thread_id: string }).provider_thread_id}`,
+      ),
+    );
+
     const nameById = new Map(mailboxes.map((m) => [m.id, m.name]));
 
     const trackingStartMsByEmployee = new Map<string, number>();
@@ -330,6 +343,8 @@ export class SelfTrackingService {
 
     const conversations: ConversationListItem[] = rows
       .filter((r) => {
+        const threadKey = `${r.employee_id}:${r.provider_thread_id}`;
+        if (storedThreadKeys.has(threadKey)) return true;
         const targetId = aliasToTargetMap.get(r.employee_id) ?? r.employee_id;
         const t0 = trackingStartMsByEmployee.get(targetId);
         if (t0 == null) return true;

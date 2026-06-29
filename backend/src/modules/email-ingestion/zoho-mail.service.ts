@@ -550,12 +550,32 @@ export class ZohoMailService {
     throw lastErr ?? new Error(`Zoho get message failed for ${id}`);
   }
 
+  private decodeHtmlEntities(text: string): string {
+    return text
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'");
+  }
+
   private splitAddresses(raw: string | undefined): string[] {
-    if (!raw?.trim()) return [];
-    return raw
+    const trimmed = raw?.trim();
+    if (!trimmed || /^not provided$/i.test(trimmed)) return [];
+    const decoded = this.decodeHtmlEntities(trimmed);
+    const emails = new Set<string>();
+    const pattern = /<?\s*([^\s<>,;]+@[^\s<>,;]+)\s*>?/gi;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(decoded)) !== null) {
+      const email = match[1]?.trim().toLowerCase();
+      if (email?.includes('@')) emails.add(email);
+    }
+    if (emails.size > 0) return [...emails];
+    return decoded
       .split(/[,;]/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+      .map((s) => s.trim().replace(/^.*<([^>]+)>$/, '$1').trim().toLowerCase())
+      .filter((s) => s.includes('@'));
   }
 
   private htmlToPlainText(html: string): string {

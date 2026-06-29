@@ -1728,7 +1728,7 @@ export class EmployeesService {
           .select('provider_message_id', { count: 'exact', head: true })
           .eq('company_id', ctx.companyId)
           .eq('employee_id', employeeId)
-          .gte('sent_at', startIso);
+          .or(`sent_at.gte.${startIso},ingested_at.gte.${startIso}`);
         if (error) {
           this.logger.error(`listSyncedMailInTrackingWindow count ${employeeId}`, error.message);
           throw error;
@@ -1752,7 +1752,7 @@ export class EmployeesService {
           )
           .eq('company_id', ctx.companyId)
           .eq('employee_id', employeeId)
-          .gte('sent_at', startIso)
+          .or(`sent_at.gte.${startIso},ingested_at.gte.${startIso}`)
           .order('sent_at', { ascending: false })
           .limit(perCap);
         if (error) {
