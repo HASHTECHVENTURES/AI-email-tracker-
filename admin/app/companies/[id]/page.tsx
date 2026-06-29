@@ -1,23 +1,48 @@
 'use client';
 
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { AdminShell } from '@/components/admin/AdminShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { FlagSwitch, PageHeader, StatCard, StatusPill } from '@/components/admin/ui';
 import { formatBytes, formatDate, formatInr, formatUsd } from '@/lib/admin/format';
 import { usePlatformAdmin } from '@/lib/admin/use-platform-admin';
 import { apiFetch } from '@/lib/api';
-import type { CompanyBillingRow, CompanyDetail } from '@/lib/admin/types';
+import type { CompanyBillingDetail, CompanyDetail } from '@/lib/admin/types';
+
+function formatDayLabel(day: string): string {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  });
+}
 
 export default function AdminCompanyDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <AdminShell title="Company" userDisplayName={undefined} onSignOut={() => undefined}>
+          <PortalPageLoader variant="embedded" />
+        </AdminShell>
+      }
+    >
+      <AdminCompanyDetailPageContent />
+    </Suspense>
+  );
+}
+
+function AdminCompanyDetailPageContent() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const companyId = String(params.id ?? '');
+  const month = searchParams.get('month') ?? undefined;
   const { allowed, loading, me, signOut, token } = usePlatformAdmin(`/companies/${companyId}`);
   const [detail, setDetail] = useState<CompanyDetail | null>(null);
-  const [billing, setBilling] = useState<CompanyBillingRow | null>(null);
+  const [billing, setBilling] = useState<CompanyBillingDetail | null>(null);
   const [pageLoading, setPageLoading] = useState(true);
   const [pending, setPending] = useState<'ai' | 'email' | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -26,14 +51,15 @@ export default function AdminCompanyDetailPage() {
   const load = useCallback(async () => {
     if (!token || !companyId) return;
     setPageLoading(true);
+    const billingQuery = month ? `?month=${encodeURIComponent(month)}` : '';
     const [dRes, bRes] = await Promise.all([
       apiFetch(`/platform-admin/companies/${encodeURIComponent(companyId)}/detail`, token),
-      apiFetch(`/platform-admin/billing/${encodeURIComponent(companyId)}`, token),
+      apiFetch(`/platform-admin/billing/${encodeURIComponent(companyId)}${billingQuery}`, token),
     ]);
     if (dRes.ok) setDetail((await dRes.json()) as CompanyDetail);
-    if (bRes.ok) setBilling((await bRes.json()) as CompanyBillingRow);
+    if (bRes.ok) setBilling((await bRes.json()) as CompanyBillingDetail);
     setPageLoading(false);
-  }, [token, companyId]);
+  }, [token, companyId, month]);
 
   useEffect(() => {
     if (allowed && token) void load();
@@ -103,13 +129,48 @@ export default function AdminCompanyDetailPage() {
 
       {billing ? (
         <section className="mb-8">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Billing (this month)</h2>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+              Billing — {billing.period.label}
+            </h2>
+            <Link href={`/billing?month=${billing.period.month}`} className="text-sm text-brand-600 hover:underline">
+              Full billing →
+            </Link>
+          </div>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <StatCard label="API cost" value={formatInr(billing.api_cost_inr)} sub={formatUsd(billing.api_cost_usd)} />
-            <StatCard label="Storage" value={formatBytes(billing.storage_bytes)} sub={formatInr(billing.storage_cost_inr)} />
-            <StatCard label="Total charge" value={formatInr(billing.total_cost_inr)} accent="text-brand-600" />
+            <StatCard
+              label="Storage"
+              value={billing.storage_cost_inr > 0 ? formatInr(billing.storage_cost_inr) : '—'}
+              sub={billing.storage_cost_inr > 0 ? formatBytes(billing.storage_bytes) : 'Past month — API only'}
+            />
+            <StatCard label="Month total" value={formatInr(billing.total_cost_inr)} accent="text-brand-600" />
             <StatCard label="API calls" value={billing.api_calls} sub={`${billing.total_tokens.toLocaleString()} tokens`} />
           </div>
+          {billing.daily_totals.some((d) => d.api_calls > 0) ? (
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+              <table className="w-full min-w-[520px] text-left text-sm">
+                <thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase text-slate-400">
+                  <tr>
+                    <th className="px-4 py-3">Day (IST)</th>
+                    <th className="px-4 py-3 text-right">Calls</th>
+                    <th className="px-4 py-3 text-right">Day total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {billing.daily_totals
+                    .filter((d) => d.api_calls > 0)
+                    .map((d) => (
+                      <tr key={d.day}>
+                        <td className="px-4 py-3">{formatDayLabel(d.day)}</td>
+                        <td className="px-4 py-3 text-right tabular-nums">{d.api_calls}</td>
+                        <td className="px-4 py-3 text-right tabular-nums font-medium">{formatInr(d.api_cost_inr)}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

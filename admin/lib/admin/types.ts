@@ -72,6 +72,34 @@ export type CompanyDetail = {
   };
 };
 
+export type DailyBillingRow = {
+  day: string;
+  api_calls: number;
+  live_api_calls: number;
+  estimated_api_calls: number;
+  total_tokens: number;
+  api_cost_inr: number;
+  live_api_cost_inr: number;
+  estimated_api_cost_inr: number;
+};
+
+export type MonthlyBillingSummary = {
+  month: string;
+  label: string;
+  api_calls: number;
+  api_cost_inr: number;
+  is_current_month: boolean;
+};
+
+export type BillingPeriod = {
+  month: string;
+  label: string;
+  from: string;
+  to: string;
+  is_current_month: boolean;
+  timezone: string;
+};
+
 export type BillingOverview = {
   currency: { usd_to_inr: number };
   rates: {
@@ -80,7 +108,7 @@ export type BillingOverview = {
     storage_usd_per_gb_month: number;
     backfill_calibration: number;
   };
-  period: { from: string; to: string };
+  period: BillingPeriod;
   metering: {
     disclaimer: string;
     metered_since: string | null;
@@ -104,7 +132,14 @@ export type BillingOverview = {
     total_cost_usd: number;
     total_cost_inr: number;
   };
+  daily_totals: DailyBillingRow[];
+  monthly_summaries: MonthlyBillingSummary[];
   companies: CompanyBillingRow[];
+};
+
+export type CompanyBillingDetail = CompanyBillingRow & {
+  period: BillingPeriod;
+  daily_totals: DailyBillingRow[];
 };
 
 export type CompanyBillingRow = {

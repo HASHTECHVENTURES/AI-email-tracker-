@@ -28,6 +28,34 @@ export interface CompanyBillingRow {
   employee_count: number;
 }
 
+export interface DailyBillingRow {
+  day: string;
+  api_calls: number;
+  live_api_calls: number;
+  estimated_api_calls: number;
+  total_tokens: number;
+  api_cost_inr: number;
+  live_api_cost_inr: number;
+  estimated_api_cost_inr: number;
+}
+
+export interface MonthlyBillingSummary {
+  month: string;
+  label: string;
+  api_calls: number;
+  api_cost_inr: number;
+  is_current_month: boolean;
+}
+
+export interface BillingPeriod {
+  month: string;
+  label: string;
+  from: string;
+  to: string;
+  is_current_month: boolean;
+  timezone: string;
+}
+
 export interface BillingOverview {
   currency: { usd_to_inr: number };
   rates: {
@@ -36,7 +64,7 @@ export interface BillingOverview {
     storage_usd_per_gb_month: number;
     backfill_calibration: number;
   };
-  period: { from: string; to: string };
+  period: BillingPeriod;
   metering: {
     disclaimer: string;
     metered_since: string | null;
@@ -60,7 +88,14 @@ export interface BillingOverview {
     total_cost_usd: number;
     total_cost_inr: number;
   };
+  daily_totals: DailyBillingRow[];
+  monthly_summaries: MonthlyBillingSummary[];
   companies: CompanyBillingRow[];
+}
+
+export interface CompanyBillingDetail extends CompanyBillingRow {
+  period: BillingPeriod;
+  daily_totals: DailyBillingRow[];
 }
 
 type ApiUsageTotalsRow = {
@@ -74,6 +109,18 @@ type ApiUsageTotalsRow = {
   live_cost_usd: number;
   estimate_cost_usd: number;
 };
+
+type ApiUsageDailyRow = {
+  day: string;
+  api_calls: number;
+  live_calls: number;
+  estimate_calls: number;
+  total_tokens: number;
+  live_cost_usd: number;
+  estimate_cost_usd: number;
+};
+
+const BILLING_TIMEZONE = 'Asia/Kolkata';
 
 @Injectable()
 export class CompanyBillingService {
@@ -113,10 +160,107 @@ export class CompanyBillingService {
     };
   }
 
-  private monthBounds(): { from: string; to: string } {
-    const now = new Date();
-    const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-    return { from: from.toISOString(), to: now.toISOString() };
+  private currentMonthKey(): string {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: BILLING_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+    }).format(new Date());
+  }
+
+  private monthLabel(month: string): string {
+    const [y, m] = month.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-IN', {
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+  }
+
+  /** Calendar month in IST — usage rows only count inside this window (not cumulative). */
+  private resolvePeriod(month?: string): BillingPeriod {
+    const currentMonth = this.currentMonthKey();
+    const selected = month && /^\d{4}-\d{2}$/.test(month) ? month : currentMonth;
+    const [y, m] = selected.split('-').map(Number);
+    const from = new Date(Date.UTC(y, m - 1, 1, -5, -30));
+    const is_current_month = selected === currentMonth;
+    const to = is_current_month ? new Date() : new Date(Date.UTC(y, m, 1, -5, -30));
+    return {
+      month: selected,
+      label: this.monthLabel(selected),
+      from: from.toISOString(),
+      to: to.toISOString(),
+      is_current_month,
+      timezone: BILLING_TIMEZONE,
+    };
+  }
+
+  private istDayKey(date: Date): string {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: BILLING_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(date);
+  }
+
+  private listDaysInPeriod(period: BillingPeriod): string[] {
+    const days: string[] = [];
+    let ts = new Date(period.from).getTime();
+    const end = new Date(period.to).getTime();
+    while (ts < end) {
+      days.push(this.istDayKey(new Date(ts)));
+      ts += 24 * 60 * 60 * 1000;
+    }
+    return days;
+  }
+
+  private dailyCosts(
+    row: ApiUsageDailyRow,
+    calibration: number,
+    usdToInr: number,
+  ): Pick<DailyBillingRow, 'api_cost_inr' | 'live_api_cost_inr' | 'estimated_api_cost_inr'> {
+    const liveUsd = Number(row.live_cost_usd ?? 0);
+    const estimateUsd = Number(row.estimate_cost_usd ?? 0) * calibration;
+    const apiUsd = this.roundUsd(liveUsd + estimateUsd);
+    return {
+      api_cost_inr: this.roundInr(apiUsd * usdToInr),
+      live_api_cost_inr: this.roundInr(liveUsd * usdToInr),
+      estimated_api_cost_inr: this.roundInr(estimateUsd * usdToInr),
+    };
+  }
+
+  private buildDailySeries(
+    period: BillingPeriod,
+    rows: ApiUsageDailyRow[],
+    calibration: number,
+    usdToInr: number,
+  ): DailyBillingRow[] {
+    const byDay = new Map(rows.map((row) => [row.day, row]));
+    return this.listDaysInPeriod(period).map((day) => {
+      const row = byDay.get(day);
+      if (!row) {
+        return {
+          day,
+          api_calls: 0,
+          live_api_calls: 0,
+          estimated_api_calls: 0,
+          total_tokens: 0,
+          api_cost_inr: 0,
+          live_api_cost_inr: 0,
+          estimated_api_cost_inr: 0,
+        };
+      }
+      const costs = this.dailyCosts(row, calibration, usdToInr);
+      return {
+        day,
+        api_calls: row.api_calls,
+        live_api_calls: row.live_calls,
+        estimated_api_calls: row.estimate_calls,
+        total_tokens: row.total_tokens,
+        ...costs,
+      };
+    });
   }
 
   private roundUsd(value: number): number {
@@ -153,7 +297,12 @@ export class CompanyBillingService {
 
     const rates = await this.loadBillingRates();
     const period = this.resolvePeriod(month);
-    const metering = await this.loadMeteringMeta(period.from, period.to, rates.backfill_calibration);
+    const [metering, dailyRows, monthlyRows] = await Promise.all([
+      this.loadMeteringMeta(period.from, period.to, rates.backfill_calibration, period),
+      this.fetchDailyTotals(null, period.from, period.to),
+      this.fetchMonthlySummaries(null, rates.backfill_calibration, rates.usd_to_inr),
+    ]);
+    const daily_totals = this.buildDailySeries(period, dailyRows, rates.backfill_calibration, rates.usd_to_inr);
 
     const { data: companies, error: companiesErr } = await this.supabase
       .from('companies')
@@ -163,7 +312,7 @@ export class CompanyBillingService {
 
     const companyRows = await Promise.all(
       (companies ?? []).map((c: { id: string; name: string }) =>
-        this.buildCompanyBillingRow(c.id, c.name, period.from, period.to, rates),
+        this.buildCompanyBillingRow(c.id, c.name, period, rates),
       ),
     );
 
@@ -216,6 +365,8 @@ export class CompanyBillingService {
       period,
       metering,
       platform_totals,
+      daily_totals,
+      monthly_summaries: monthlyRows,
       companies: companyRows.sort((a, b) => b.total_cost_inr - a.total_cost_inr),
     };
   }
@@ -224,6 +375,7 @@ export class CompanyBillingService {
     from: string,
     to: string,
     calibration: number,
+    period: BillingPeriod,
   ): Promise<BillingOverview['metering']> {
     const [liveCountRes, backfillCountRes, meteredSinceRes] = await Promise.all([
       this.supabase
@@ -258,16 +410,18 @@ export class CompanyBillingService {
 
     return {
       disclaimer:
-        'Tenant cost estimate for invoicing — not a Google invoice. Live rows use real Gemini token counts; historical rows reconstruct classified emails from your database.',
+        `Costs for ${period.label} only (IST calendar month) — not cumulative across months. API usage is grouped by the day the call was recorded.`,
       metered_since,
       live_api_calls,
       estimated_backfill_calls,
-      storage_note: 'Storage = email bodies + subjects + conversation summaries (not full cloud infra bill).',
+      storage_note: period.is_current_month
+        ? 'Storage is a separate monthly line item (current data size × rate). Past months show API usage only.'
+        : 'This past month shows API usage only. Storage is billed on the current month view.',
       calibration_note: calibrationNote,
     };
   }
 
-  async getCompanyBilling(companyId: string, month?: string): Promise<CompanyBillingRow | null> {
+  async getCompanyBilling(companyId: string, month?: string): Promise<CompanyBillingDetail | null> {
     const rates = await this.loadBillingRates();
     const period = this.resolvePeriod(month);
     const { data: company } = await this.supabase
@@ -276,17 +430,74 @@ export class CompanyBillingService {
       .eq('id', companyId)
       .maybeSingle();
     if (!company) return null;
-    return this.buildCompanyBillingRow(company.id, company.name, period.from, period.to, rates);
+
+    const [row, dailyRows] = await Promise.all([
+      this.buildCompanyBillingRow(company.id, company.name, period, rates),
+      this.fetchDailyTotals(company.id, period.from, period.to),
+    ]);
+
+    return {
+      ...row,
+      period,
+      daily_totals: this.buildDailySeries(period, dailyRows, rates.backfill_calibration, rates.usd_to_inr),
+    };
   }
 
-  private resolvePeriod(month?: string): { from: string; to: string } {
-    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
-      return this.monthBounds();
+  private async fetchDailyTotals(
+    companyId: string | null,
+    from: string,
+    to: string,
+  ): Promise<ApiUsageDailyRow[]> {
+    const { data, error } = await this.supabase.rpc('api_usage_daily_totals', {
+      p_from: from,
+      p_to: to,
+      p_company_id: companyId,
+    });
+
+    if (error) {
+      this.logger.warn(`api_usage_daily_totals RPC failed: ${error.message}`);
+      return [];
     }
-    const [y, m] = month.split('-').map(Number);
-    const from = new Date(Date.UTC(y, m - 1, 1));
-    const to = new Date(Date.UTC(y, m, 1));
-    return { from: from.toISOString(), to: to.toISOString() };
+
+    return (data ?? []).map((row: Record<string, unknown>) => ({
+      day: String(row.day),
+      api_calls: Number(row.api_calls ?? 0),
+      live_calls: Number(row.live_calls ?? 0),
+      estimate_calls: Number(row.estimate_calls ?? 0),
+      total_tokens: Number(row.total_tokens ?? 0),
+      live_cost_usd: Number(row.live_cost_usd ?? 0),
+      estimate_cost_usd: Number(row.estimate_cost_usd ?? 0),
+    }));
+  }
+
+  private async fetchMonthlySummaries(
+    companyId: string | null,
+    calibration: number,
+    usdToInr: number,
+  ): Promise<MonthlyBillingSummary[]> {
+    const { data, error } = await this.supabase.rpc('api_usage_monthly_summaries', {
+      p_company_id: companyId,
+    });
+
+    if (error) {
+      this.logger.warn(`api_usage_monthly_summaries RPC failed: ${error.message}`);
+      return [];
+    }
+
+    const currentMonth = this.currentMonthKey();
+    return (data ?? []).map((row: Record<string, unknown>) => {
+      const month = String(row.month);
+      const liveUsd = Number(row.live_cost_usd ?? 0);
+      const estimateUsd = Number(row.estimate_cost_usd ?? 0) * calibration;
+      const apiUsd = this.roundUsd(liveUsd + estimateUsd);
+      return {
+        month,
+        label: this.monthLabel(month),
+        api_calls: Number(row.api_calls ?? 0),
+        api_cost_inr: this.roundInr(apiUsd * usdToInr),
+        is_current_month: month === currentMonth,
+      };
+    });
   }
 
   private async fetchApiUsageTotals(
@@ -389,8 +600,7 @@ export class CompanyBillingService {
   private async buildCompanyBillingRow(
     companyId: string,
     companyName: string,
-    from: string,
-    to: string,
+    period: BillingPeriod,
     rates: {
       storage_usd_per_gb_month: number;
       usd_to_inr: number;
@@ -398,7 +608,7 @@ export class CompanyBillingService {
     },
   ): Promise<CompanyBillingRow> {
     const [apiTotals, storageRes, countsRes] = await Promise.all([
-      this.fetchApiUsageTotals(companyId, from, to),
+      this.fetchApiUsageTotals(companyId, period.from, period.to),
       this.supabase.rpc('company_storage_bytes', { p_company_id: companyId }),
       Promise.all([
         this.supabase.from('email_messages').select('*', { count: 'exact', head: true }).eq('company_id', companyId),
@@ -417,8 +627,12 @@ export class CompanyBillingService {
     }
 
     const storage_gb = storage_bytes / (1024 ** 3);
-    const storage_cost_usd = this.roundUsd(storage_gb * rates.storage_usd_per_gb_month);
-    const storage_cost_inr = this.roundInr(storage_cost_usd * rates.usd_to_inr);
+    const storage_cost_usd = period.is_current_month
+      ? this.roundUsd(storage_gb * rates.storage_usd_per_gb_month)
+      : 0;
+    const storage_cost_inr = period.is_current_month
+      ? this.roundInr(storage_cost_usd * rates.usd_to_inr)
+      : 0;
     const total_cost_usd = this.roundUsd(costs.api_cost_usd + storage_cost_usd);
     const total_cost_inr = this.roundInr(costs.api_cost_inr + storage_cost_inr);
 
