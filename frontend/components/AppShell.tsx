@@ -9,6 +9,7 @@ import { apiFetch } from '@/lib/api';
 import { setActAsEmployeeView } from '@/lib/api';
 import { isDepartmentManagerRole } from '@/lib/roles';
 import { useActAsEmployeeMailboxView } from '@/lib/use-act-as-employee-mailbox';
+import { ProfileNameEditor } from '@/components/ProfileNameEditor';
 
 type AppShellProps = {
   role: string;
@@ -168,7 +169,7 @@ export function AppShell({
 }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const { me, token, managerActiveDepartmentId, setManagerActiveDepartmentId } = useAuth();
+  const { me, token, managerActiveDepartmentId, setManagerActiveDepartmentId, refreshMe } = useAuth();
   const managedTeams = me?.managed_departments ?? [];
   const [fallbackMailboxCrawlEnabled, setFallbackMailboxCrawlEnabled] = useState<boolean | undefined>(undefined);
   const [locHash, setLocHash] = useState('');
@@ -221,7 +222,7 @@ export function AppShell({
   const managerInboxActive = managerMessagesActive || deptAlertsFocus;
   const ceoDepartmentsActive = pathname === '/departments' && !deptAlertsFocus;
   const brandTitle = companyName?.trim() || 'AI Auto Mail';
-  const personLine = userDisplayName?.trim() || null;
+  const personLine = userDisplayName?.trim() || me?.email?.trim() || null;
   const showTeamSwitcher = isHead && managedTeams.length > 1;
   const effectiveMailboxCrawlEnabled =
     mailboxCrawlEnabled === undefined ? fallbackMailboxCrawlEnabled : mailboxCrawlEnabled;
@@ -386,9 +387,13 @@ export function AppShell({
           <div className="mt-auto shrink-0 border-t border-slate-100 pt-4">
             <div className="space-y-1 rounded-xl border border-slate-100 bg-surface-muted/80 px-3 py-3">
               {personLine ? (
-                <p className="truncate text-sm font-bold text-slate-900" title={personLine}>
-                  {personLine}
-                </p>
+                <ProfileNameEditor
+                  token={token}
+                  displayName={personLine}
+                  onSaved={() => {
+                    void refreshMe();
+                  }}
+                />
               ) : null}
               <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">{roleLabel}</p>
             </div>
@@ -525,7 +530,16 @@ export function AppShell({
             </nav>
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
               <div className="min-w-0 text-xs text-slate-600">
-                {personLine ? <span className="font-semibold text-slate-800">{personLine}</span> : null}
+                {personLine ? (
+                  <ProfileNameEditor
+                    token={token}
+                    displayName={personLine}
+                    compact
+                    onSaved={() => {
+                      void refreshMe();
+                    }}
+                  />
+                ) : null}
                 {personLine ? <span className="text-slate-400"> · </span> : null}
                 <span className="uppercase tracking-wide text-slate-400">{roleLabel}</span>
               </div>

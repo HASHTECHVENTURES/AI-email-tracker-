@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  Patch,
   Post,
   Query,
   Req,
@@ -123,6 +124,25 @@ export class AuthController {
     }
     await this.passwordService.changeOwnPassword(req.user.email, req.user.id, current, next);
     return { ok: true, message: 'Password updated. Use the new password on your next sign-in.' };
+  }
+
+  @Patch('profile')
+  async updateProfile(@Req() req: Request, @Body() body: { full_name?: string }) {
+    if (!req.user) {
+      throw new UnauthorizedException('Sign in required');
+    }
+    const user = await this.saasAuthService.updateFullName(req.user.id, body.full_name ?? '');
+    let managed: { id: string; name: string }[] = [];
+    if (user.role === 'HEAD' && user.managedDepartmentIds?.length) {
+      managed = await this.saasAuthService.getManagedDepartmentsSummary(
+        user.companyId,
+        user.managedDepartmentIds,
+      );
+    }
+    return {
+      ok: true,
+      user: mePayload(user, managed),
+    };
   }
 
   @Post('onboarding')

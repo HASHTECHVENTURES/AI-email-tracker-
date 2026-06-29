@@ -248,4 +248,32 @@ export class SaasAuthService {
       created: true,
     };
   }
+
+  async updateFullName(authUserId: string, fullName: string): Promise<AuthedRequestUser> {
+    const trimmed = fullName.trim();
+    if (!trimmed) {
+      throw new BadRequestException('full_name is required');
+    }
+    if (trimmed.length < 2) {
+      throw new BadRequestException('Name must be at least 2 characters');
+    }
+    if (trimmed.length > 120) {
+      throw new BadRequestException('Name must be 120 characters or fewer');
+    }
+
+    const { error } = await this.supabase
+      .from('users')
+      .update({ full_name: trimmed })
+      .eq('id', authUserId);
+
+    if (error) {
+      throw new BadRequestException(`Could not update profile: ${error.message}`);
+    }
+
+    const profile = await this.findProfileByAuthId(authUserId);
+    if (!profile) {
+      throw new BadRequestException('Profile not found after update');
+    }
+    return profile;
+  }
 }
