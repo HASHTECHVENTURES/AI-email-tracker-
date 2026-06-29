@@ -74,10 +74,18 @@ function connectedMailProviderLabel(
   const connected = mailboxes.filter((m) => isMailboxGmailConnected(m));
   if (connected.length === 0) return 'Mail';
   const providers = new Set(
-    connected.map((m) => (m.mail_provider === 'microsoft' ? 'microsoft' : 'google')),
+    connected.map((m) =>
+      m.mail_provider === 'microsoft'
+        ? 'microsoft'
+        : m.mail_provider === 'zoho'
+          ? 'zoho'
+          : 'google',
+    ),
   );
   if (providers.size === 1) {
-    return providers.has('microsoft') ? 'Outlook' : 'Gmail';
+    if (providers.has('microsoft')) return 'Outlook';
+    if (providers.has('zoho')) return 'Zoho Mail';
+    return 'Gmail';
   }
   return 'Mail';
 }
@@ -1741,7 +1749,7 @@ function CeoLiveSyncStrip({
       <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/90 px-4 py-4 sm:px-5">
         <p className="text-sm font-semibold text-slate-800">Connect your inbox</p>
         <p className="mt-1 text-xs leading-relaxed text-slate-600">
-          Connect Gmail or Outlook below. After you connect, pick when tracking starts—use{' '}
+          Connect Gmail, Outlook, or Zoho Mail below. After you connect, pick when tracking starts—use{' '}
           <strong className="font-medium text-slate-800">Sync now</strong> to pull through today, and keep your inbox{' '}
           <strong className="font-medium text-slate-800">ON</strong> so new mail keeps flowing until you turn it off.
         </p>
@@ -2804,7 +2812,7 @@ function MyEmailPageInner() {
   }
 
   /** Signed-in user’s own inbox row (CEO or department manager) — uses session profile for POST /self-tracking/mailboxes. */
-  async function connectMyInbox(provider: 'google' | 'microsoft' = 'google') {
+  async function connectMyInbox(provider: 'google' | 'microsoft' | 'zoho' = 'google') {
     if (!token || !me) return;
     const profileEmail = (me.email ?? '').trim();
     if (!profileEmail) {
@@ -2840,10 +2848,14 @@ function MyEmailPageInner() {
         setSuccess(
           provider === 'microsoft'
             ? 'Opening Microsoft to connect your inbox…'
-            : 'Opening Google to connect your inbox…',
+            : provider === 'zoho'
+              ? 'Opening Zoho to connect your inbox…'
+              : 'Opening Google to connect your inbox…',
         );
         if (provider === 'microsoft') {
           await connectOutlook(id, { reconnect: false });
+        } else if (provider === 'zoho') {
+          await connectZoho(id, { reconnect: false });
         } else {
           await connectGmail(id);
         }
@@ -5275,9 +5287,9 @@ function MyEmailPageInner() {
                       Connect your work inbox
                     </h3>
                     <p className="mt-1 text-xs text-slate-600">
-                      Gmail or Microsoft 365 / Outlook — same tracking and follow-up tools either way.
+                      Gmail, Microsoft 365 / Outlook, or Zoho Mail — same tracking and follow-up tools.
                     </p>
-                    <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                    <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                       <button
                         type="button"
                         onClick={() => void connectMyInbox('google')}
@@ -5293,6 +5305,14 @@ function MyEmailPageInner() {
                         className="rounded-xl border border-sky-200 bg-sky-50 px-5 py-3 text-sm font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60 sm:w-auto"
                       >
                         Connect my Outlook
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void connectMyInbox('zoho')}
+                        disabled={adding}
+                        className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-3 text-sm font-semibold text-amber-950 shadow-sm hover:bg-amber-100 disabled:opacity-60 sm:w-auto"
+                      >
+                        Connect my Zoho Mail
                       </button>
                     </div>
                   </div>
@@ -5331,8 +5351,9 @@ function MyEmailPageInner() {
                       <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-white px-4 py-4 text-sm text-slate-600">
                         <p>
                           Your work inbox isn&apos;t listed yet. Use{' '}
-                          <strong className="font-medium text-slate-800">Connect my Gmail</strong> or{' '}
-                          <strong className="font-medium text-slate-800">Connect my Outlook</strong> so
+                          <strong className="font-medium text-slate-800">Connect my Gmail</strong>,{' '}
+                          <strong className="font-medium text-slate-800">Connect my Outlook</strong>, or{' '}
+                          <strong className="font-medium text-slate-800">Connect my Zoho Mail</strong> so
                           the row matches{' '}
                           {me.role === 'CEO' ? 'your CEO email' : 'your work email'}.
                         </p>
@@ -5352,6 +5373,14 @@ function MyEmailPageInner() {
                             className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-xs font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60"
                           >
                             Connect my Outlook
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void connectMyInbox('zoho')}
+                            disabled={adding}
+                            className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs font-semibold text-amber-950 shadow-sm hover:bg-amber-100 disabled:opacity-60"
+                          >
+                            Connect my Zoho Mail
                           </button>
                         </div>
                       </div>
@@ -5813,11 +5842,11 @@ function MyEmailPageInner() {
             ) : scopedConversations.length === 0 ? (
               <div className="mt-6 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center text-sm text-slate-600">
                 {scopeMailboxIds.size === 0
-                  ? 'No mailboxes in this view yet. Use Connect my Gmail in the Your inbox section above.'
+                  ? 'No mailboxes in this view yet. Use Connect my Gmail, Outlook, or Zoho Mail in the Your inbox section above.'
                   : mailboxesForInboxShortcuts.some((m) => isMailboxGmailConnected(m))
                     ? 'No conversations yet — sync will create threads from relevant mail.'
                     : myEmailTab === 'ceo'
-                      ? 'Connect Gmail on your inbox card above to start.'
+                      ? 'Connect your mail provider on your inbox card above to start.'
                       : 'No linked Gmail in this view yet. Each mailbox owner connects their own inbox (Employees or their portal); you cannot connect for them here.'}
               </div>
             ) : searchFilteredTabRows.length === 0 ? (
