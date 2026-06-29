@@ -45,6 +45,12 @@ type SystemStatusLite = {
   last_sync_at: string | null;
 };
 
+function mailProviderLabel(provider?: string | null): string {
+  if (provider === 'zoho') return 'Zoho Mail';
+  if (provider === 'microsoft') return 'Outlook';
+  return 'Gmail';
+}
+
 type DiagnosticsMailbox = {
   name: string;
   email: string;
@@ -224,7 +230,7 @@ export default function SettingsPage() {
     );
   }, [settings, platformAiAllowed]);
 
-  /** Single CEO switch: both Gmail fetch and company AI are on, or not. */
+  /** Single CEO switch: both mail fetch and company AI are on, or not. */
   const masterCombinedOn = useMemo(() => masterEmailOn && masterAiOn, [masterEmailOn, masterAiOn]);
   const masterMixed = useMemo(
     () => settingsLoadState === 'ready' && settings != null && masterEmailOn !== masterAiOn,
@@ -302,8 +308,8 @@ export default function SettingsPage() {
       }
       setNotice(
         next
-          ? 'Gmail fetch and AI are now on for the company.'
-          : 'Gmail fetch and AI are now off for the company.',
+          ? 'Email fetch and AI are now on for the company.'
+          : 'Email fetch and AI are now off for the company.',
       );
       await load(token);
     } finally {
@@ -357,7 +363,7 @@ export default function SettingsPage() {
     }
   }
 
-  async function runGmailSyncNow() {
+  async function runMailSyncNow() {
     if (!me || me.role !== 'CEO' || !token) return;
     setError(null);
     setNotice(null);
@@ -430,8 +436,8 @@ export default function SettingsPage() {
       >
         <h2 className="text-base font-semibold text-slate-900">Email &amp; AI</h2>
         <p className="mt-1 max-w-xl text-sm text-slate-500">
-          One control for the whole company: Gmail fetch (all mailboxes) and AI (relevance, summaries, reports) stay
-          aligned — both on or both off.
+          One control for the whole company: email fetch (Gmail, Outlook, or Zoho — all mailboxes) and AI (relevance,
+          summaries, reports) stay aligned — both on or both off.
         </p>
         {settingsLoadState === 'ready' && platformOverrideOff ? (
           <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -571,7 +577,7 @@ export default function SettingsPage() {
         <h2 className="text-base font-semibold text-slate-900">Ingestion</h2>
         {settingsLoadState === 'ready' && !masterEmailOn ? (
           <p className="mt-2 text-sm text-amber-800">
-            Gmail fetch is off (Email &amp; AI master) — scheduled cycles skip Gmail until the CEO turns it back on.
+            Email fetch is off (Email &amp; AI master) — scheduled cycles skip inbox sync until the CEO turns it back on.
           </p>
         ) : null}
         <ul className="mt-3 space-y-2 text-sm text-slate-600">
@@ -589,11 +595,11 @@ export default function SettingsPage() {
           <div className="mt-4">
             <button
               type="button"
-              onClick={() => void runGmailSyncNow()}
+              onClick={() => void runMailSyncNow()}
               disabled={syncLoading || settingsLoadState !== 'ready' || !masterEmailOn}
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
             >
-              {syncLoading ? 'Running sync…' : 'Run Gmail sync now'}
+              {syncLoading ? 'Running sync…' : 'Run mail sync now'}
             </button>
             <p className="mt-2 text-xs text-slate-500">
               Triggers one ingestion cycle immediately (same as the ~2 min scheduler). Requires company Email master on.
@@ -606,8 +612,8 @@ export default function SettingsPage() {
         <section className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]">
           <h2 className="text-base font-semibold text-slate-900">Mail troubleshooting</h2>
           <p className="mt-1 text-sm text-slate-500">
-            See why Gmail may not appear on dashboards: OAuth, pauses, company crawl flags, tracking start date, and recent ingested
-            messages.
+            See why mail may not appear on dashboards: OAuth, pauses, company crawl flags, tracking start date, and
+            recent ingested messages.
           </p>
           <button
             type="button"
@@ -714,14 +720,14 @@ export default function SettingsPage() {
                         {m.name} · {m.email}
                       </p>
                       <p className="text-xs text-slate-500">
-                        Provider: {m.oauth_provider ?? 'google'} · OAuth: {m.has_oauth_token ? 'yes' : 'no'} · Paused:{' '}
+                        Provider: {mailProviderLabel(m.oauth_provider)} · OAuth: {m.has_oauth_token ? 'yes' : 'no'} · Paused:{' '}
                         {m.tracking_paused ? 'yes' : 'no'} · Messages: {m.email_message_count} · Conversations:{' '}
                         {m.conversation_count}
                         {m.tracking_start_at
                           ? ` · Tracking since (inbox window): ${new Date(m.tracking_start_at).toLocaleString()}`
                           : ''}
                         {m.mail_sync_start_date
-                          ? ` · Gmail fetch “after”: ${new Date(m.mail_sync_start_date).toLocaleString()} (set at Connect Gmail — only newer mail is listed)`
+                          ? ` · Mail fetch “after”: ${new Date(m.mail_sync_start_date).toLocaleString()} (set at connect — only newer mail is listed)`
                           : ''}
                         {m.mail_sync_last_processed_at
                           ? ` · Last cursor: ${new Date(m.mail_sync_last_processed_at).toLocaleString()}`
@@ -730,11 +736,13 @@ export default function SettingsPage() {
                       </p>
                       {m.mail_fetch_probe ? (
                         <div className="mt-2 rounded-md border border-indigo-100 bg-indigo-50/60 px-2.5 py-2 text-[11px] text-indigo-950">
-                          <p className="font-semibold">Mail fetch probe (Zoho)</p>
+                          <p className="font-semibold">
+                            Mail fetch probe ({mailProviderLabel(m.oauth_provider)})
+                          </p>
                           <p className="mt-1 text-indigo-900">
                             IDs listed: {m.mail_fetch_probe.live.message_ids_counted}
                             {m.mail_fetch_probe.live.gmail_error
-                              ? ` · Error: ${m.mail_fetch_probe.live.gmail_error}`
+                              ? ` · List error: ${m.mail_fetch_probe.live.gmail_error}`
                               : ''}
                           </p>
                           {m.mail_fetch_probe.live.list_after_iso ? (
