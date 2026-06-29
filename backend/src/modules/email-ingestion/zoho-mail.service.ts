@@ -188,7 +188,23 @@ export class ZohoMailService {
       if (ms != null && ms < afterMs) continue;
       filtered.push(id);
     }
-    if (filtered.length > 0) return filtered;
+    if (filtered.length > 0) {
+      /**
+       * Zoho sometimes returns wrong receivedTime on newer mail while older siblings pass the
+       * after= filter — returning only `filtered` hid brand-new inbox rows (partial-filter bug).
+       * Always merge the newest list head so live sync cannot miss mail already in the inbox UI.
+       */
+      const seen = new Set(filtered);
+      const RECENT_HEAD = 25;
+      for (let i = 0; i < Math.min(all.length, RECENT_HEAD); i++) {
+        const id = all[i]!;
+        if (!seen.has(id)) {
+          seen.add(id);
+          filtered.push(id);
+        }
+      }
+      return filtered;
+    }
     if (all.length > 0) {
       this.logger.warn(
         `Zoho list returned ${all.length} message(s) but none passed after=${new Date(afterMs).toISOString()}; passing ids through for ingest window check`,
@@ -196,6 +212,11 @@ export class ZohoMailService {
       return all;
     }
     return [];
+  }
+
+  /** True when this message id was listed in the current Zoho API request (in-memory cache). */
+  hasListedMessageRow(employeeId: string, messageId: string): boolean {
+    return Boolean(this.lookupMessageRow(employeeId, zohoId(messageId)));
   }
 
   private async fetchFolderViewRows(

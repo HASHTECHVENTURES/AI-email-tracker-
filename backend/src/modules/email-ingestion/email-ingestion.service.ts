@@ -382,6 +382,20 @@ export class EmailIngestionService {
     if (options?.zohoBootstrap) {
       return { msg: next, inWindow: true };
     }
+    /**
+     * Zoho list/detail timestamps can disagree with the real inbox arrival time. If we listed
+     * this id in the current request, trust it for small / new mailboxes instead of dropping it.
+     */
+    if (
+      this.zohoMailService.hasListedMessageRow(employeeId, messageId) &&
+      next.sentAt < windowStart
+    ) {
+      const corrected = new Date(Math.max(windowStart.getTime(), listedMs ?? next.sentAt.getTime()));
+      this.logger.warn(
+        `Zoho message ${messageId} listed with sentAt ${next.sentAt.toISOString()} before tracking_start ${windowStart.toISOString()} — clamping to ${corrected.toISOString()}`,
+      );
+      return { msg: { ...next, sentAt: corrected }, inWindow: true };
+    }
     return { msg: next, inWindow: false };
   }
 
@@ -865,7 +879,9 @@ export class EmailIngestionService {
       .from('email_messages')
       .select('provider_message_id', { count: 'exact', head: true })
       .eq('employee_id', employee.id);
-    const zohoBootstrap = mailProvider === 'zoho' && (storedMsgCount ?? 0) === 0;
+    const zohoBootstrap =
+      mailProvider === 'zoho' &&
+      ((storedMsgCount ?? 0) === 0 || (storedMsgCount ?? 0) < 100);
 
     const listAfterDate = this.liveListAfterDate(
       syncState,

@@ -200,7 +200,9 @@ export class HistoricalFetchService {
       .select('provider_message_id', { count: 'exact', head: true })
       .eq('employee_id', employeeId);
     const mailProvider = await this.oauthTokenService.getOAuthProvider(employeeId);
-    const zohoBootstrap = mailProvider === 'zoho' && (storedMsgCount ?? 0) === 0;
+    const zohoBootstrap =
+      mailProvider === 'zoho' &&
+      ((storedMsgCount ?? 0) === 0 || (storedMsgCount ?? 0) < 100);
 
     const messageIds: string[] = [];
     let pageToken: string | null = null;
