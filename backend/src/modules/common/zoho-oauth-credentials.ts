@@ -108,8 +108,11 @@ export async function exchangeZohoAuthorizationCode(
     body: body.toString(),
   });
   const data = (await res.json()) as ZohoTokenResponse;
-  if (!res.ok) {
-    throw new Error(data.error ?? (await res.text()));
+  if (!res.ok || data.error) {
+    throw new Error(data.error ?? `Zoho token exchange failed (${res.status})`);
+  }
+  if (!data.access_token) {
+    throw new Error('Zoho token exchange returned no access_token');
   }
   return data;
 }
@@ -132,18 +135,62 @@ export async function refreshZohoAccessToken(
     body: body.toString(),
   });
   const data = (await res.json()) as ZohoTokenResponse;
-  if (!res.ok) {
-    throw new Error(data.error ?? (await res.text()));
+  if (!res.ok || data.error) {
+    throw new Error(data.error ?? `Zoho token exchange failed (${res.status})`);
+  }
+  if (!data.access_token) {
+    throw new Error('Zoho token exchange returned no access_token');
   }
   return data;
 }
 
+type ZohoEmailAddressEntry = {
+  mailId?: string;
+  isPrimary?: boolean;
+};
+
 type ZohoAccountRow = {
   accountId?: string;
-  emailAddress?: string;
+  emailAddress?: string | ZohoEmailAddressEntry[];
   primaryEmailAddress?: string;
   mailId?: string;
+  incomingUserName?: string;
+  mailboxAddress?: string;
 };
+
+function zohoRowEmails(row: ZohoAccountRow): string[] {
+  const emails: string[] = [];
+  const push = (v: unknown) => {
+    if (typeof v === 'string') {
+      const t = v.trim().toLowerCase();
+      if (t) emails.push(t);
+    }
+  };
+  push(row.primaryEmailAddress);
+  push(row.mailId);
+  push(row.incomingUserName);
+  push(row.mailboxAddress);
+  const ea = row.emailAddress;
+  if (typeof ea === 'string') {
+    push(ea);
+  } else if (Array.isArray(ea)) {
+    for (const entry of ea) {
+      if (typeof entry === 'string') push(entry);
+      else if (entry && typeof entry === 'object') push(entry.mailId);
+    }
+  }
+  return [...new Set(emails)];
+}
+
+/** Map backend Zoho OAuth failures to stable `oauth_error` query codes for the UI. */
+export function zohoOAuthErrorCode(err: unknown): string {
+  const msg = (err as Error)?.message ?? String(err ?? '');
+  if (/missing_refresh_token/i.test(msg)) return 'missing_refresh_token';
+  if (/Zoho accounts list failed/i.test(msg)) return 'zoho_accounts_failed';
+  if (/Could not resolve Zoho Mail account/i.test(msg)) return 'zoho_account_mismatch';
+  if (/invalid_grant|invalid_code/i.test(msg)) return 'invalid_grant';
+  return 'exchange_failed';
+}
 
 export async function resolveZohoOAuthMeta(
   accessToken: string,
@@ -164,8 +211,7 @@ export async function resolveZohoOAuthMeta(
   const norm = employeeEmail.trim().toLowerCase();
   const rows = body.data ?? [];
   const match =
-    rows.find((r) => (r.emailAddress ?? r.primaryEmailAddress ?? r.mailId ?? '').trim().toLowerCase() === norm) ??
-    rows[0];
+    (norm ? rows.find((r) => zohoRowEmails(r).includes(norm)) : undefined) ?? rows[0];
   const accountId = match?.accountId?.trim();
   if (!accountId) {
     throw new Error('Could not resolve Zoho Mail account for this mailbox email.');

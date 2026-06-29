@@ -2696,7 +2696,13 @@ function MyEmailPageInner() {
     if (connected === '1') {
       const providerRaw = searchParams.get('provider');
       const provider: MailOAuthProvider | null =
-        providerRaw === 'microsoft' ? 'microsoft' : providerRaw === 'google' ? 'google' : null;
+        providerRaw === 'microsoft'
+          ? 'microsoft'
+          : providerRaw === 'zoho'
+            ? 'zoho'
+            : providerRaw === 'google'
+              ? 'google'
+              : null;
       setSuccess(mailOAuthSuccessMessage(provider));
       void loadDashboard(token);
     }
@@ -2711,11 +2717,17 @@ function MyEmailPageInner() {
   /** Popup OAuth: main tab keeps session; child window posts here when Google finishes. */
   useEffect(() => {
     if (!token) return;
-    return subscribeGmailOAuthComplete(({ next, connected, employee_id, provider }) => {
-      if (connected) {
+    return subscribeGmailOAuthComplete(({ next, connected, employee_id, provider, oauth_error }) => {
+      if (oauth_error) {
+        setError(oauthErrorMessage(oauth_error));
+      } else if (connected) {
         setSuccess(mailOAuthSuccessMessage(provider));
       }
       void loadDashboard(token);
+      if (oauth_error) {
+        router.replace('/my-email', { scroll: false });
+        return;
+      }
       const q = new URLSearchParams();
       if (connected) q.set('connected', '1');
       if (employee_id) q.set('employee_id', employee_id);

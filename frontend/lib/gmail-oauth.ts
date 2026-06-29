@@ -9,6 +9,7 @@ export type GmailOAuthCompletePayload = {
   connected: boolean;
   employee_id: string | null;
   provider?: MailOAuthProvider | null;
+  oauth_error?: string | null;
 };
 
 function isMicrosoftAuthorizeUrl(url: string): boolean {
@@ -117,6 +118,7 @@ export function subscribeGmailOAuthComplete(
         d.provider === 'microsoft' || d.provider === 'google' || d.provider === 'zoho'
           ? d.provider
           : null,
+      oauth_error: typeof d.oauth_error === 'string' ? d.oauth_error : null,
     });
   };
   window.addEventListener('message', fn);

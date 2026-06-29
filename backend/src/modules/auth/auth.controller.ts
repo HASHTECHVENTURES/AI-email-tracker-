@@ -37,6 +37,7 @@ import {
   getZohoAccountsServer,
   isZohoOAuthConfigured,
   resolveZohoOAuthMeta,
+  zohoOAuthErrorCode,
 } from '../common/zoho-oauth-credentials';
 
 function mePayload(
@@ -578,7 +579,13 @@ export class AuthController {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Zoho OAuth callback failed', err);
-      res.redirect(`${frontendBase}/employees?oauth_error=exchange_failed`);
+      const code = zohoOAuthErrorCode(err);
+      const fail = new URL(`${frontendBase}/auth/gmail-oauth-done`);
+      fail.searchParams.set('connected', '0');
+      fail.searchParams.set('provider', 'zoho');
+      fail.searchParams.set('oauth_error', code);
+      fail.searchParams.set('next', '/my-email');
+      res.redirect(fail.toString());
     }
   }
 

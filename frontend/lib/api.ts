@@ -401,6 +401,14 @@ export function oauthErrorMessage(code: string | null | undefined): string | nul
   if (!code) return null;
   const map: Record<string, string> = {
     exchange_failed: 'Could not complete mail connection. Please try again.',
+    zoho_accounts_failed:
+      'Connected to Zoho, but could not read your mailbox account. Check that Zoho Mail API scopes are enabled for your OAuth app.',
+    zoho_account_mismatch:
+      'Connected to Zoho, but the signed-in mailbox does not match this employee email. Sign in with the same address as the mailbox row.',
+    missing_refresh_token:
+      'Zoho did not issue a refresh token. Click Connect Zoho again and accept all permissions.',
+    invalid_grant:
+      'Zoho authorization expired or was already used. Click Connect Zoho again.',
     access_denied: 'Sign-in was cancelled.',
     not_configured: 'Mail connection is not configured yet.',
     missing_code_or_state: 'The provider returned an invalid sign-in response. Please retry.',

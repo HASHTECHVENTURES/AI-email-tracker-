@@ -19,6 +19,7 @@ function GmailOauthDoneInner() {
       nextRaw && nextRaw.startsWith('/') && !nextRaw.startsWith('//') ? nextRaw : '/my-email';
     const connected = searchParams.get('connected') === '1';
     const employeeId = searchParams.get('employee_id');
+    const oauthError = searchParams.get('oauth_error');
     const providerRaw = searchParams.get('provider');
     const provider: MailOAuthProvider | null =
       providerRaw === 'microsoft'
@@ -37,6 +38,7 @@ function GmailOauthDoneInner() {
       connected,
       employee_id: employeeId,
       provider,
+      oauth_error: oauthError,
     };
 
     if (window.opener && !window.opener.closed) {
@@ -53,6 +55,7 @@ function GmailOauthDoneInner() {
     if (connected) q.set('connected', '1');
     if (employeeId) q.set('employee_id', employeeId);
     if (provider) q.set('provider', provider);
+    if (oauthError) q.set('oauth_error', oauthError);
     const qs = q.toString();
     router.replace(qs ? `${next}?${qs}` : next);
   }, [router, searchParams]);
