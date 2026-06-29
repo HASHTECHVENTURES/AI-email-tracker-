@@ -460,45 +460,44 @@ export class EmailIngestionService {
       throw new ConflictException('Ingestion cycle is already running');
     }
 
-    this.monthlyQuotaExhausted = false;
-    this.aiEnrichmentService.resetMonthlyQuotaGate();
-
-    await this.conversationsService.clearOrphanedUserResolvedThreadSkips();
-
-    const { data: companies, error: companiesErr } = await this.supabase.from('companies').select('id');
-    if (companiesErr) {
-      await this.settingsService.markIngestionFinished({
-        status: 'failed',
-        error: companiesErr.message,
-        employees: 0,
-        messages: 0,
-      });
-      throw companiesErr;
-    }
-
-    const companyIds = (companies ?? []).map((r) => (r as { id: string }).id);
-
-    const { data: priorityRows } = await this.supabase
-      .from('employees')
-      .select('company_id')
-      .eq('is_active', true)
-      .eq('roster_duplicate', false)
-      .eq('mailbox_type', 'SELF')
-      .eq('gmail_status', 'CONNECTED')
-      .is('last_synced_at', null);
-    const neverSyncedCompanies = new Set(
-      (priorityRows ?? []).map((r) => (r as { company_id: string }).company_id),
-    );
-    companyIds.sort((a, b) => {
-      const aPri = neverSyncedCompanies.has(a) ? 0 : 1;
-      const bPri = neverSyncedCompanies.has(b) ? 0 : 1;
-      return aPri - bPri;
-    });
-
     const results: IngestionResult[] = [];
-    const cycleSettings = await this.settingsService.getAll();
+    let finishStatus: 'success' | 'failed' = 'success';
+    let finishError = '';
 
     try {
+      this.monthlyQuotaExhausted = false;
+      this.aiEnrichmentService.resetMonthlyQuotaGate();
+
+      await this.conversationsService.clearOrphanedUserResolvedThreadSkips();
+
+      const { data: companies, error: companiesErr } = await this.supabase.from('companies').select('id');
+      if (companiesErr) {
+        throw companiesErr;
+      }
+
+      const companyIds = (companies ?? []).map((r) => (r as { id: string }).id);
+
+      const { data: priorityRows } = await this.supabase
+        .from('employees')
+        .select('company_id')
+        .eq('is_active', true)
+        .eq('roster_duplicate', false)
+        .eq('mailbox_type', 'SELF')
+        .eq('gmail_status', 'CONNECTED')
+        .is('last_synced_at', null);
+      const neverSyncedCompanies = new Set(
+        (priorityRows ?? []).map((r) => (r as { company_id: string }).company_id),
+      );
+      companyIds.sort((a, b) => {
+        const aPri = neverSyncedCompanies.has(a) ? 0 : 1;
+        const bPri = neverSyncedCompanies.has(b) ? 0 : 1;
+        return aPri - bPri;
+      });
+
+      const cycleSettings = await this.settingsService.getAll();
+      const ingestedEmployeeIds = new Set<string>();
+      await this.ingestPriorityZohoEmptyMailboxes(cycleSettings, results, ingestedEmployeeIds);
+
       for (const companyId of companyIds) {
         const emailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(companyId);
         if (!emailCrawlOn) {
@@ -509,6 +508,9 @@ export class EmailIngestionService {
         sortEmployeesForIngestion(employees);
 
         for (const employee of employees) {
+          if (ingestedEmployeeIds.has(employee.id)) {
+            continue;
+          }
           const hasOAuth = await this.oauthTokenService.hasToken(employee.id);
           if (!hasOAuth) {
             continue;
@@ -537,24 +539,18 @@ export class EmailIngestionService {
       }
 
       await this.conversationsService.autoArchiveResolved();
-      // Repair loop disabled — summaries now come from email data, not Gemini.
-      // await this.repairConversationsWithMissingSummaries();
-
-      await this.settingsService.markIngestionFinished({
-        status: 'success',
-        employees: results.length,
-        messages: results.reduce((sum, r) => sum + r.newMessages, 0),
-      });
-
       return results;
     } catch (err) {
+      finishStatus = 'failed';
+      finishError = (err as Error).message;
+      throw err;
+    } finally {
       await this.settingsService.markIngestionFinished({
-        status: 'failed',
-        error: (err as Error).message,
+        status: finishStatus,
+        error: finishError,
         employees: results.length,
         messages: results.reduce((sum, r) => sum + r.newMessages, 0),
       });
-      throw err;
     }
   }
 
@@ -602,6 +598,8 @@ export class EmailIngestionService {
 
     const cycleSettings = await this.settingsService.getAll();
     const results: IngestionResult[] = [];
+    let finishStatus: 'success' | 'failed' = 'success';
+    let finishError = '';
 
     try {
       for (const employeeId of uniqueIds) {
@@ -667,24 +665,92 @@ export class EmailIngestionService {
       }
 
       await this.conversationsService.autoArchiveResolved();
-      // Repair loop disabled — summaries now come from email data, not Gemini.
-      // await this.repairConversationsWithMissingSummaries();
-
-      await this.settingsService.markIngestionFinished({
-        status: 'success',
-        employees: results.length,
-        messages: results.reduce((sum, r) => sum + r.newMessages, 0),
-      });
-
       return results;
     } catch (err) {
+      finishStatus = 'failed';
+      finishError = (err as Error).message;
+      throw err;
+    } finally {
       await this.settingsService.markIngestionFinished({
-        status: 'failed',
-        error: (err as Error).message,
+        status: finishStatus,
+        error: finishError,
         employees: results.length,
         messages: results.reduce((sum, r) => sum + r.newMessages, 0),
       });
-      throw err;
+    }
+  }
+
+  /** Run Zoho mailboxes with zero stored mail before large Gmail backlogs in other tenants. */
+  private async ingestPriorityZohoEmptyMailboxes(
+    cycleSettings: SystemSettings,
+    results: IngestionResult[],
+    ingestedEmployeeIds: Set<string>,
+  ): Promise<void> {
+    const { data: zohoRows } = await this.supabase
+      .from('employee_oauth_tokens')
+      .select('employee_id')
+      .eq('oauth_provider', 'zoho');
+    for (const row of zohoRows ?? []) {
+      const employeeId = (row as { employee_id: string }).employee_id;
+      if (!employeeId || ingestedEmployeeIds.has(employeeId)) continue;
+
+      const { count } = await this.supabase
+        .from('email_messages')
+        .select('provider_message_id', { count: 'exact', head: true })
+        .eq('employee_id', employeeId);
+      if ((count ?? 0) > 0) continue;
+
+      const { data: empRow } = await this.supabase
+        .from('employees')
+        .select(
+          'id, name, email, company_id, department_id, is_active, sla_hours_default, ai_enabled, tracking_start_at, tracking_paused, mailbox_type, last_synced_at',
+        )
+        .eq('id', employeeId)
+        .maybeSingle();
+      if (!empRow || (empRow as { is_active?: boolean }).is_active === false) continue;
+
+      const companyId = (empRow as { company_id: string }).company_id;
+      const emailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(companyId);
+      if (!emailCrawlOn) continue;
+
+      const mailboxTypeRaw = (empRow as { mailbox_type?: string }).mailbox_type;
+      const mailboxType: Employee['mailboxType'] =
+        mailboxTypeRaw === 'TEAM' ? 'TEAM' : mailboxTypeRaw === 'SELF' ? 'SELF' : 'SELF';
+      const employee: Employee = {
+        id: (empRow as { id: string }).id,
+        name: (empRow as { name: string }).name,
+        email: (empRow as { email: string }).email,
+        companyId,
+        departmentId: (empRow as { department_id?: string | null }).department_id ?? undefined,
+        active: true,
+        slaHoursDefault: (empRow as { sla_hours_default?: number }).sla_hours_default ?? 24,
+        aiEnabled: (empRow as { ai_enabled?: boolean }).ai_enabled,
+        trackingStartAt: (empRow as { tracking_start_at?: string | null }).tracking_start_at ?? null,
+        trackingPaused: Boolean((empRow as { tracking_paused?: boolean }).tracking_paused),
+        mailboxType,
+        lastSyncedAt: (empRow as { last_synced_at?: string | null }).last_synced_at ?? null,
+      };
+
+      this.logger.log(`Priority Zoho bootstrap ingest for ${employee.email}`);
+      try {
+        const result = await this.ingestForEmployee(companyId, employee, cycleSettings);
+        results.push(result);
+      } catch (err) {
+        this.logger.error(
+          `Priority Zoho ingest failed for ${employee.email}: ${(err as Error).message}`,
+        );
+        results.push({
+          companyId,
+          employeeId: employee.id,
+          employeeName: employee.name,
+          newMessages: 0,
+          skippedFiltered: 0,
+          affectedThreads: 0,
+          conversationsUpdated: 0,
+          error: (err as Error).message,
+        });
+      }
+      ingestedEmployeeIds.add(employeeId);
     }
   }
 

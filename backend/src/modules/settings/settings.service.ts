@@ -386,7 +386,7 @@ export class SettingsService {
     ]);
   }
 
-  async tryAcquireIngestionLock(maxLockMinutes = 5): Promise<boolean> {
+  async tryAcquireIngestionLock(maxLockMinutes = 25): Promise<boolean> {
     const runtime = await this.getRuntimeStatus();
     const startedAtMs = runtime.lastIngestionStartedAt
       ? new Date(runtime.lastIngestionStartedAt).getTime()
