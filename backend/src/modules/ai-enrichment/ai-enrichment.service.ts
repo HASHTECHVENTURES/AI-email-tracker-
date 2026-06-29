@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
 import { AiOutput, Priority } from '../common/types';
+import { GeminiUsageService } from '../usage/gemini-usage.service';
 
 interface EmailRow {
   direction: string;
@@ -67,6 +68,7 @@ Return ONLY the JSON object.
 export class AiEnrichmentService {
   private readonly logger = new Logger(AiEnrichmentService.name);
   private readonly model;
+  private readonly modelName: string;
   private monthlyQuotaExhausted = false;
 
   /** Cleared at the start of each ingestion / historical cycle so enrichment can retry after billing is fixed. */
@@ -76,15 +78,16 @@ export class AiEnrichmentService {
 
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
+    private readonly geminiUsageService: GeminiUsageService,
   ) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       this.logger.warn('GEMINI_API_KEY not set — AI enrichment will use fallback values');
     }
     const genAI = new GoogleGenerativeAI(apiKey ?? '');
-    const modelName = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
-    this.model = genAI.getGenerativeModel({ model: modelName });
-    this.logger.log(`AI enrichment model: ${modelName}`);
+    this.modelName = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+    this.model = genAI.getGenerativeModel({ model: this.modelName });
+    this.logger.log(`AI enrichment model: ${this.modelName}`);
   }
 
   /** True when the API key is configured and AI can actually run. */
@@ -94,7 +97,7 @@ export class AiEnrichmentService {
 
   /** Run Gemini on raw thread text (e.g. tests or tooling). */
   async enrichThreadText(threadText: string): Promise<AiOutput | null> {
-    return this.callGemini(threadText);
+    return this.callGemini(threadText, null);
   }
 
   async enrichConversation(conversationId: string, employeeId: string, threadId: string): Promise<AiOutput | null> {
@@ -105,7 +108,8 @@ export class AiEnrichmentService {
     }
 
     const threadText = this.formatThread(emails);
-    const result = await this.callGemini(threadText);
+    const companyId = await this.resolveCompanyId(employeeId);
+    const result = await this.callGemini(threadText, companyId, employeeId);
     if (result === null) {
       this.logger.warn(
         `AI enrichment skipped for ${conversationId} — Gemini API limit reached (conversation row unchanged).`,
@@ -145,7 +149,21 @@ export class AiEnrichmentService {
       .join('\n\n---\n\n');
   }
 
-  private async callGemini(threadText: string, retries = 2): Promise<AiOutput | null> {
+  private async resolveCompanyId(employeeId: string): Promise<string | null> {
+    const { data } = await this.supabase
+      .from('employees')
+      .select('company_id')
+      .eq('id', employeeId)
+      .maybeSingle();
+    return (data as { company_id?: string } | null)?.company_id ?? null;
+  }
+
+  private async callGemini(
+    threadText: string,
+    companyId: string | null,
+    employeeId?: string,
+    retries = 2,
+  ): Promise<AiOutput | null> {
     if (!process.env.GEMINI_API_KEY) {
       return this.fallback();
     }
@@ -158,6 +176,14 @@ export class AiEnrichmentService {
       try {
         const prompt = `${SYSTEM_PROMPT}\n\n--- EMAIL THREAD ---\n\n${threadText}`;
         const result = await this.model.generateContent(prompt);
+        if (companyId) {
+          void this.geminiUsageService.recordFromResponse(result.response, {
+            companyId,
+            employeeId: employeeId ?? null,
+            operation: 'enrichment',
+            model: this.modelName,
+          });
+        }
         const response = result.response;
         const text = response.text();
         return this.parseResponse(text);

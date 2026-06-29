@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
+import { UsageBackfillService } from './usage-backfill.service';
 
 export interface CompanyBillingRow {
   company_id: string;
@@ -31,6 +32,13 @@ export interface BillingOverview {
     storage_usd_per_gb_month: number;
   };
   period: { from: string; to: string };
+  metering: {
+    disclaimer: string;
+    metered_since: string | null;
+    live_api_calls: number;
+    estimated_backfill_calls: number;
+    storage_note: string;
+  };
   platform_totals: {
     api_calls: number;
     total_tokens: number;
@@ -52,6 +60,7 @@ export class CompanyBillingService {
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
     private readonly config: ConfigService,
+    private readonly usageBackfill: UsageBackfillService,
   ) {}
 
   private async loadBillingRates(): Promise<{
@@ -86,8 +95,11 @@ export class CompanyBillingService {
   }
 
   async getBillingOverview(month?: string): Promise<BillingOverview> {
+    await this.usageBackfill.ensureBackfill();
+
     const rates = await this.loadBillingRates();
     const period = this.resolvePeriod(month);
+    const metering = await this.loadMeteringMeta(period.from, period.to);
 
     const { data: companies, error: companiesErr } = await this.supabase
       .from('companies')
@@ -134,8 +146,49 @@ export class CompanyBillingService {
         storage_usd_per_gb_month: rates.storage_usd_per_gb_month,
       },
       period,
+      metering,
       platform_totals,
       companies: companyRows.sort((a, b) => b.total_cost_inr - a.total_cost_inr),
+    };
+  }
+
+  private async loadMeteringMeta(
+    from: string,
+    to: string,
+  ): Promise<BillingOverview['metering']> {
+    const [liveCountRes, backfillCountRes, meteredSinceRes] = await Promise.all([
+      this.supabase
+        .from('api_usage_events')
+        .select('id', { count: 'exact', head: true })
+        .gte('created_at', from)
+        .lt('created_at', to)
+        .neq('operation', 'backfill_estimate'),
+      this.supabase
+        .from('api_usage_events')
+        .select('id', { count: 'exact', head: true })
+        .gte('created_at', from)
+        .lt('created_at', to)
+        .eq('operation', 'backfill_estimate'),
+      this.supabase
+        .from('api_usage_events')
+        .select('created_at')
+        .neq('operation', 'backfill_estimate')
+        .order('created_at', { ascending: true })
+        .limit(1),
+    ]);
+
+    const live_api_calls = liveCountRes.count ?? 0;
+    const estimated_backfill_calls = backfillCountRes.count ?? 0;
+    const metered_since =
+      (meteredSinceRes.data as Array<{ created_at: string }> | null)?.[0]?.created_at ?? null;
+
+    return {
+      disclaimer:
+        'Estimated tenant usage for invoicing. Live API rows are metered from each Gemini call; older AI-classified mail uses a token estimate (~800 in / ~45 out per message). Storage is approximate bytes in your database.',
+      metered_since,
+      live_api_calls,
+      estimated_backfill_calls,
+      storage_note: 'Storage = email bodies + subjects + conversation summaries (not full cloud infra bill).',
     };
   }
 

@@ -52,6 +52,23 @@ export default function AdminBillingPage() {
       />
       {loadErr ? <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{loadErr}</div> : null}
 
+      {billing?.metering ? (
+        <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <p className="font-semibold">Estimated usage (not a Google invoice)</p>
+          <p className="mt-1">{billing.metering.disclaimer}</p>
+          <p className="mt-2 text-xs text-amber-900">
+            Live metered calls this period: {billing.metering.live_api_calls.toLocaleString()}
+            {billing.metering.estimated_backfill_calls > 0
+              ? ` · Historical estimates: ${billing.metering.estimated_backfill_calls.toLocaleString()}`
+              : ''}
+            {billing.metering.metered_since
+              ? ` · Live metering since ${new Date(billing.metering.metered_since).toLocaleDateString('en-IN')}`
+              : ''}
+          </p>
+          <p className="mt-1 text-xs text-amber-900">{billing.metering.storage_note}</p>
+        </div>
+      ) : null}
+
       {!billing ? (
         <PortalPageLoader variant="embedded" />
       ) : (

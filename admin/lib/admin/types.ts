@@ -80,6 +80,13 @@ export type BillingOverview = {
     storage_usd_per_gb_month: number;
   };
   period: { from: string; to: string };
+  metering: {
+    disclaimer: string;
+    metered_since: string | null;
+    live_api_calls: number;
+    estimated_backfill_calls: number;
+    storage_note: string;
+  };
   platform_totals: {
     api_calls: number;
     total_tokens: number;

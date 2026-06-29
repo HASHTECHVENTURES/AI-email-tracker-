@@ -55,7 +55,7 @@ export default function AdminDashboardPage() {
         {billing ? (
           <section>
             <div className="mb-3 flex items-end justify-between gap-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">This month (est.)</h2>
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">This month (estimated)</h2>
               <Link href="/billing" className="text-sm font-medium text-brand-600 hover:underline">
                 Full billing →
               </Link>
