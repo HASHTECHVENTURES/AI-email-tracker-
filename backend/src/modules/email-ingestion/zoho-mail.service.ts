@@ -570,17 +570,13 @@ export class ZohoMailService {
     const ccEmails = this.splitAddresses(msg.ccAddress);
     const replyToEmail = msg.replyTo?.trim() || null;
     const subject = msg.subject ?? '';
-    const rawSentMs =
-      this.messageTimeMs(msg, 'sentDateInGMT') ??
-      this.messageTimeMs(msg, 'receivedTime') ??
-      null;
+    // List API receivedTime is reliable for inbox mail; details often return stale/wrong sentDateInGMT.
     const cachedSentMs = this.lookupMessageTime(employeeId, zohoId(messageId));
-    const useCached =
-      cachedSentMs != null &&
-      (!rawSentMs ||
-        rawSentMs < 946684800000 ||
-        Math.abs(rawSentMs - cachedSentMs) > 366 * 24 * 60 * 60 * 1000);
-    const sentMs = useCached ? cachedSentMs : rawSentMs ?? Date.now();
+    const rawSentMs =
+      this.messageTimeMs(msg, 'receivedTime') ??
+      this.messageTimeMs(msg, 'sentDateInGMT') ??
+      null;
+    const sentMs = cachedSentMs ?? rawSentMs ?? Date.now();
     const sentAt = new Date(sentMs);
     const rawBody = msg.content ?? msg.summary ?? '';
     const bodyText = /<[a-z][\s\S]*>/i.test(rawBody) ? this.htmlToPlainText(rawBody) : rawBody;

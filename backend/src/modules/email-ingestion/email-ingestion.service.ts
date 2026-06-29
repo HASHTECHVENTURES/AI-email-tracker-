@@ -2158,7 +2158,7 @@ export class EmailIngestionService {
   async probeZohoFetchSample(
     companyId: string,
     employeeId: string,
-  ): Promise<{ messageId?: string; error?: string }> {
+  ): Promise<{ messageId?: string; sentAtIso?: string; error?: string }> {
     const employee = await this.employeesService.getById(companyId, employeeId);
     if (!employee) {
       return { error: 'Employee not found' };
@@ -2178,8 +2178,8 @@ export class EmailIngestionService {
       });
       const sampleId = ids[0];
       if (!sampleId) return { error: 'No Zoho message IDs returned' };
-      await this.fetchMailFullMessage(employeeId, employee.email, sampleId);
-      return { messageId: sampleId };
+      const msg = await this.fetchMailFullMessage(employeeId, employee.email, sampleId);
+      return { messageId: sampleId, sentAtIso: msg.sentAt.toISOString() };
     } catch (err) {
       return { error: (err as Error).message ?? 'Zoho fetch failed' };
     }

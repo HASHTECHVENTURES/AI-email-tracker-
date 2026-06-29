@@ -303,7 +303,12 @@ export class SystemDiagnosticsService {
           if (fetchSample.error) {
             mailFetchProbe.notes.push(`Zoho sample fetch error: ${fetchSample.error}`);
           } else if (fetchSample.messageId) {
-            mailFetchProbe.notes.push(`Zoho sample fetch ok: ${fetchSample.messageId}`);
+            const sentNote = fetchSample.sentAtIso
+              ? `, sentAt=${fetchSample.sentAtIso}`
+              : '';
+            mailFetchProbe.notes.push(
+              `Zoho sample fetch ok: ${fetchSample.messageId}${sentNote}`,
+            );
           }
         } catch (err) {
           mailFetchProbe = {
