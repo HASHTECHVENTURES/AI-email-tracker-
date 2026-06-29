@@ -7,6 +7,7 @@ import type { ZohoOAuthMeta } from '../common/zoho-oauth-credentials';
 type ZohoListMessage = {
   messageId?: string | number;
   threadId?: string | number;
+  folderId?: string | number;
   subject?: string;
   summary?: string;
   fromAddress?: string;
@@ -32,6 +33,14 @@ type ZohoFolder = {
 function zohoId(raw: unknown): string {
   if (raw == null || raw === '') return '';
   return String(raw).trim();
+}
+
+const ZOHO_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatZohoSearchDate(d: Date): string {
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  const month = ZOHO_MONTHS[d.getUTCMonth()] ?? 'Jan';
+  return `${day}-${month}-${d.getUTCFullYear()}`;
 }
 
 @Injectable()
@@ -111,15 +120,73 @@ export class ZohoMailService {
     afterMs: number,
     timeField: 'receivedTime' | 'sentDateInGMT',
   ): string[] {
-    const ids: string[] = [];
+    const all: string[] = [];
+    const filtered: string[] = [];
     for (const m of rows) {
       const id = zohoId(m.messageId);
       if (!id) continue;
+      all.push(id);
       const ms = this.messageTimeMs(m, timeField);
       if (ms != null && ms < afterMs) continue;
-      ids.push(id);
+      filtered.push(id);
     }
-    return ids;
+    if (filtered.length > 0) return filtered;
+    if (all.length > 0) {
+      this.logger.warn(
+        `Zoho list returned ${all.length} message(s) but none passed after=${new Date(afterMs).toISOString()}; passing ids through for ingest window check`,
+      );
+      return all;
+    }
+    return [];
+  }
+
+  private async fetchFolderViewRows(
+    employeeId: string,
+    meta: ZohoOAuthMeta,
+    query: string,
+  ): Promise<ZohoListMessage[]> {
+    const url = `/api/accounts/${encodeURIComponent(meta.accountId)}/messages/view${query}`;
+    const res = await retryWithBackoff(
+      () => this.zohoFetch(employeeId, meta.mailApiBase, url),
+      { operationName: `zoho.list(${employeeId})`, attempts: 2, timeoutMs: 15_000 },
+    );
+    return this.parseZohoListResponse(res);
+  }
+
+  private async listFolderMessageIds(
+    employeeId: string,
+    meta: ZohoOAuthMeta,
+    folderId: string,
+    afterDate: Date,
+    limit: number,
+    timeField: 'receivedTime' | 'sentDateInGMT',
+  ): Promise<string[]> {
+    const afterMs = afterDate.getTime();
+    const top = Math.min(Math.max(limit, 1), 200);
+    const fid = encodeURIComponent(folderId);
+    const queryVariants = [
+      `?folderId=${fid}&limit=${top}&start=1&includeto=true`,
+      `?folderId=${fid}&limit=${top}&start=0&includeto=true`,
+      `?folderId=${fid}&limit=${top}&start=1&status=all&includeto=true`,
+      `?limit=${top}&start=1&includeto=true`,
+    ];
+    for (const query of queryVariants) {
+      try {
+        const rows = await this.fetchFolderViewRows(employeeId, meta, query);
+        const ids = this.extractIdsFromRows(rows, afterMs, timeField);
+        if (ids.length > 0) {
+          this.logger.log(
+            `Zoho folder list (${query}) returned ${ids.length} id(s) for employee ${employeeId}`,
+          );
+          return ids;
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Zoho folder list failed (${query}) for ${employeeId}: ${(err as Error).message}`,
+        );
+      }
+    }
+    return [];
   }
 
   private async getMeta(employeeId: string): Promise<ZohoOAuthMeta> {
@@ -182,28 +249,6 @@ export class ZohoMailService {
     return next;
   }
 
-  private async listFolderMessageIds(
-    employeeId: string,
-    meta: ZohoOAuthMeta,
-    folderId: string,
-    afterDate: Date,
-    limit: number,
-    timeField: 'receivedTime' | 'sentDateInGMT',
-  ): Promise<string[]> {
-    const afterMs = afterDate.getTime();
-    const top = Math.min(Math.max(limit, 1), 200);
-    const url =
-      `/api/accounts/${encodeURIComponent(meta.accountId)}/messages/view` +
-      `?folderId=${encodeURIComponent(folderId)}` +
-      `&limit=${top}&start=1&status=all&sortBy=date&sortorder=false&includeto=true`;
-    const res = await retryWithBackoff(
-      () => this.zohoFetch(employeeId, meta.mailApiBase, url),
-      { operationName: `zoho.list(${employeeId})`, attempts: 2, timeoutMs: 15_000 },
-    );
-    const rows = await this.parseZohoListResponse(res);
-    return this.extractIdsFromRows(rows, afterMs, timeField);
-  }
-
   /** Fallback when folder view returns nothing — Zoho search uses lowercase receivedtime. */
   private async listInboxViaSearch(
     employeeId: string,
@@ -214,7 +259,8 @@ export class ZohoMailService {
     const afterMs = afterDate.getTime();
     const top = Math.min(Math.max(limit, 1), 200);
     const receivedTime = Date.now() + 120_000;
-    const searchKeys = ['in:Inbox', 'newMails'];
+    const fromDate = formatZohoSearchDate(afterDate);
+    const searchKeys = ['newMails', 'in:Inbox', 'in:inbox', `fromDate:${fromDate}`];
     for (const searchKey of searchKeys) {
       const url =
         `/api/accounts/${encodeURIComponent(meta.accountId)}/messages/search` +
@@ -240,6 +286,24 @@ export class ZohoMailService {
       }
     }
     return [];
+  }
+
+  /** Read-only probe for diagnostics (same paths as live ingest). */
+  async probeList(
+    employeeId: string,
+    afterDate: Date,
+    maxResults = 50,
+  ): Promise<{ ids: string[]; inboxFolderId?: string; sentFolderId?: string }> {
+    const meta = await this.ensureFolderIds(employeeId, await this.getMeta(employeeId), true);
+    const page = await this.listMessageIdsPage(employeeId, afterDate, {
+      maxResults,
+      pageToken: null,
+    });
+    return {
+      ids: page.ids,
+      inboxFolderId: meta.inboxFolderId,
+      sentFolderId: meta.sentFolderId,
+    };
   }
 
   async listMessageIdsPage(
@@ -345,26 +409,64 @@ export class ZohoMailService {
     employeeId: string,
     messageId: string,
   ): Promise<ZohoFullMessage> {
-    const meta = await this.getMeta(employeeId);
+    const meta = await this.ensureFolderIds(employeeId, await this.getMeta(employeeId));
     const id = zohoId(messageId);
-    const res = await retryWithBackoff(
-      () =>
-        this.zohoFetch(
-          employeeId,
-          meta.mailApiBase,
-          `/api/accounts/${encodeURIComponent(meta.accountId)}/messages/${encodeURIComponent(id)}`,
-        ),
-      { operationName: `zoho.get(${employeeId})`, attempts: 3, timeoutMs: 12_000 },
+    const folderCandidates = [meta.inboxFolderId, meta.sentFolderId].filter(
+      (f): f is string => Boolean(f?.trim()),
     );
-    if (!res.ok) {
-      throw new Error(`Zoho get message failed: ${res.status} ${await res.text()}`);
+    if (folderCandidates.length === 0) {
+      throw new Error('Zoho folder ids missing');
     }
-    const body = (await res.json()) as { data?: ZohoFullMessage };
-    const msg = body.data;
-    if (!zohoId(msg?.messageId)) {
-      throw new Error('Zoho message payload missing');
+
+    let lastErr: Error | null = null;
+    for (const folderId of folderCandidates) {
+      try {
+        const detailsRes = await retryWithBackoff(
+          () =>
+            this.zohoFetch(
+              employeeId,
+              meta.mailApiBase,
+              `/api/accounts/${encodeURIComponent(meta.accountId)}/folders/${encodeURIComponent(folderId)}/messages/${encodeURIComponent(id)}/details`,
+            ),
+          { operationName: `zoho.details(${employeeId})`, attempts: 2, timeoutMs: 12_000 },
+        );
+        if (!detailsRes.ok) {
+          throw new Error(`Zoho details failed: ${detailsRes.status} ${await detailsRes.text()}`);
+        }
+        const detailsBody = (await detailsRes.json()) as { data?: ZohoFullMessage };
+        const details = detailsBody.data;
+        if (!details) {
+          throw new Error('Zoho details payload missing');
+        }
+
+        let content = details.content ?? details.summary ?? '';
+        try {
+          const contentRes = await retryWithBackoff(
+            () =>
+              this.zohoFetch(
+                employeeId,
+                meta.mailApiBase,
+                `/api/accounts/${encodeURIComponent(meta.accountId)}/folders/${encodeURIComponent(folderId)}/messages/${encodeURIComponent(id)}/content`,
+              ),
+            { operationName: `zoho.content(${employeeId})`, attempts: 2, timeoutMs: 12_000 },
+          );
+          if (contentRes.ok) {
+            const contentBody = (await contentRes.json()) as { data?: { content?: string } };
+            if (contentBody.data?.content?.trim()) {
+              content = contentBody.data.content;
+            }
+          }
+        } catch {
+          /* details.summary is enough for classification */
+        }
+
+        return { ...details, messageId: zohoId(details.messageId) || id, content };
+      } catch (err) {
+        lastErr = err as Error;
+      }
     }
-    return msg!;
+
+    throw lastErr ?? new Error(`Zoho get message failed for ${id}`);
   }
 
   private splitAddresses(raw: string | undefined): string[] {

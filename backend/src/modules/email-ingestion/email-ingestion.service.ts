@@ -1991,6 +1991,12 @@ export class EmailIngestionService {
     }
 
     const hasOAuth = await this.oauthTokenService.hasToken(employeeId);
+    const provider = hasOAuth
+      ? await this.oauthTokenService.getOAuthProvider(employeeId)
+      : 'google';
+    const providerLabel =
+      provider === 'zoho' ? 'Zoho Mail' : provider === 'microsoft' ? 'Outlook' : 'Gmail';
+
     const tracking = await this.employeesService.getTrackingState(companyId, employeeId);
     const syncState = await this.getSyncState(employeeId);
 
@@ -2040,17 +2046,31 @@ export class EmailIngestionService {
 
     const notes: string[] = [];
     if (!hasOAuth) {
-      notes.push('No Gmail OAuth token for this mailbox — connect Gmail first.');
+      notes.push(`No mail OAuth token for this mailbox — connect ${providerLabel} first.`);
+    }
+    if (provider === 'zoho') {
+      try {
+        const zohoProbe = await this.zohoMailService.probeList(employeeId, listAfterDate, 50);
+        notes.push(
+          `Zoho folders: inbox=${zohoProbe.inboxFolderId ?? '—'} sent=${zohoProbe.sentFolderId ?? '—'}.`,
+        );
+        if (messageIds.length === 0 && zohoProbe.ids.length > 0) {
+          messageIds = zohoProbe.ids;
+          notes.push(`Zoho probe list recovered ${zohoProbe.ids.length} id(s).`);
+        }
+      } catch (err) {
+        notes.push(`Zoho probe failed: ${(err as Error).message}`);
+      }
     }
     if (liveGmailError) {
-      notes.push(`Live list Gmail API error: ${liveGmailError}`);
+      notes.push(`Live list ${providerLabel} API error: ${liveGmailError}`);
     } else if (messageIds.length === 0 && !nextPageToken) {
       notes.push(
-        'Gmail returned zero message IDs for the live incremental query (inbox + sent, minus spam/promotions/etc.). New mail may still arrive later.',
+        `${providerLabel} returned zero message IDs for the live incremental query. New mail may still arrive later.`,
       );
     } else {
       notes.push(
-        `Live query: Gmail returned ${messageIds.length} message id(s) in ${pagesFetched} list page(s)${
+        `Live query: ${providerLabel} returned ${messageIds.length} message id(s) in ${pagesFetched} list page(s)${
           nextPageToken ? '; more pages exist (ingestion continues on the next run)' : ''
         }.`,
       );
