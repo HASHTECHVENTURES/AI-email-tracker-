@@ -47,6 +47,7 @@ function formatZohoSearchDate(d: Date): string {
 export class ZohoMailService {
   private readonly logger = new Logger(ZohoMailService.name);
   private readonly folderByMessageId = new Map<string, Map<string, string>>();
+  private readonly timeByMessageId = new Map<string, Map<string, number>>();
 
   constructor(private readonly oauthTokenService: OauthTokenService) {}
 
@@ -129,6 +130,18 @@ export class ZohoMailService {
     return this.folderByMessageId.get(employeeId)?.get(messageId);
   }
 
+  private cacheMessageTime(employeeId: string, messageId: string, timeMs: number | null): void {
+    if (!timeMs || !Number.isFinite(timeMs)) return;
+    const byEmployee =
+      this.timeByMessageId.get(employeeId) ?? new Map<string, number>();
+    byEmployee.set(messageId, timeMs);
+    this.timeByMessageId.set(employeeId, byEmployee);
+  }
+
+  private lookupMessageTime(employeeId: string, messageId: string): number | undefined {
+    return this.timeByMessageId.get(employeeId)?.get(messageId);
+  }
+
   private extractIdsFromRows(
     employeeId: string,
     rows: ZohoListMessage[],
@@ -141,6 +154,8 @@ export class ZohoMailService {
       const id = zohoId(m.messageId);
       if (!id) continue;
       this.cacheFolderId(employeeId, id, m.folderId);
+      const listTime = this.messageTimeMs(m, timeField);
+      if (listTime != null) this.cacheMessageTime(employeeId, id, listTime);
       all.push(id);
       const ms = this.messageTimeMs(m, timeField);
       if (ms != null && ms < afterMs) continue;
@@ -530,10 +545,17 @@ export class ZohoMailService {
     const ccEmails = this.splitAddresses(msg.ccAddress);
     const replyToEmail = msg.replyTo?.trim() || null;
     const subject = msg.subject ?? '';
-    const sentMs =
+    const rawSentMs =
       this.messageTimeMs(msg, 'sentDateInGMT') ??
       this.messageTimeMs(msg, 'receivedTime') ??
-      Date.now();
+      null;
+    const cachedSentMs = this.lookupMessageTime(employeeId, zohoId(messageId));
+    const useCached =
+      cachedSentMs != null &&
+      (!rawSentMs ||
+        rawSentMs < 946684800000 ||
+        Math.abs(rawSentMs - cachedSentMs) > 366 * 24 * 60 * 60 * 1000);
+    const sentMs = useCached ? cachedSentMs : rawSentMs ?? Date.now();
     const sentAt = new Date(sentMs);
     const rawBody = msg.content ?? msg.summary ?? '';
     const bodyText = /<[a-z][\s\S]*>/i.test(rawBody) ? this.htmlToPlainText(rawBody) : rawBody;
