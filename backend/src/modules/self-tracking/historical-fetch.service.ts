@@ -7,7 +7,6 @@ import {
 import { SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SUPABASE_CLIENT } from '../common/supabase.provider';
-import { GmailService, buildGmailHistoricalWindowQuery } from '../email-ingestion/gmail.service';
 import {
   buildSharedIngestRelevancePrompt,
   RELEVANCE_MODEL_TEMPERATURE,
@@ -105,7 +104,6 @@ export class HistoricalFetchService {
 
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
-    private readonly gmailService: GmailService,
     private readonly oauthTokenService: OauthTokenService,
     private readonly conversationsService: ConversationsService,
     private readonly settingsService: SettingsService,
@@ -165,7 +163,9 @@ export class HistoricalFetchService {
 
     const hasOAuth = await this.oauthTokenService.hasToken(employeeId);
     if (!hasOAuth) {
-      throw new BadRequestException('Gmail is not connected for this mailbox. Connect Gmail first.');
+      throw new BadRequestException(
+        'Mail is not connected for this mailbox. Connect Gmail, Outlook, or Zoho Mail first.',
+      );
     }
 
     const { data: empRow } = await this.supabase
@@ -195,14 +195,13 @@ export class HistoricalFetchService {
     const startDate = new Date(startMs);
     const endDate = new Date(endMs);
 
-    const listQuery = buildGmailHistoricalWindowQuery(startDate, endDate);
-
     const messageIds: string[] = [];
     let pageToken: string | null = null;
     for (let page = 0; page < 10; page++) {
-      const { ids, nextPageToken } = await this.gmailService.listMessageIdsPage(
+      const { ids, nextPageToken } = await this.emailIngestionService.listHistoricalMessageIdsPage(
         employeeId,
-        listQuery,
+        startDate,
+        endDate,
         { maxResults: 200, pageToken },
       );
       messageIds.push(...ids);
@@ -343,7 +342,11 @@ export class HistoricalFetchService {
           stoppedEarly = true;
           break;
         }
-        const msg = await this.gmailService.fetchFullMessage(employeeId, employee.email, msgId);
+        const msg = await this.emailIngestionService.fetchHistoricalFullMessage(
+          employeeId,
+          employee.email,
+          msgId,
+        );
         fetchedCount++;
 
         onProgress?.({
@@ -393,7 +396,7 @@ export class HistoricalFetchService {
           msg.providerMessageId,
         );
         if (!cachedDecision && allowGeminiRelevance && this.relevanceModel) {
-          threadSlice = await this.gmailService.fetchLastMessagesInThreadForRelevance(
+          threadSlice = await this.emailIngestionService.fetchHistoricalThreadForRelevance(
             employeeId,
             employee.email,
             msg,
@@ -413,7 +416,7 @@ export class HistoricalFetchService {
             msg,
             threadSlice,
             employee.email,
-            this.gmailService.isNoise(msg.labelIds),
+            await this.emailIngestionService.isHistoricalMailNoise(msg, employeeId),
             allowGeminiRelevance,
             ingestWithoutAiConfirmed,
             mergedExcludePatterns,

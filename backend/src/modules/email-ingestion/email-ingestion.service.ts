@@ -335,6 +335,45 @@ export class EmailIngestionService {
     return this.gmailService.isNoise(msg.labelIds);
   }
 
+  /** Self-tracking historical fetch: list message ids for the window (Gmail / Outlook / Zoho). */
+  async listHistoricalMessageIdsPage(
+    employeeId: string,
+    windowStart: Date,
+    windowEnd: Date,
+    opts: { maxResults: number; pageToken?: string | null },
+  ): Promise<{ ids: string[]; nextPageToken: string | null }> {
+    const gmailQuery = buildGmailHistoricalWindowQuery(windowStart, windowEnd);
+    return this.listMailIdsPage(employeeId, windowStart, gmailQuery, opts);
+  }
+
+  async fetchHistoricalFullMessage(
+    employeeId: string,
+    employeeEmail: string,
+    messageId: string,
+  ): Promise<EmailMessage> {
+    return this.fetchMailFullMessage(employeeId, employeeEmail, messageId);
+  }
+
+  async fetchHistoricalThreadForRelevance(
+    employeeId: string,
+    employeeEmail: string,
+    msg: EmailMessage,
+    threadMetaCache: Map<string, gmail_v1.Schema$Message[]>,
+    maxMessages: number,
+  ): Promise<EmailMessage[]> {
+    return this.fetchMailThreadForRelevance(
+      employeeId,
+      employeeEmail,
+      msg,
+      threadMetaCache,
+      maxMessages,
+    );
+  }
+
+  async isHistoricalMailNoise(msg: EmailMessage, employeeId: string): Promise<boolean> {
+    return this.isMailNoiseAsync(msg, employeeId);
+  }
+
   /** Employees.last_gmail_sync_at / last_ai_analysis_at require migration 026 — degrade if not applied. */
   private async updateEmployeePartial(
     employeeId: string,

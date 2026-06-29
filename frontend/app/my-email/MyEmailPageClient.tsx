@@ -2049,7 +2049,7 @@ function MyEmailPageInner() {
       const applyHistoricalEvent = (ev: Record<string, unknown>) => {
         const phase = String(ev.phase ?? '');
         if (phase === 'error') {
-          sseError = String(ev.message ?? 'Inbox analysis failed.');
+          sseError = humanizeMailSyncError(String(ev.message ?? 'Inbox analysis failed.'));
           terminal.current = true;
           setHistoricalBackfillUi((u) =>
             u ? { ...u, phase: 'error', error: sseError ?? u.error } : u,
@@ -2692,7 +2692,7 @@ function MyEmailPageInner() {
     const connected = searchParams.get('connected');
     if (!oauthErr && connected !== '1') return;
 
-    if (oauthErr) setError(oauthErrorMessage(oauthErr));
+    if (oauthErr) setError(humanizeMailSyncError(oauthErrorMessage(oauthErr) ?? oauthErr));
     if (connected === '1') {
       const providerRaw = searchParams.get('provider');
       const provider: MailOAuthProvider | null =
@@ -2719,7 +2719,7 @@ function MyEmailPageInner() {
     if (!token) return;
     return subscribeGmailOAuthComplete(({ next, connected, employee_id, provider, oauth_error }) => {
       if (oauth_error) {
-        setError(oauthErrorMessage(oauth_error));
+        setError(humanizeMailSyncError(oauthErrorMessage(oauth_error) ?? oauth_error));
       } else if (connected) {
         setSuccess(mailOAuthSuccessMessage(provider));
       }
