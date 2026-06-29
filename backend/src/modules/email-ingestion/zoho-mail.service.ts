@@ -49,8 +49,24 @@ export class ZohoMailService {
   private readonly folderByMessageId = new Map<string, Map<string, string>>();
   private readonly timeByMessageId = new Map<string, Map<string, number>>();
   private readonly rowByMessageId = new Map<string, Map<string, ZohoListMessage>>();
+  private readonly mailApiBaseByEmployee = new Map<string, string>();
 
   constructor(private readonly oauthTokenService: OauthTokenService) {}
+
+  /**
+   * Zoho India (`mail.zoho.in`) returns inbox timestamps as account-local (IST) epochs
+   * without UTC conversion — they read ~5h30m early vs the Zoho Mail UI.
+   */
+  private zohoRegionalUtcOffsetMs(mailApiBase: string | undefined): number {
+    const host = (mailApiBase ?? '').toLowerCase();
+    if (host.includes('zoho.in')) return (5 * 60 + 30) * 60 * 1000;
+    return 0;
+  }
+
+  private applyZohoRegionalUtcOffset(ms: number, mailApiBase: string | undefined): number {
+    const offset = this.zohoRegionalUtcOffsetMs(mailApiBase);
+    return offset > 0 ? ms + offset : ms;
+  }
 
   private async zohoFetch(
     employeeId: string,
@@ -84,6 +100,7 @@ export class ZohoMailService {
   private messageTimeMs(
     msg: ZohoListMessage,
     prefer: 'receivedTime' | 'sentDateInGMT',
+    mailApiBase?: string,
   ): number | null {
     const row = msg as Record<string, unknown>;
     const candidates: unknown[] = [
@@ -98,19 +115,23 @@ export class ZohoMailService {
     ].flat();
     for (const raw of candidates) {
       const ms = this.parseTimeMs(raw as string | number | undefined);
-      if (ms != null) return ms;
+      if (ms != null) return this.applyZohoRegionalUtcOffset(ms, mailApiBase);
     }
     return null;
   }
 
   /** Timestamp captured when this message id was listed (same ingest/historical request). */
-  getListedMessageTime(employeeId: string, messageId: string): number | null {
+  getListedMessageTime(employeeId: string, messageId: string, mailApiBase?: string): number | null {
     const id = zohoId(messageId);
+    const base = mailApiBase ?? this.mailApiBaseByEmployee.get(employeeId);
     const cached = this.lookupMessageTime(employeeId, id);
     if (cached != null) return cached;
     const row = this.lookupMessageRow(employeeId, id);
     if (!row) return null;
-    return this.messageTimeMs(row, 'receivedTime') ?? this.messageTimeMs(row, 'sentDateInGMT');
+    return (
+      this.messageTimeMs(row, 'receivedTime', base) ??
+      this.messageTimeMs(row, 'sentDateInGMT', base)
+    );
   }
 
   private async parseZohoListResponse(res: Response): Promise<ZohoListMessage[]> {
@@ -173,6 +194,7 @@ export class ZohoMailService {
     rows: ZohoListMessage[],
     afterMs: number,
     timeField: 'receivedTime' | 'sentDateInGMT',
+    mailApiBase: string,
   ): string[] {
     const all: string[] = [];
     const filtered: string[] = [];
@@ -181,10 +203,10 @@ export class ZohoMailService {
       if (!id) continue;
       this.cacheFolderId(employeeId, id, m.folderId);
       this.cacheMessageRow(employeeId, id, m);
-      const listTime = this.messageTimeMs(m, timeField);
+      const listTime = this.messageTimeMs(m, timeField, mailApiBase);
       if (listTime != null) this.cacheMessageTime(employeeId, id, listTime);
       all.push(id);
-      const ms = this.messageTimeMs(m, timeField);
+      const ms = this.messageTimeMs(m, timeField, mailApiBase);
       if (ms != null && ms < afterMs) continue;
       filtered.push(id);
     }
@@ -252,7 +274,7 @@ export class ZohoMailService {
     for (const query of queryVariants) {
       try {
         const rows = await this.fetchFolderViewRows(employeeId, meta, query);
-        const ids = this.extractIdsFromRows(employeeId, rows, afterMs, timeField);
+        const ids = this.extractIdsFromRows(employeeId, rows, afterMs, timeField, meta.mailApiBase);
         if (ids.length > 0) {
           this.logger.log(
             `Zoho folder list (${query}) returned ${ids.length} id(s) for employee ${employeeId}`,
@@ -360,7 +382,13 @@ export class ZohoMailService {
             { operationName: `zoho.search(${employeeId})`, attempts: 2, timeoutMs: 15_000 },
           );
           const rows = await this.parseZohoListResponse(res);
-          const ids = this.extractIdsFromRows(employeeId, rows, afterMs, 'receivedTime');
+          const ids = this.extractIdsFromRows(
+            employeeId,
+            rows,
+            afterMs,
+            'receivedTime',
+            meta.mailApiBase,
+          );
           if (ids.length > 0) {
             this.logger.log(
               `Zoho search fallback (${searchKey}, start=${start}) returned ${ids.length} message(s) for employee ${employeeId}`,
@@ -404,6 +432,7 @@ export class ZohoMailService {
       return { ids: [], nextPageToken: null };
     }
     let meta = await this.ensureFolderIds(employeeId, await this.getMeta(employeeId));
+    this.mailApiBaseByEmployee.set(employeeId, meta.mailApiBase);
     const idSeen = new Set<string>();
     const ids: string[] = [];
     const top = Math.min(opts.maxResults, 200);
@@ -619,6 +648,8 @@ export class ZohoMailService {
     employeeEmail: string,
     messageId: string,
   ): Promise<EmailMessage> {
+    const meta = await this.ensureFolderIds(employeeId, await this.getMeta(employeeId));
+    this.mailApiBaseByEmployee.set(employeeId, meta.mailApiBase);
     const msg = await this.fetchZohoMessageRaw(employeeId, messageId);
     const fromEmail = (msg.fromAddress ?? msg.sender ?? '').trim();
     const toEmails = this.splitAddresses(msg.toAddress);
@@ -626,10 +657,10 @@ export class ZohoMailService {
     const replyToEmail = msg.replyTo?.trim() || null;
     const subject = msg.subject ?? '';
     // List API receivedTime is reliable for inbox mail; details often return stale/wrong sentDateInGMT.
-    const listedMs = this.getListedMessageTime(employeeId, messageId);
+    const listedMs = this.getListedMessageTime(employeeId, messageId, meta.mailApiBase);
     const rawSentMs =
-      this.messageTimeMs(msg, 'receivedTime') ??
-      this.messageTimeMs(msg, 'sentDateInGMT') ??
+      this.messageTimeMs(msg, 'receivedTime', meta.mailApiBase) ??
+      this.messageTimeMs(msg, 'sentDateInGMT', meta.mailApiBase) ??
       null;
     const sentMs = listedMs ?? rawSentMs ?? Date.now();
     const sentAt = new Date(sentMs);

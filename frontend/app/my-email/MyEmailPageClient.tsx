@@ -468,6 +468,7 @@ function absoluteTime(iso: string | null | undefined): string {
     return new Date(iso).toLocaleString(undefined, {
       dateStyle: 'medium',
       timeStyle: 'short',
+      timeZoneName: 'short',
     });
   } catch {
     return '';
