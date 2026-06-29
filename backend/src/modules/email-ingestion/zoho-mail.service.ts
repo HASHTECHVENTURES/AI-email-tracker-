@@ -46,6 +46,7 @@ function formatZohoSearchDate(d: Date): string {
 @Injectable()
 export class ZohoMailService {
   private readonly logger = new Logger(ZohoMailService.name);
+  private readonly folderByMessageId = new Map<string, Map<string, string>>();
 
   constructor(private readonly oauthTokenService: OauthTokenService) {}
 
@@ -115,7 +116,21 @@ export class ZohoMailService {
     return body.data ?? [];
   }
 
+  private cacheFolderId(employeeId: string, messageId: string, folderId?: string | number): void {
+    const fid = zohoId(folderId);
+    if (!fid) return;
+    const byEmployee =
+      this.folderByMessageId.get(employeeId) ?? new Map<string, string>();
+    byEmployee.set(messageId, fid);
+    this.folderByMessageId.set(employeeId, byEmployee);
+  }
+
+  private lookupFolderId(employeeId: string, messageId: string): string | undefined {
+    return this.folderByMessageId.get(employeeId)?.get(messageId);
+  }
+
   private extractIdsFromRows(
+    employeeId: string,
     rows: ZohoListMessage[],
     afterMs: number,
     timeField: 'receivedTime' | 'sentDateInGMT',
@@ -125,6 +140,7 @@ export class ZohoMailService {
     for (const m of rows) {
       const id = zohoId(m.messageId);
       if (!id) continue;
+      this.cacheFolderId(employeeId, id, m.folderId);
       all.push(id);
       const ms = this.messageTimeMs(m, timeField);
       if (ms != null && ms < afterMs) continue;
@@ -173,7 +189,7 @@ export class ZohoMailService {
     for (const query of queryVariants) {
       try {
         const rows = await this.fetchFolderViewRows(employeeId, meta, query);
-        const ids = this.extractIdsFromRows(rows, afterMs, timeField);
+        const ids = this.extractIdsFromRows(employeeId, rows, afterMs, timeField);
         if (ids.length > 0) {
           this.logger.log(
             `Zoho folder list (${query}) returned ${ids.length} id(s) for employee ${employeeId}`,
@@ -272,7 +288,7 @@ export class ZohoMailService {
           { operationName: `zoho.search(${employeeId})`, attempts: 2, timeoutMs: 15_000 },
         );
         const rows = await this.parseZohoListResponse(res);
-        const ids = this.extractIdsFromRows(rows, afterMs, 'receivedTime');
+        const ids = this.extractIdsFromRows(employeeId, rows, afterMs, 'receivedTime');
         if (ids.length > 0) {
           this.logger.log(
             `Zoho search fallback (${searchKey}) returned ${ids.length} message(s) for employee ${employeeId}`,
@@ -411,7 +427,8 @@ export class ZohoMailService {
   ): Promise<ZohoFullMessage> {
     const meta = await this.ensureFolderIds(employeeId, await this.getMeta(employeeId));
     const id = zohoId(messageId);
-    const folderCandidates = [meta.inboxFolderId, meta.sentFolderId].filter(
+    const cachedFolder = this.lookupFolderId(employeeId, id);
+    const folderCandidates = [cachedFolder, meta.inboxFolderId, meta.sentFolderId].filter(
       (f): f is string => Boolean(f?.trim()),
     );
     if (folderCandidates.length === 0) {
