@@ -254,6 +254,7 @@ function AdminCompanyDetailPageContent() {
                           email: e.email,
                           name: e.name,
                           hasLogin: e.has_portal_login === true,
+                          departmentName: e.department_name,
                         })
                       }
                       className="text-sm font-medium text-brand-600 hover:underline"
@@ -324,6 +325,7 @@ function AdminCompanyDetailPageContent() {
       {passwordTarget && token ? (
         <PortalPasswordModal
           companyId={companyId}
+          companyName={detail.name}
           target={passwordTarget}
           token={token}
           onClose={() => setPasswordTarget(null)}

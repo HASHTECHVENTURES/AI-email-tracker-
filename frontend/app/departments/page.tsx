@@ -13,6 +13,8 @@ import { useSupabaseRealtimeRefresh } from '@/lib/use-supabase-realtime-refresh'
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { PasswordInput } from '@/components/PasswordInput';
+import { PortalCredentialsDownloadModal } from '@/components/PortalCredentialsDownloadModal';
+import type { PortalCredentialPayload } from '@/lib/portal-credentials-document';
 
 type Me = {
   id: string;
@@ -143,6 +145,7 @@ function DepartmentsPageInner() {
   const [portalPasswordConfirm, setPortalPasswordConfirm] = useState('');
   const [portalPasswordSaving, setPortalPasswordSaving] = useState(false);
   const [portalPasswordError, setPortalPasswordError] = useState<string | null>(null);
+  const [credentialsPayload, setCredentialsPayload] = useState<PortalCredentialPayload | null>(null);
   const [alertTarget, setAlertTarget] = useState<TeamMember | null>(null);
   const [alertMessage, setAlertMessage] = useState('');
   const [alertSaving, setAlertSaving] = useState(false);
@@ -368,11 +371,28 @@ function DepartmentsPageInner() {
         setError(await readApiErrorMessage(res, 'Could not replace manager'));
         return;
       }
+      const savedPassword = replaceManagerPassword.trim();
+      const savedEmail = email;
+      const savedName = replaceManagerName.trim() || savedEmail;
+      const deptName = replaceManagerTarget.name;
       setReplaceManagerTarget(null);
       setReplaceManagerName('');
       setReplaceManagerEmail('');
       setReplaceManagerPassword('');
-      setNotice('Manager replaced successfully.');
+      if (savedPassword.length >= 8) {
+        setCredentialsPayload({
+          fullName: savedName,
+          email: savedEmail,
+          password: savedPassword,
+          role: 'HEAD',
+          companyName: authMe?.company_name,
+          departmentName: deptName,
+          isNewLogin: true,
+        });
+        setNotice('Manager replaced. Download credentials to share with them.');
+      } else {
+        setNotice('Manager replaced successfully.');
+      }
       await load(token);
     } finally {
       setReplaceManagerSaving(false);
@@ -460,13 +480,23 @@ function DepartmentsPageInner() {
         return;
       }
       const action = (body as { action?: string }).action;
-      const memberName = passwordTarget.name;
+      const savedPassword = portalPassword;
+      const target = passwordTarget;
       closePortalPasswordModal();
+      setCredentialsPayload({
+        fullName: target.name,
+        email: target.email,
+        password: savedPassword,
+        role: 'EMPLOYEE',
+        companyName: authMe?.company_name,
+        departmentName: target.department_name,
+        isNewLogin: action === 'login_created',
+      });
       setError(null);
       setNotice(
         action === 'login_created'
-          ? `Employee portal login created for ${memberName}. Share the email and new password securely.`
-          : `Password updated for ${memberName}. Share the new password securely.`,
+          ? `Employee portal login created for ${target.name}.`
+          : `Password updated for ${target.name}.`,
       );
       await reloadTeam();
     } finally {
@@ -512,11 +542,28 @@ function DepartmentsPageInner() {
       setError((body.message as string) || 'Could not assign manager');
       return;
     }
+    const savedPassword = managerPassword.trim();
+    const savedEmail = managerEmail.trim().toLowerCase();
+    const savedName = managerName.trim() || savedEmail;
+    const deptName = rows.find((d) => d.id === managerDepartmentId)?.name ?? null;
     setManagerEmail('');
     setManagerName('');
     setManagerPasswordInput('');
     setManagerDepartmentId('');
-    setNotice('Manager assigned successfully.');
+    if (savedPassword.length >= 8) {
+      setCredentialsPayload({
+        fullName: savedName,
+        email: savedEmail,
+        password: savedPassword,
+        role: 'HEAD',
+        companyName: authMe?.company_name,
+        departmentName: deptName,
+        isNewLogin: true,
+      });
+      setNotice('Manager assigned. Download credentials to share with them.');
+    } else {
+      setNotice('Manager assigned successfully.');
+    }
     await load(token);
   }
 
@@ -615,9 +662,24 @@ function DepartmentsPageInner() {
       setError((body.message as string) || 'Could not reset manager password');
       return;
     }
+    const dept = rows.find((d) => d.id === passwordDepartmentId);
+    const savedPassword = newManagerPassword.trim();
     setPasswordDepartmentId('');
     setNewManagerPassword('');
-    setNotice('Manager password updated.');
+    if (dept?.manager?.email) {
+      setCredentialsPayload({
+        fullName: dept.manager.full_name?.trim() || dept.manager.email,
+        email: dept.manager.email,
+        password: savedPassword,
+        role: 'HEAD',
+        companyName: authMe?.company_name,
+        departmentName: dept.name,
+        isNewLogin: false,
+      });
+      setNotice('Manager password updated. Download credentials to share.');
+    } else {
+      setNotice('Manager password updated.');
+    }
   }
 
   const me = authMe as Me | null;
@@ -1722,6 +1784,13 @@ function DepartmentsPageInner() {
             </form>
           </div>
         </div>
+      ) : null}
+
+      {credentialsPayload ? (
+        <PortalCredentialsDownloadModal
+          payload={credentialsPayload}
+          onClose={() => setCredentialsPayload(null)}
+        />
       ) : null}
         </>
       ) : null}

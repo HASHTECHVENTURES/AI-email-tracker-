@@ -14,6 +14,8 @@ import { useSupabaseRealtimeRefresh } from '@/lib/use-supabase-realtime-refresh'
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
 import { PasswordInput } from '@/components/PasswordInput';
+import { PortalCredentialsDownloadModal } from '@/components/PortalCredentialsDownloadModal';
+import type { PortalCredentialPayload } from '@/lib/portal-credentials-document';
 
 type Me = {
   id: string;
@@ -110,6 +112,7 @@ function EmployeesPageInner() {
   const [portalPasswordConfirm, setPortalPasswordConfirm] = useState('');
   const [portalPasswordSaving, setPortalPasswordSaving] = useState(false);
   const [portalPasswordError, setPortalPasswordError] = useState<string | null>(null);
+  const [credentialsPayload, setCredentialsPayload] = useState<PortalCredentialPayload | null>(null);
   const isManager = isDepartmentManagerRole(me?.role);
   const isCeo = me?.role === 'CEO';
   const myEmailNorm = me?.email?.trim().toLowerCase() ?? '';
@@ -483,11 +486,25 @@ function EmployeesPageInner() {
         setAddError((b.message as string) || 'Could not create employee');
         return;
       }
+      const savedPassword = addPassword;
+      const savedName = addName.trim();
+      const savedEmail = addEmail.trim().toLowerCase();
+      const deptName = departments.find((d) => d.id === dep)?.name ?? null;
       setAddName('');
       setAddEmail('');
       setAddPassword('');
       setAddConfirm('');
-      setAddSuccess('Team member added. Share credentials securely.');
+      closeAddModal();
+      setCredentialsPayload({
+        fullName: savedName,
+        email: savedEmail,
+        password: savedPassword,
+        role: 'EMPLOYEE',
+        companyName: me.company_name,
+        departmentName: deptName,
+        isNewLogin: true,
+      });
+      flashNotice('Team member added. Download credentials to share with them.');
       await loadLists(session.access_token);
     } finally {
       setAddSaving(false);
@@ -539,12 +556,22 @@ function EmployeesPageInner() {
         return;
       }
       const action = (body as { action?: string }).action;
-      const memberName = passwordTarget.name;
+      const savedPassword = portalPassword;
+      const target = passwordTarget;
       closePortalPasswordModal();
+      setCredentialsPayload({
+        fullName: target.name,
+        email: target.email,
+        password: savedPassword,
+        role: 'EMPLOYEE',
+        companyName: me?.company_name,
+        departmentName: target.department_name,
+        isNewLogin: action === 'login_created',
+      });
       flashNotice(
         action === 'login_created'
-          ? `Employee portal login created for ${memberName}. Share the email and new password securely.`
-          : `Password updated for ${memberName}. Share the new password securely.`,
+          ? `Employee portal login created for ${target.name}.`
+          : `Password updated for ${target.name}.`,
       );
       await loadLists(session.access_token);
     } finally {
@@ -1092,6 +1119,13 @@ function EmployeesPageInner() {
             </form>
           </div>
         </div>
+      ) : null}
+
+      {credentialsPayload ? (
+        <PortalCredentialsDownloadModal
+          payload={credentialsPayload}
+          onClose={() => setCredentialsPayload(null)}
+        />
       ) : null}
     </AppShell>
   );
