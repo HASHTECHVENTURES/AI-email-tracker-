@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import {
   copyCredentialsToClipboard,
+  downloadCredentialsPdfFile,
   downloadCredentialsTextFile,
   openCredentialsPrintWindow,
   portalLoginUrl,
@@ -21,12 +22,21 @@ export function PortalCredentialsDownloadModal({
 }: PortalCredentialsDownloadModalProps) {
   const [copied, setCopied] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
-  function handleSavePdf() {
+  async function handleSavePdf() {
     setPdfError(null);
-    const ok = openCredentialsPrintWindow(payload);
-    if (!ok) {
-      setPdfError('Could not open print. Try Download .txt or Copy instead.');
+    setPdfBusy(true);
+    try {
+      const ok = await downloadCredentialsPdfFile(payload);
+      if (!ok) {
+        const printed = openCredentialsPrintWindow(payload);
+        if (!printed) {
+          setPdfError('Could not download PDF. Try Download .txt or Copy instead.');
+        }
+      }
+    } finally {
+      setPdfBusy(false);
     }
   }
 
@@ -97,10 +107,11 @@ export function PortalCredentialsDownloadModal({
         <div className="mt-4 flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={handleSavePdf}
-            className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700"
+            onClick={() => void handleSavePdf()}
+            disabled={pdfBusy}
+            className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
           >
-            Save as PDF
+            {pdfBusy ? 'Preparing PDF…' : 'Save as PDF'}
           </button>
           <button
             type="button"
@@ -118,7 +129,7 @@ export function PortalCredentialsDownloadModal({
           </button>
         </div>
         <p className="mt-3 text-xs text-slate-500">
-          Save as PDF opens the print dialog — choose &quot;Save as PDF&quot; as the destination.
+          Save as PDF downloads a file named portal-credentials-…pdf to your computer.
         </p>
         {pdfError ? <p className="mt-2 text-xs text-red-600">{pdfError}</p> : null}
 

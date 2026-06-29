@@ -155,10 +155,32 @@ export function buildCredentialsHtml(payload: PortalCredentialPayload): string {
     @media print {
       body { padding: 0; }
       .card { border: none; border-radius: 0; }
+      .no-print { display: none !important; }
+    }
+    .toolbar {
+      max-width: 640px;
+      margin: 0 auto 16px;
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .toolbar button {
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid #c7d2fe;
+      background: #4f46e5;
+      color: #fff;
+      cursor: pointer;
     }
   </style>
 </head>
 <body>
+  <div class="toolbar no-print">
+    <button type="button" onclick="window.print()">Print / Save as PDF</button>
+  </div>
   <div class="card">
     <h1>${escapeHtml(title)}</h1>
     <p class="subtitle">Share these details securely with ${escapeHtml(payload.fullName.trim() || payload.email)}.</p>
@@ -166,17 +188,98 @@ export function buildCredentialsHtml(payload: PortalCredentialPayload): string {
     <p class="note">Sign in with the email and password above. The user can change their password later in Settings.<br />
     Generated ${escapeHtml(formatGeneratedAt())}.</p>
   </div>
+  <script>
+    window.addEventListener('load', function () {
+      window.setTimeout(function () { window.print(); }, 300);
+    });
+  </script>
 </body>
 </html>`;
+}
+
+function credentialEntries(payload: PortalCredentialPayload): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ['Portal', portalRoleLabel(payload.role)],
+    ['Name', payload.fullName.trim() || payload.email],
+    ['Email', payload.email],
+    ['Password', payload.password],
+    ['Login URL', portalLoginUrl()],
+  ];
+  if (payload.companyName?.trim()) {
+    rows.unshift(['Company', payload.companyName.trim()]);
+  }
+  if (payload.departmentName?.trim()) {
+    rows.splice(payload.companyName?.trim() ? 2 : 1, 0, ['Department', payload.departmentName.trim()]);
+  }
+  return rows;
+}
+
+function credentialsFileStem(email: string): string {
+  return email.replace(/[^a-z0-9@._-]+/gi, '_').slice(0, 64);
+}
+
+/** Downloads a real .pdf file (one-click, no print dialog). */
+export async function downloadCredentialsPdfFile(payload: PortalCredentialPayload): Promise<boolean> {
+  try {
+    const { jsPDF } = await import('jspdf');
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const margin = 48;
+    let y = margin;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const valueX = margin + 108;
+    const valueWidth = pageWidth - valueX - margin;
+    const title = payload.isNewLogin ? 'Portal login created' : 'Portal password updated';
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(18);
+    doc.text(title, margin, y);
+    y += 28;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(11);
+    doc.setTextColor(71, 85, 105);
+    const subtitle = `Share these details securely with ${payload.fullName.trim() || payload.email}.`;
+    doc.text(doc.splitTextToSize(subtitle, pageWidth - margin * 2), margin, y);
+    y += 28;
+
+    doc.setTextColor(15, 23, 42);
+    for (const [label, value] of credentialEntries(payload)) {
+      if (y > 720) {
+        doc.addPage();
+        y = margin;
+      }
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(100, 116, 139);
+      doc.text(`${label}:`, margin, y);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(15, 23, 42);
+      const lines = doc.splitTextToSize(value, valueWidth);
+      doc.text(lines, valueX, y);
+      y += Math.max(18, lines.length * 14) + 8;
+    }
+
+    y += 8;
+    doc.setFontSize(10);
+    doc.setTextColor(100, 116, 139);
+    const foot =
+      'Sign in with the email and password above. The user can change their password later in Settings.';
+    doc.text(doc.splitTextToSize(foot, pageWidth - margin * 2), margin, y);
+    y += 24;
+    doc.text(`Generated ${formatGeneratedAt()}.`, margin, y);
+
+    doc.save(`portal-credentials-${credentialsFileStem(payload.email)}.pdf`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function downloadCredentialsTextFile(payload: PortalCredentialPayload): void {
   const blob = new Blob([buildCredentialsText(payload)], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
-  const safeName = payload.email.replace(/[^a-z0-9@._-]+/gi, '_').slice(0, 64);
   anchor.href = url;
-  anchor.download = `portal-credentials-${safeName}.txt`;
+  anchor.download = `portal-credentials-${credentialsFileStem(payload.email)}.txt`;
   anchor.click();
   URL.revokeObjectURL(url);
 }
@@ -202,41 +305,9 @@ function printHtmlDocument(html: string): boolean {
   return true;
 }
 
-/** Opens the browser print dialog so the user can choose Save as PDF. */
+/** Opens a printable preview tab (optional fallback). */
 export function openCredentialsPrintWindow(payload: PortalCredentialPayload): boolean {
   const html = buildCredentialsHtml(payload);
-
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const blobUrl = URL.createObjectURL(blob);
-  const popup = window.open(blobUrl, '_blank', 'noopener,noreferrer,width=720,height=900');
-
-  const revoke = () => URL.revokeObjectURL(blobUrl);
-
-  if (popup) {
-    let printed = false;
-    const triggerPrint = () => {
-      if (printed || popup.closed) return;
-      printed = true;
-      try {
-        popup.focus();
-        popup.print();
-      } catch {
-        /* print may be blocked until the document is ready */
-      }
-    };
-    popup.addEventListener('load', () => {
-      triggerPrint();
-      revoke();
-    });
-    // `load` is not always fired for blob URLs; print after a short delay as well.
-    window.setTimeout(() => {
-      triggerPrint();
-      revoke();
-    }, 400);
-    return true;
-  }
-
-  revoke();
   return printHtmlDocument(html);
 }
 
