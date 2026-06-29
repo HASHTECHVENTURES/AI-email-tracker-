@@ -824,20 +824,22 @@ export class ConversationsService {
       user_cc_only: userCcOnly,
       user_bcc_only: userBccOnly,
       priority:
-        looksAutomated ||
-        latestInboundIsNoise ||
-        latestInboundIsClosure ||
-        latestInboundIsAutomatedSystem ||
-        latestInboundIsInternalFyi ||
-        userCcOnly ||
-        userBccOnly ||
-        aiAction === 'LOW' ||
-        aiAction === 'CC' ||
-        aiAction === 'BCC' ||
-        aiAction === 'SKIP' ||
-        latestInboundIsCalendar
-          ? 'LOW'
-          : (existing?.priority ?? 'MEDIUM'),
+        aiAction === 'NEED_REPLY'
+          ? 'HIGH'
+          : looksAutomated ||
+              latestInboundIsNoise ||
+              latestInboundIsClosure ||
+              latestInboundIsAutomatedSystem ||
+              latestInboundIsInternalFyi ||
+              userCcOnly ||
+              userBccOnly ||
+              aiAction === 'LOW' ||
+              aiAction === 'CC' ||
+              aiAction === 'BCC' ||
+              aiAction === 'SKIP' ||
+              latestInboundIsCalendar
+            ? 'LOW'
+            : (existing?.priority ?? 'MEDIUM'),
       summary: summaryForRow,
       confidence: existing ? Number(existing.confidence) : 0,
       classification_status: 'classified',
@@ -856,6 +858,9 @@ export class ConversationsService {
       row.reason = row.short_reason;
     } else if (aiAction === 'LOW' && !latestInboundIsClosure && !latestInboundIsNoise && !userCcOnlyStrict && !userBcc) {
       row.short_reason = 'AI: Low priority — no reply needed.';
+      row.reason = row.short_reason;
+    } else if (aiAction === 'NEED_REPLY' && !latestInboundIsClosure && !latestInboundIsNoise) {
+      row.short_reason = 'Client message needs your reply.';
       row.reason = row.short_reason;
     } else if (aiAction === 'SKIP' && !latestInboundIsClosure && !latestInboundIsNoise) {
       row.short_reason = 'Promotional or cold outreach mail — no reply needed.';

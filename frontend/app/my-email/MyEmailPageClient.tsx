@@ -256,6 +256,7 @@ function isStaleNeedReplyByClientMessage(c: ConversationRow, staleDays: number):
 
 /** Promotional/newsletter mail, calendar invites, and client-closed threads — none need follow-up. */
 function isNoFollowUpNoise(c: ConversationRow): boolean {
+  if (c.follow_up_required === true) return false;
   const subject = (c.thread_subject ?? '').trim().toLowerCase();
   if (
     /^invitation:|^invitation\b|^meeting prep:|^updated invitation:|^accepted:|^declined:|^tentative:|^canceled:/i.test(subject) ||
@@ -3879,7 +3880,10 @@ function MyEmailPageInner() {
     () =>
       hideLowPriority
         ? scopedConversations.filter(
-            (c) => c.priority !== 'LOW' || c.follow_up_status === 'MISSED',
+            (c) =>
+              c.priority !== 'LOW' ||
+              c.follow_up_status === 'MISSED' ||
+              c.follow_up_required === true,
           )
         : scopedConversations,
     [hideLowPriority, scopedConversations],
