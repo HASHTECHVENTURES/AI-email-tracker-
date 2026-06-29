@@ -4622,15 +4622,11 @@ function MyEmailPageInner() {
   }
 
   if (me.role === 'PLATFORM_ADMIN') {
+    router.replace('/admin');
     return (
-      <AppShell
-        role="PLATFORM_ADMIN"
-        title="My Email"
-        subtitle=""
-        onSignOut={() => void ctxSignOut()}
-      >
+      <div className="flex min-h-screen items-center justify-center bg-surface">
         <PortalPageLoader variant="embedded" />
-      </AppShell>
+      </div>
     );
   }
 

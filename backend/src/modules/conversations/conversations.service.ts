@@ -19,6 +19,7 @@ import {
   looksLikeClientSharePromiseFyi,
   looksLikeAutomatedSystemNotification,
   looksLikeInboundDirectedAtSomeoneElse,
+  looksLikeInternalFyiOrAutomated,
 } from '../email-ingestion/relevance-guards';
 
 /** Skip-ledger marker so Gmail sync does not recreate a user-resolved thread. */
@@ -159,6 +160,33 @@ export class ConversationsService {
     const threadKeys = await this.findStaleThreads();
     this.logger.log(`Found ${threadKeys.length} threads needing recompute`);
     return this.recomputeForThreads(threadKeys);
+  }
+
+  /** Self-heal: re-apply rule guards on every active Need reply thread (fixes state drift without manual SQL). */
+  async recomputeActiveNeedReplyThreads(): Promise<RecomputeResult> {
+    const { data, error } = await this.supabase
+      .from('conversations')
+      .select('employee_id, provider_thread_id, company_id')
+      .eq('follow_up_required', true)
+      .eq('manually_closed', false)
+      .eq('is_ignored', false)
+      .in('follow_up_status', ['PENDING', 'MISSED']);
+
+    if (error) {
+      this.logger.error('recomputeActiveNeedReplyThreads: query failed', error.message);
+      throw error;
+    }
+
+    const keys: ThreadKey[] = (data ?? []).map(
+      (r: { employee_id: string; provider_thread_id: string; company_id?: string }) => ({
+        companyId: r.company_id,
+        employeeId: r.employee_id,
+        threadId: r.provider_thread_id,
+      }),
+    );
+
+    this.logger.log(`recomputeActiveNeedReplyThreads: ${keys.length} threads`);
+    return this.recomputeForThreads(keys);
   }
 
   async getAll(filters: { companyId: string; employeeId?: string; departmentId?: string }): Promise<ConversationRow[]> {
@@ -655,6 +683,10 @@ export class ConversationsService {
       ? looksLikeAutomatedSystemNotification(inboundFields)
       : false;
 
+    const latestInboundIsInternalFyi = inboundFields
+      ? looksLikeInternalFyiOrAutomated(inboundFields)
+      : false;
+
     const latestInboundIsDeliverableFyi = inboundFields
       ? looksLikeClientDeliverableFyi(inboundFields) ||
         (lastEmployeeReplyAt !== null &&
@@ -719,9 +751,11 @@ export class ConversationsService {
         latestInboundIsCalendar ||
         latestInboundIsClosure ||
         latestInboundIsAutomatedSystem ||
+        latestInboundIsInternalFyi ||
         userCcOnly ||
         userBccOnly ||
-        aiAction === 'LOW'
+        aiAction === 'LOW' ||
+        aiAction === 'SKIP'
           ? false
           : result.followUpRequired,
       follow_up_status:
@@ -731,7 +765,9 @@ export class ConversationsService {
               latestInboundIsCalendar ||
               latestInboundIsClosure ||
               latestInboundIsAutomatedSystem ||
-              aiAction === 'LOW'
+              latestInboundIsInternalFyi ||
+              aiAction === 'LOW' ||
+              aiAction === 'SKIP'
             ? 'DONE'
             : userCcOnly || userBccOnly
               ? 'PENDING'
@@ -744,7 +780,9 @@ export class ConversationsService {
               latestInboundIsCalendar ||
               latestInboundIsClosure ||
               latestInboundIsAutomatedSystem ||
-              aiAction === 'LOW'
+              latestInboundIsInternalFyi ||
+              aiAction === 'LOW' ||
+              aiAction === 'SKIP'
             ? 'RESOLVED'
             : result.lifecycleStatus,
       short_reason: latestInboundIsDeliverableFyi
@@ -757,6 +795,8 @@ export class ConversationsService {
               ? 'Promotional mail — no reply needed.'
               : latestInboundIsAutomatedSystem
                 ? 'Automated ticket/CRM notification — no reply needed.'
+                : latestInboundIsInternalFyi
+                  ? 'Automated workplace notification — no reply needed.'
                 : userBcc
                   ? 'You were BCC’d on this email — no reply needed.'
                   : userCcOnlyStrict
@@ -772,6 +812,8 @@ export class ConversationsService {
               ? 'Promotional mail — no reply needed.'
               : latestInboundIsAutomatedSystem
                 ? 'Automated ticket/CRM notification — no reply needed.'
+                : latestInboundIsInternalFyi
+                  ? 'Automated workplace notification — no reply needed.'
                 : userBcc
                   ? 'You were BCC’d on this email — no reply needed.'
                   : userCcOnlyStrict
@@ -786,11 +828,13 @@ export class ConversationsService {
         latestInboundIsNoise ||
         latestInboundIsClosure ||
         latestInboundIsAutomatedSystem ||
+        latestInboundIsInternalFyi ||
         userCcOnly ||
         userBccOnly ||
         aiAction === 'LOW' ||
         aiAction === 'CC' ||
         aiAction === 'BCC' ||
+        aiAction === 'SKIP' ||
         latestInboundIsCalendar
           ? 'LOW'
           : (existing?.priority ?? 'MEDIUM'),
@@ -812,6 +856,9 @@ export class ConversationsService {
       row.reason = row.short_reason;
     } else if (aiAction === 'LOW' && !latestInboundIsClosure && !latestInboundIsNoise && !userCcOnlyStrict && !userBcc) {
       row.short_reason = 'AI: Low priority — no reply needed.';
+      row.reason = row.short_reason;
+    } else if (aiAction === 'SKIP' && !latestInboundIsClosure && !latestInboundIsNoise) {
+      row.short_reason = 'Promotional or cold outreach mail — no reply needed.';
       row.reason = row.short_reason;
     }
 

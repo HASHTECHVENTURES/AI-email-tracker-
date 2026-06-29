@@ -30,11 +30,13 @@ import {
   ruleBasedIngestClassification,
   ingestSkipReasonForInboundNoise,
   mergeExcludePatterns,
+  coerceIngestClassificationDecision,
   type IngestNoiseOptions,
 } from './relevance-guards';
 import { RELEVANCE_MODEL_TEMPERATURE, RELEVANCE_SYSTEM_INSTRUCTION } from './relevance-prompt.builder';
 import { OauthTokenService } from '../auth/oauth-token.service';
 import { getGeminiApiKeyFromEnv } from '../common/env';
+import { GeminiUsageService } from '../usage/gemini-usage.service';
 import {
   isGeminiMonthlyQuotaExhausted,
   isGeminiTransientRateLimit,
@@ -178,6 +180,7 @@ type SkipReasonCode =
 export class EmailIngestionService {
   private readonly logger = new Logger(EmailIngestionService.name);
   private readonly relevanceModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | null;
+  private readonly relevanceModelName: string;
 
   /**
    * Set to `true` when Gemini returns a limit/rate/quota error for this cycle.
@@ -196,15 +199,18 @@ export class EmailIngestionService {
     private readonly settingsService: SettingsService,
     private readonly companyPolicyService: CompanyPolicyService,
     private readonly aiEnrichmentService: AiEnrichmentService,
+    private readonly geminiUsageService: GeminiUsageService,
   ) {
     const key = getGeminiApiKeyFromEnv();
     if (!key) {
       this.relevanceModel = null;
+      this.relevanceModelName = '';
       return;
     }
     const genAI = new GoogleGenerativeAI(key);
     const modelName =
       process.env.GEMINI_RELEVANCE_MODEL?.trim() || 'gemini-2.5-flash';
+    this.relevanceModelName = modelName;
     this.relevanceModel = genAI.getGenerativeModel({
       model: modelName,
       systemInstruction: RELEVANCE_SYSTEM_INSTRUCTION,
@@ -971,6 +977,7 @@ export class EmailIngestionService {
             allowGeminiRelevance,
             ingestWithoutAiConfirmed,
             mergedExcludePatterns,
+            { companyId, employeeId: employee.id },
           ));
         if (cachedDecision) {
           this.logger.debug(
@@ -1162,7 +1169,11 @@ export class EmailIngestionService {
   /**
    * Gemini classify with retries (aligned with enrichment): transient errors + 429 with retry-after style wait.
    */
-  private async callGeminiIngestRelevance(prompt: string, fromEmail: string): Promise<{
+  private async callGeminiIngestRelevance(
+    prompt: string,
+    fromEmail: string,
+    usageCtx?: { companyId: string; employeeId?: string },
+  ): Promise<{
     relevant: boolean;
     reason: string | null;
     confidence: number | null;
@@ -1180,6 +1191,14 @@ export class EmailIngestionService {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const result = await this.relevanceModel.generateContent(prompt);
+        if (usageCtx?.companyId) {
+          void this.geminiUsageService.recordFromResponse(result.response, {
+            companyId: usageCtx.companyId,
+            employeeId: usageCtx.employeeId,
+            operation: 'ingest_relevance',
+            model: this.relevanceModelName,
+          });
+        }
         const text = result.response.text().replace(/```json\s*/gi, '').replace(/```/g, '').trim();
         const parsed = JSON.parse(text) as { action?: string; relevant?: boolean; reason?: string; confidence?: number };
 
@@ -1243,6 +1262,7 @@ export class EmailIngestionService {
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
     mergedExcludePatterns: string[] = [],
+    usageCtx?: { companyId: string; employeeId?: string },
   ): Promise<IngestClassificationDecision> {
     const noiseOptions: IngestNoiseOptions = {
       excludePatterns: mergedExcludePatterns,
@@ -1255,7 +1275,7 @@ export class EmailIngestionService {
       noiseOptions,
     );
     if (ruled) {
-      return ruled;
+      return this.finalizeIngestDecision(target, employeeEmail, ruled);
     }
 
     if (allowGeminiRelevance && this.relevanceModel) {
@@ -1265,7 +1285,7 @@ export class EmailIngestionService {
           : [...threadSlice, target],
       );
       const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
-      const parsed = await this.callGeminiIngestRelevance(prompt, target.fromEmail);
+      const parsed = await this.callGeminiIngestRelevance(prompt, target.fromEmail, usageCtx);
       if (parsed) {
         const finalized = finalizeIngestRelevanceFromAi(
           target,
@@ -1274,28 +1294,28 @@ export class EmailIngestionService {
           parsed,
           noiseOptions,
         );
-        return {
+        return this.finalizeIngestDecision(target, employeeEmail, {
           relevant: finalized.relevant,
           reason: finalized.reason,
           confidence: finalized.confidence,
           aiAction: parsed.aiAction,
-        };
+        });
       }
       if (ingestWithoutAiConfirmed) {
-        return {
+        return this.finalizeIngestDecision(target, employeeEmail, {
           relevant: true,
           reason: 'Unfiltered import — Inbox AI unavailable; CEO confirmed on My Email.',
           confidence: null,
-        };
+        });
       }
       if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel, noiseOptions)) {
-        return {
+        return this.finalizeIngestDecision(target, employeeEmail, {
           relevant: true,
           reason:
             'Safety fallback: direct human mailbox message kept while Inbox AI is temporarily unavailable.',
           confidence: null,
           aiAction: 'NEED_REPLY',
-        };
+        });
       }
       return {
         relevant: false,
@@ -1307,20 +1327,20 @@ export class EmailIngestionService {
     }
 
     if (ingestWithoutAiConfirmed) {
-      return {
+      return this.finalizeIngestDecision(target, employeeEmail, {
         relevant: true,
         reason: 'Unfiltered import — Inbox AI unavailable; CEO confirmed on My Email.',
         confidence: null,
-      };
+      });
     }
     if (looksLikeDirectHumanMail(target, employeeEmail, hasNoiseGmailLabel, noiseOptions)) {
-      return {
+      return this.finalizeIngestDecision(target, employeeEmail, {
         relevant: true,
         reason:
           'Safety fallback: direct human mailbox message kept while Inbox AI is unavailable.',
         confidence: null,
         aiAction: 'NEED_REPLY',
-      };
+      });
     }
     return {
       relevant: false,
@@ -1329,6 +1349,14 @@ export class EmailIngestionService {
       aiAction: 'SKIP',
       transientAiUnavailable: true,
     };
+  }
+
+  private finalizeIngestDecision(
+    target: EmailMessage,
+    employeeEmail: string,
+    decision: IngestClassificationDecision,
+  ): IngestClassificationDecision {
+    return coerceIngestClassificationDecision(target, employeeEmail, decision) as IngestClassificationDecision;
   }
 
   private skipReasonCodeForMessage(message: EmailMessage, reason: string | null | undefined): SkipReasonCode {
@@ -1585,6 +1613,7 @@ export class EmailIngestionService {
       allowGeminiRelevance,
       cycleSettings.email_ingest_without_ai_confirmed,
       mergedExcludePatterns,
+      { companyId, employeeId: employee.id },
     );
 
     if (decision.relevant) {

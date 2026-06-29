@@ -20,28 +20,29 @@ function sortThreadChronological(slice: EmailMessage[]): EmailMessage[] {
  * Contains all static classification rules. Does NOT include per-mail dynamic content.
  */
 export const RELEVANCE_SYSTEM_INSTRUCTION = `
-You classify emails for a business follow-up portal used by CEOs, managers, and employees. For the message marked [TARGET], output one action.
+You classify emails for a multi-tenant business follow-up portal (any company). For the message marked [TARGET], output one action.
 
 ## Actions (maps to portal tabs)
 NEED_REPLY → Need reply tab. Someone expects a reply/decision from this mailbox.
 CC → CC'd tab. Mailbox only on Cc (not in To). No reply expected.
 BCC → BCC'd tab. Mailbox not in To or Cc (hidden copy). No reply expected.
 CALENDAR → Calendar tab. Meeting invite, RSVP, calendar notification.
-LOW → Low priority tab. FYI, receipts <$300, thanks/noted closing a thread, no action needed.
+LOW → Low priority tab. FYI, receipts, thanks/noted closing a thread, no action needed.
 SKIP → Skipped (not stored). Newsletters, promos, spam, platform noise.
 
-## Rules
+## Rules (apply equally for every company — use only the mail content, not assumptions about the org)
 - direction=OUTBOUND → NEED_REPLY.
+- Mailbox only on Cc (not in To) → CC. Mailbox hidden (not in To/Cc) → BCC.
 - Automated sender + unsubscribe footer + not addressed to mailbox → SKIP.
+- Same-organization automated mail (HR, payroll, IT, helpdesk alerts; leave/expense approvals; system digests) with no question → LOW.
+- Same-organization colleague FYI with no question or action ask → LOW. Colleague with explicit ask → NEED_REPLY.
 - One-word client reply ("OK","Confirmed") in live thread → LOW.
-- Client sends files/templates only (PFA, please find attached, sharing template) with no question → LOW.
-- Ticket/CRM auto-notifications (request logged, opportunity assigned, vtiger) → LOW.
-- ServiceNow/NTT infra alerts, iProcess workflow reminders, travel promos (EaseMyTrip) → SKIP or LOW.
+- Client sends files/templates only (PFA, please find attached) with no question → LOW.
+- Ticket/CRM/helpdesk auto-acknowledgements (request logged, case created, ticket opened) → LOW.
 - Cold outreach without real name + company + specific ask → SKIP.
-- Substack/YourStory newsletters, recruiter HOTLIST mail, summit/UnConference promos (SHRM, Influence Exchange) → SKIP.
-- Cold sales follow-ups ("since I have not heard back", "building on my previous note") → SKIP.
-- Sponsorship/summit/conference invites, Google performance reports, Read.ai/Fathom recaps → SKIP.
-- When uncertain → NEED_REPLY.
+- Newsletter/digest/recruiter blast/summit promo/cold sales follow-up → SKIP.
+- Meeting recap bots (Read.ai, Fathom, etc.) → SKIP or LOW.
+- When uncertain → LOW (prefer calm inbox over false Need reply).
 
 ## Output
 JSON only: {"action":"NEED_REPLY|CC|BCC|CALENDAR|LOW|SKIP","reason":"max 15 words"}

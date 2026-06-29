@@ -14,12 +14,14 @@ import { Request } from 'express';
 import { PlatformAdminGuard, isPlatformAdminUser } from './platform-admin.guard';
 import { PlatformAdminService } from './platform-admin.service';
 import { SettingsService } from '../settings/settings.service';
+import { CompanyBillingService } from '../usage/company-billing.service';
 
 @Controller('platform-admin')
 export class PlatformAdminController {
   constructor(
     private readonly platformAdminService: PlatformAdminService,
     private readonly settingsService: SettingsService,
+    private readonly companyBillingService: CompanyBillingService,
   ) {}
 
   /** Any authenticated user: whether they may use platform admin APIs. */
@@ -114,5 +116,21 @@ export class PlatformAdminController {
       api_quota_exhausted: settings.api_quota_exhausted,
       api_quota_exhausted_at: settings.api_quota_exhausted_at,
     };
+  }
+
+  @Get('billing')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(PlatformAdminGuard)
+  billing(@Req() req: Request) {
+    const month = typeof req.query.month === 'string' ? req.query.month : undefined;
+    return this.companyBillingService.getBillingOverview(month);
+  }
+
+  @Get('billing/:companyId')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(PlatformAdminGuard)
+  companyBilling(@Param('companyId') companyId: string, @Req() req: Request) {
+    const month = typeof req.query.month === 'string' ? req.query.month : undefined;
+    return this.companyBillingService.getCompanyBilling(companyId, month);
   }
 }

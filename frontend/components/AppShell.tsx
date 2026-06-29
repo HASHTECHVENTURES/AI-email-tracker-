@@ -180,37 +180,33 @@ export function AppShell({
     return () => window.removeEventListener('hashchange', sync);
   }, [pathname]);
 
-  const isPlatformAdmin = role === 'PLATFORM_ADMIN';
-  const showOrg = (role === 'CEO' || isDepartmentManagerRole(role)) && !isPlatformAdmin;
+  const showOrg = role === 'CEO' || isDepartmentManagerRole(role);
   const isCeo = role === 'CEO';
   const isHead = isDepartmentManagerRole(role);
   const isEmployee = role === 'EMPLOYEE';
   // Managers can act as Employees if they selected "Employee" at login.
   // The toggle UI is completely removed, so this state is driven entirely by login selection.
-  const canActAsMailbox =
-    isHead && !isPlatformAdmin && !!(me?.linked_employee_id?.trim());
+  const canActAsMailbox = isHead && !!(me?.linked_employee_id?.trim());
   const actAsMailbox = useActAsEmployeeMailboxView(canActAsMailbox);
   /** Employee portal nav, or manager viewing their linked mailbox. */
   const mailboxNav = isEmployee || actAsMailbox;
   /** Employee/linked mailbox messages shortcut (hidden in manager sidebar to avoid duplicate comms entries). */
   const mailboxMessagesNav = (mailboxNav || canActAsMailbox) && !(isHead && !actAsMailbox);
   /** Manager-only sidebar (hidden in mailbox view). */
-  const managerNavVisible = isHead && !isPlatformAdmin && !actAsMailbox;
+  const managerNavVisible = isHead && !actAsMailbox;
   /** CEO (full My Email), department manager (HEAD), or Employee portal — scoped mailboxes and follow-ups. */
-  const showMyEmail = (isCeo || isHead || isEmployee) && !isPlatformAdmin;
+  const showMyEmail = isCeo || isHead || isEmployee;
   /** CEO-only: department heads’ inboxes across the company. */
   const showMyEmailCeoHashNav = isCeo;
   /** CEO + department managers: team / IC mailboxes (managers see their team only). */
   const showMyEmailTeamHashNav = isCeo || isHead;
-  const roleLabel = isPlatformAdmin
-    ? 'Platform admin'
-    : actAsMailbox
-      ? 'Mailbox'
-      : isHead
-        ? 'Manager'
-        : isEmployee
-          ? 'Employee'
-          : 'CEO';
+  const roleLabel = actAsMailbox
+    ? 'Mailbox'
+    : isHead
+      ? 'Manager'
+      : isEmployee
+        ? 'Employee'
+        : 'CEO';
   const deptAlertsFocus = pathname === '/departments' && locHash === '#team-members';
   const myEmailHome =
     pathname === '/my-email' &&
@@ -226,13 +222,12 @@ export function AppShell({
   const ceoDepartmentsActive = pathname === '/departments' && !deptAlertsFocus;
   const brandTitle = companyName?.trim() || 'AI Auto Mail';
   const personLine = userDisplayName?.trim() || null;
-  const showTeamSwitcher =
-    isHead && !isPlatformAdmin && (managedTeams.length > 1);
+  const showTeamSwitcher = isHead && managedTeams.length > 1;
   const effectiveMailboxCrawlEnabled =
     mailboxCrawlEnabled === undefined ? fallbackMailboxCrawlEnabled : mailboxCrawlEnabled;
 
   useEffect(() => {
-    if (mailboxCrawlEnabled !== undefined || !token || isPlatformAdmin) return;
+    if (mailboxCrawlEnabled !== undefined || !token) return;
     let cancelled = false;
     (async () => {
       const res = await apiFetch('/settings', token);
@@ -244,7 +239,7 @@ export function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [mailboxCrawlEnabled, token, isPlatformAdmin, pathname]);
+  }, [mailboxCrawlEnabled, token, pathname]);
 
   return (
     <div className="min-h-screen bg-surface text-slate-900">
@@ -292,39 +287,9 @@ export function AppShell({
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]">
             <nav aria-label="Main">
               <div className="flex flex-col gap-1.5 pb-1">
-              {isPlatformAdmin ? (
-                <>
-                  <a
-                    href="/admin"
-                    className={navItemClass(pathname === '/admin' && !locHash)}
-                    onClick={(e) => {
-                      if (pathname === '/admin') {
-                        e.preventDefault();
-                        window.history.replaceState(null, '', '/admin');
-                        window.dispatchEvent(new HashChangeEvent('hashchange'));
-                      }
-                    }}
-                  >
-                    Dashboard
-                  </a>
-                  <a href="/admin#companies" className={navItemClass(pathname === '/admin' && locHash === '#companies')}>
-                    Companies
-                  </a>
-                  <a href="/admin#add-company" className={navItemClass(pathname === '/admin' && locHash === '#add-company')}>
-                    Add company
-                  </a>
-                  <a href="/admin#activity" className={navItemClass(pathname === '/admin' && locHash === '#activity')}>
-                    Activity
-                  </a>
-                  <a href="/admin#kill-switches" className={navItemClass(pathname === '/admin' && locHash === '#kill-switches')}>
-                    Kill switches
-                  </a>
-                </>
-              ) : (
-                <SafeLink href="/dashboard" className={navItemClass(pathname === '/dashboard')}>
-                  Dashboard
-                </SafeLink>
-              )}
+              <SafeLink href="/dashboard" className={navItemClass(pathname === '/dashboard')}>
+                Dashboard
+              </SafeLink>
 
               {showMyEmail ? (
                 <>
@@ -402,13 +367,11 @@ export function AppShell({
                 </SafeLink>
               ) : null}
 
-              {!isPlatformAdmin ? (
-                <SafeLink href="/settings" className={navItemClass(pathname === '/settings')}>
-                  Settings
-                </SafeLink>
-              ) : null}
+              <SafeLink href="/settings" className={navItemClass(pathname === '/settings')}>
+                Settings
+              </SafeLink>
 
-              {isCeo && !isPlatformAdmin ? (
+              {isCeo ? (
                 <SafeLink
                   href="/dashboard/scope"
                   className={navItemClass(pathname === '/dashboard/scope')}
@@ -478,39 +441,9 @@ export function AppShell({
               className="app-shell-mobile-nav-links mt-2 flex flex-wrap gap-1.5"
               aria-label="Main mobile"
             >
-              {isPlatformAdmin ? (
-                <>
-                  <a
-                    href="/admin"
-                    className={navMobileClass(pathname === '/admin' && !locHash)}
-                    onClick={(e) => {
-                      if (pathname === '/admin') {
-                        e.preventDefault();
-                        window.history.replaceState(null, '', '/admin');
-                        window.dispatchEvent(new HashChangeEvent('hashchange'));
-                      }
-                    }}
-                  >
-                    Dashboard
-                  </a>
-                  <a href="/admin#companies" className={navMobileClass(pathname === '/admin' && locHash === '#companies')}>
-                    Companies
-                  </a>
-                  <a href="/admin#add-company" className={navMobileClass(pathname === '/admin' && locHash === '#add-company')}>
-                    Add company
-                  </a>
-                  <a href="/admin#activity" className={navMobileClass(pathname === '/admin' && locHash === '#activity')}>
-                    Activity
-                  </a>
-                  <a href="/admin#kill-switches" className={navMobileClass(pathname === '/admin' && locHash === '#kill-switches')}>
-                    Kill switches
-                  </a>
-                </>
-              ) : (
-                <SafeLink href="/dashboard" className={navMobileClass(pathname === '/dashboard')}>
-                  Dashboard
-                </SafeLink>
-              )}
+              <SafeLink href="/dashboard" className={navMobileClass(pathname === '/dashboard')}>
+                Dashboard
+              </SafeLink>
               {showMyEmail ? (
                 <>
                   <SafeLink
@@ -581,12 +514,10 @@ export function AppShell({
                   Messages & alerts
                 </SafeLink>
               ) : null}
-              {!isPlatformAdmin ? (
-                <SafeLink href="/settings" className={navMobileClass(pathname === '/settings')}>
-                  Settings
-                </SafeLink>
-              ) : null}
-              {isCeo && !isPlatformAdmin ? (
+              <SafeLink href="/settings" className={navMobileClass(pathname === '/settings')}>
+                Settings
+              </SafeLink>
+              {isCeo ? (
                 <SafeLink href="/dashboard/scope" className={navMobileClass(pathname === '/dashboard/scope')}>
                   Scope
                 </SafeLink>

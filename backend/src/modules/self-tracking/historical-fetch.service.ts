@@ -26,6 +26,7 @@ import { SettingsService } from '../settings/settings.service';
 import { CompanyPolicyService } from '../company-policy/company-policy.service';
 import { EmailMessage } from '../common/types';
 import { getGeminiApiKeyFromEnv } from '../common/env';
+import { GeminiUsageService } from '../usage/gemini-usage.service';
 import {
   isGeminiMonthlyQuotaExhausted,
   isGeminiTransientRateLimit,
@@ -99,6 +100,7 @@ export type HistoricalProgressFn = (e: HistoricalProgressEvent) => void;
 export class HistoricalFetchService {
   private readonly logger = new Logger(HistoricalFetchService.name);
   private readonly relevanceModel: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | null;
+  private readonly relevanceModelName: string;
   private monthlyQuotaExhausted = false;
 
   constructor(
@@ -111,14 +113,17 @@ export class HistoricalFetchService {
     private readonly selfTrackingService: SelfTrackingService,
     private readonly emailIngestionService: EmailIngestionService,
     private readonly aiEnrichmentService: AiEnrichmentService,
+    private readonly geminiUsageService: GeminiUsageService,
   ) {
     const key = getGeminiApiKeyFromEnv();
     if (!key) {
       this.relevanceModel = null;
+      this.relevanceModelName = '';
       return;
     }
     const genAI = new GoogleGenerativeAI(key);
     const modelName = process.env.GEMINI_RELEVANCE_MODEL?.trim() || 'gemini-2.5-flash';
+    this.relevanceModelName = modelName;
     this.relevanceModel = genAI.getGenerativeModel({
       model: modelName,
       systemInstruction: RELEVANCE_SYSTEM_INSTRUCTION,
@@ -412,6 +417,7 @@ export class HistoricalFetchService {
             allowGeminiRelevance,
             ingestWithoutAiConfirmed,
             mergedExcludePatterns,
+            { companyId: employee.company_id, employeeId: employee.id },
           ));
 
         onProgress?.({
@@ -637,6 +643,7 @@ export class HistoricalFetchService {
   /** Same retry behavior as live ingestion so transient 429s do not blank a whole historical window. */
   private async callGeminiRelevance(
     prompt: string,
+    usageCtx?: { companyId: string; employeeId?: string },
   ): Promise<{ relevant: boolean; reason: string | null; confidence: number | null } | null> {
     if (!this.relevanceModel) return null;
     if (this.monthlyQuotaExhausted) {
@@ -647,6 +654,14 @@ export class HistoricalFetchService {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const result = await this.relevanceModel.generateContent(prompt);
+        if (usageCtx?.companyId) {
+          void this.geminiUsageService.recordFromResponse(result.response, {
+            companyId: usageCtx.companyId,
+            employeeId: usageCtx.employeeId,
+            operation: 'historical_relevance',
+            model: this.relevanceModelName,
+          });
+        }
         const text = result.response.text().replace(/```json\s*/gi, '').replace(/```/g, '').trim();
         const parsed = JSON.parse(text) as {
           action?: string;
@@ -706,6 +721,7 @@ export class HistoricalFetchService {
     allowGeminiRelevance: boolean,
     ingestWithoutAiConfirmed: boolean,
     mergedExcludePatterns: string[] = [],
+    usageCtx?: { companyId: string; employeeId?: string },
   ): Promise<{
     relevant: boolean;
     reason: string | null;
@@ -733,7 +749,7 @@ export class HistoricalFetchService {
           : [...threadSlice, target],
       );
       const prompt = buildSharedIngestRelevancePrompt(target, sliceWithTarget, employeeEmail, hasNoiseGmailLabel);
-      const parsed = await this.callGeminiRelevance(prompt);
+      const parsed = await this.callGeminiRelevance(prompt, usageCtx);
       if (parsed) {
         const finalized = finalizeIngestRelevanceFromAi(
           target,

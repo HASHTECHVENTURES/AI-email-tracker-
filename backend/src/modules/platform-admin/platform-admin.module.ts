@@ -4,9 +4,10 @@ import { PlatformAdminController } from './platform-admin.controller';
 import { PlatformAdminService } from './platform-admin.service';
 import { PlatformAdminGuard } from './platform-admin.guard';
 import { SettingsModule } from '../settings/settings.module';
+import { UsageModule } from '../usage/usage.module';
 
 @Module({
-  imports: [SettingsModule],
+  imports: [SettingsModule, UsageModule],
   controllers: [PlatformAdminController],
   providers: [supabaseProvider, PlatformAdminService, PlatformAdminGuard],
   exports: [PlatformAdminService],

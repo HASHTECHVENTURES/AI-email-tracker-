@@ -46,7 +46,7 @@ function readInboundFields(msg: InboundNoiseFields): {
   };
 }
 
-/** Same org domain as the tracked mailbox (e.g. colleague @company.com → employee@company.com). Works per company — any domain. */
+/** Same org domain as the tracked mailbox — works for any tenant (colleague @company.com → employee@company.com). */
 export function isInternalColleagueSender(
   employeeEmail: string,
   inboundFromEmail: string | null | undefined,
@@ -61,8 +61,35 @@ export function isInternalColleagueSender(
 }
 
 /**
+ * Generic HR / payroll / workflow auto-notices (any company, any HRIS or helpdesk product).
+ * Company-specific subject lines can also be added via Settings → email exclude patterns.
+ */
+export function looksLikeGenericHrOrWorkflowAutomatedSubject(subject: string): boolean {
+  const sub = subject.toLowerCase();
+  return (
+    /\battendance\s+(?:alert|notification|reminder|regulari[sz])/i.test(sub) ||
+    /\b(?:timesheet|time\s*sheet)\s+(?:alert|reminder|due|submitted)/i.test(sub) ||
+    /\b(?:leave|time\s*off|pto|wfh|work\s*from\s*home|half\s*day|casual\s*leave|sick\s*leave).{0,100}\b(?:approved|rejected)\s+by\b/i.test(
+      sub,
+    ) ||
+    /\b(?:request|application)\s+by\b.{0,100}\bapproved\s+by\b/i.test(sub) ||
+    /\b(?:expense|reimbursement|claim).{0,80}\b(?:approved|processed|submitted)\b/i.test(sub) ||
+    /\b(?:activity|task)\s+list\b/i.test(sub) ||
+    /\b(?:workflow|process)\s+(?:activity|notification|reminder)\b/i.test(sub) ||
+    /\b(?:overdue|delayed|pending).{0,40}(?:task|ticket|tracker|item|activit)/i.test(sub) ||
+    /\bdaily\s+alert\b/i.test(sub) ||
+    /\bhappy\s+birthday\b/i.test(sub) ||
+    /\b(?:payroll|payslip|salary)\s+(?:processed|generated|alert|notification)/i.test(sub)
+  );
+}
+
+/** Local-part patterns for org-wide automated mailboxes (support@, hr@, noreply@, etc.). */
+const AUTOMATED_MAILBOX_LOCAL_RE =
+  /^(?:support|helpdesk|it-?support|hr|payroll|noreply|no-reply|donotreply|do-not-reply|notifications?|alerts?|notify|system|automated|mailer-daemon)$/i;
+
+/**
  * Same-domain mail that is FYI, auto-generated, or already closed — not a real to-do.
- * Keeps Need Reply free of false alarms (attendance alerts, approved-leave notices, etc.).
+ * Applies per tracked mailbox domain; no tenant-specific company names or products.
  */
 export function looksLikeInternalFyiOrAutomated(msg: InboundNoiseFields): boolean {
   if (msg.direction && msg.direction !== 'INBOUND') return false;
@@ -76,20 +103,14 @@ export function looksLikeInternalFyiOrAutomated(msg: InboundNoiseFields): boolea
     return true;
   }
 
-  if (
-    /\b(?:hrms\s+attendance\s+alert|process\s+activity\s+list|happy\s+birthday)\b/i.test(sub) ||
-    /\b(?:leave|cl|half\s+cl|casual\s+leave|sick\s+leave|wfh|work\s+from\s+home).{0,100}\bapproved\s+by\b/i.test(
-      sub,
-    ) ||
-    /\brequest\s+by\b.{0,100}\bapproved\s+by\b/i.test(sub)
-  ) {
+  if (looksLikeGenericHrOrWorkflowAutomatedSubject(subject)) {
     return true;
   }
 
   const fromLocal = (from.split('@')[0] ?? '').toLowerCase();
   if (
-    /^(?:support|hr|payroll|noreply|no-reply|notifications?|alerts?)$/.test(fromLocal) &&
-    /\b(?:alert|notification|reminder|digest|activity\s+list|attendance|birthday|approved\s+by)\b/i.test(
+    AUTOMATED_MAILBOX_LOCAL_RE.test(fromLocal) &&
+    /\b(?:alert|notification|reminder|digest|activity\s+list|attendance|birthday|approved|processed|ticket\s+update|case\s+update)\b/i.test(
       combined,
     ) &&
     !looksLikeInboundReplyQuestion(msg)
@@ -99,6 +120,13 @@ export function looksLikeInternalFyiOrAutomated(msg: InboundNoiseFields): boolea
 
   if (
     /\b(?:fyi|for your information|for ur information)\b/i.test(chunk) &&
+    !looksLikeInboundReplyQuestion(msg)
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(?:do not reply|this is an automated|automated message|auto-generated)\b/i.test(chunk) &&
     !looksLikeInboundReplyQuestion(msg)
   ) {
     return true;
@@ -756,6 +784,24 @@ export function finalizeIngestRelevanceFromAi(
       confidence: parsed.confidence,
     };
   }
+  if (parsed.relevant && looksLikeInternalFyiOrAutomated(target)) {
+    return {
+      relevant: true,
+      reason: 'Automated workplace notification — no reply needed.',
+      confidence: parsed.confidence,
+    };
+  }
+  if (
+    parsed.relevant &&
+    isInternalColleagueSender(employeeEmail, target.fromEmail) &&
+    !looksLikeInternalActionRequired(target)
+  ) {
+    return {
+      relevant: true,
+      reason: 'Internal colleague message — informational only.',
+      confidence: parsed.confidence,
+    };
+  }
   return parsed;
 }
 
@@ -793,6 +839,10 @@ export function looksLikeDirectHumanMail(
   if (automatedSender || obviousBroadcastSubject || obviousBroadcastBody) return false;
   if (looksLikeAutomatedSystemNotification(target)) return false;
   if (looksLikeInboundNoReplyNoise(target, hasNoiseGmailLabel, options)) return false;
+  if (isInternalColleagueSender(employeeEmail, target.fromEmail)) {
+    if (looksLikeInternalFyiOrAutomated(target)) return false;
+    if (!looksLikeInternalActionRequired(target)) return false;
+  }
   return true;
 }
 
@@ -824,6 +874,54 @@ export type RuleBasedIngestAction = {
   confidence: number;
   aiAction: 'NEED_REPLY' | 'CC' | 'BCC' | 'CALENDAR' | 'LOW' | 'SKIP';
 };
+
+type IngestDecisionFields = {
+  relevant: boolean;
+  reason: string | null;
+  confidence: number | null;
+  aiAction?: string;
+};
+
+/** Post-classification guard — keeps aiAction aligned with rule heuristics (self-healing at ingest). */
+export function coerceIngestClassificationDecision(
+  target: EmailMessage,
+  employeeEmail: string,
+  decision: IngestDecisionFields,
+): IngestDecisionFields {
+  if (!decision.relevant) return decision;
+
+  if (looksLikeInternalFyiOrAutomated(target)) {
+    return {
+      ...decision,
+      aiAction: 'LOW',
+      reason: 'Automated workplace notification — no reply needed.',
+    };
+  }
+
+  if (
+    isInternalColleagueSender(employeeEmail, target.fromEmail) &&
+    !looksLikeInternalActionRequired(target)
+  ) {
+    return {
+      ...decision,
+      aiAction: 'LOW',
+      reason: 'Internal colleague message — informational only.',
+    };
+  }
+
+  if (
+    decision.aiAction === 'NEED_REPLY' &&
+    looksLikeAutomatedSystemNotification(target)
+  ) {
+    return {
+      ...decision,
+      aiAction: 'LOW',
+      reason: 'Automated ticket/CRM notification — no reply needed.',
+    };
+  }
+
+  return decision;
+}
 
 /**
  * Free rule-based classification — no Gemini. Returns null when AI is still needed.
@@ -884,7 +982,7 @@ export function ruleBasedIngestClassification(
     if (looksLikeInternalFyiOrAutomated(target)) {
       return {
         relevant: true,
-        reason: 'Internal FYI or automated notice — no reply needed.',
+        reason: 'Automated workplace notification — no reply needed.',
         confidence: 1,
         aiAction: 'LOW',
       };

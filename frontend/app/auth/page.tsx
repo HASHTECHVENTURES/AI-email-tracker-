@@ -185,10 +185,11 @@ function AuthPageInner() {
   );
   const safeNext = hasExplicitNext ? (nextPathRaw as string) : '/dashboard';
 
-  /** Platform operators default to /admin, not the CEO dashboard. */
+  /** Platform operators use /admin/* only — never the tenant dashboard. */
   function postLoginPath(role: string | undefined, path: string): string {
     if (role === 'PLATFORM_ADMIN') {
-      if (!hasExplicitNext || path === '/dashboard') return '/admin';
+      if (path.startsWith('/admin')) return path;
+      return '/admin';
     }
     return path;
   }

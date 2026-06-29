@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 
-/** Legacy/mistyped auth admin URL: forward to the actual platform admin page. */
+/** Legacy URL — forward to the dedicated admin login. */
 export default function AuthAdminRedirectPage() {
-  redirect('/admin');
+  redirect('/admin/login');
 }

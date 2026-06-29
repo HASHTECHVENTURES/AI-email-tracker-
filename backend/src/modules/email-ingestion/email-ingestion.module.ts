@@ -5,6 +5,7 @@ import { ConversationsModule } from '../conversations/conversations.module';
 import { SettingsModule } from '../settings/settings.module';
 import { CompanyPolicyModule } from '../company-policy/company-policy.module';
 import { AiEnrichmentModule } from '../ai-enrichment/ai-enrichment.module';
+import { UsageModule } from '../usage/usage.module';
 import { supabaseProvider } from '../common/supabase.provider';
 import { GmailService } from './gmail.service';
 import { MicrosoftGraphService } from './microsoft-graph.service';
@@ -20,6 +21,7 @@ import { IngestionCronService } from './ingestion-cron.service';
     SettingsModule,
     CompanyPolicyModule,
     AiEnrichmentModule,
+    UsageModule,
   ],
   controllers: [EmailIngestionController],
   providers: [

@@ -109,7 +109,6 @@ export default function SettingsPage() {
   const [diagError, setDiagError] = useState<string | null>(null);
   const [purgeLegacyLoading, setPurgeLegacyLoading] = useState(false);
   const [syncLoading, setSyncLoading] = useState(false);
-  const [platformAdmin, setPlatformAdmin] = useState(false);
   /** Avoids showing master toggles as OFF before GET /settings returns (was a visible flash). */
   const [settingsLoadState, setSettingsLoadState] = useState<'pending' | 'ready' | 'failed'>('pending');
   const hadSuccessfulSettingsFetch = useRef(false);
@@ -183,19 +182,6 @@ export default function SettingsPage() {
     setMe(authMe as Me);
     void load(token);
   }, [authLoading, authMe, token, router, load]);
-
-  useEffect(() => {
-    if (!token) return;
-    void (async () => {
-      const res = await apiFetch('/platform-admin/me', token);
-      if (res.ok) {
-        const b = (await res.json()) as { allowed?: boolean };
-        setPlatformAdmin(b.allowed === true);
-      } else {
-        setPlatformAdmin(false);
-      }
-    })();
-  }, [token]);
 
   const platformEmailAllowed = settings?.company_admin_email_crawl_enabled !== false;
   const platformAiAllowed = settings?.company_admin_ai_enabled !== false;
@@ -421,17 +407,6 @@ export default function SettingsPage() {
     >
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
       {notice ? <p className="text-sm text-emerald-700">{notice}</p> : null}
-
-      {platformAdmin ? (
-        <section className="rounded-xl border border-violet-200/80 bg-gradient-to-r from-violet-50 to-indigo-50/90 p-5 shadow-sm">
-          <Link
-            href="/admin"
-            className="text-base font-semibold text-violet-900 underline-offset-2 hover:underline"
-          >
-            Platform administration
-          </Link>
-        </section>
-      ) : null}
 
       <section
         className="rounded-xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-900/[0.02]"
