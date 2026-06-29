@@ -19,7 +19,11 @@ export default function AdminBillingPage() {
     if (!token || !allowed) return;
     void apiFetch('/platform-admin/billing', token).then(async (res) => {
       if (!res.ok) {
-        setLoadErr('Could not load billing data.');
+        setLoadErr(
+          res.status === 404
+            ? 'Billing API is not on the live backend yet. Redeploy the Railway API from latest main (commit with /platform-admin/billing), then refresh.'
+            : 'Could not load billing data.',
+        );
         return;
       }
       setBilling((await res.json()) as BillingOverview);

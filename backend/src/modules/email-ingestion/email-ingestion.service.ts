@@ -1356,7 +1356,12 @@ export class EmailIngestionService {
     employeeEmail: string,
     decision: IngestClassificationDecision,
   ): IngestClassificationDecision {
-    return coerceIngestClassificationDecision(target, employeeEmail, decision) as IngestClassificationDecision;
+    return coerceIngestClassificationDecision(target, employeeEmail, {
+      relevant: decision.relevant,
+      reason: decision.reason,
+      confidence: decision.confidence ?? null,
+      aiAction: decision.aiAction,
+    }) as IngestClassificationDecision;
   }
 
   private skipReasonCodeForMessage(message: EmailMessage, reason: string | null | undefined): SkipReasonCode {
