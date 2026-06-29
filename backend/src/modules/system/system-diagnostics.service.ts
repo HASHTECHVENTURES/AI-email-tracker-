@@ -5,6 +5,7 @@ import { RequestContext } from '../common/request-context';
 import { isGeminiEnvConfigured } from '../common/env';
 import { SettingsService } from '../settings/settings.service';
 import { CompanyPolicyService } from '../company-policy/company-policy.service';
+import { EmailIngestionService, type MailFetchProbeResult } from '../email-ingestion/email-ingestion.service';
 
 type RecentIngestedRow = {
   employee_id: string;
@@ -21,6 +22,7 @@ export type MailboxDiagnostic = {
   department_id: string;
   gmail_status: string | null;
   has_oauth_token: boolean;
+  oauth_provider?: string | null;
   tracking_paused: boolean;
   ai_enabled: boolean;
   tracking_start_at: string | null;
@@ -29,6 +31,7 @@ export type MailboxDiagnostic = {
   mail_sync_last_processed_at: string | null;
   email_message_count: number;
   conversation_count: number;
+  mail_fetch_probe?: MailFetchProbeResult | null;
   /** Human-readable reasons mail may not become conversations */
   blockers: string[];
   hints: string[];
@@ -40,9 +43,13 @@ export class SystemDiagnosticsService {
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
     private readonly settingsService: SettingsService,
     private readonly companyPolicyService: CompanyPolicyService,
+    private readonly emailIngestionService: EmailIngestionService,
   ) {}
 
-  async run(ctx: RequestContext): Promise<{
+  async run(
+    ctx: RequestContext,
+    opts?: { includeMailProbe?: boolean },
+  ): Promise<{
     generated_at: string;
     environment: {
       gemini_configured: boolean;
@@ -117,16 +124,19 @@ export class SystemDiagnosticsService {
 
     const ids = rows.map((r) => r.id);
     const tokenSet = new Set<string>();
+    const providerByEmp = new Map<string, string | null>();
     const syncByEmp = new Map<string, { start_date: string; last_processed_at: string | null }>();
     const portalSet = new Set<string>();
 
     if (ids.length > 0) {
       const { data: tok } = await this.supabase
         .from('employee_oauth_tokens')
-        .select('employee_id')
+        .select('employee_id, oauth_provider')
         .in('employee_id', ids);
       for (const t of tok ?? []) {
-        tokenSet.add((t as { employee_id: string }).employee_id);
+        const row = t as { employee_id: string; oauth_provider?: string | null };
+        tokenSet.add(row.employee_id);
+        providerByEmp.set(row.employee_id, row.oauth_provider ?? null);
       }
 
       const { data: syncRows } = await this.supabase
@@ -215,6 +225,7 @@ export class SystemDiagnosticsService {
     for (const e of rows) {
       const portalLinked = portalSet.has(e.id);
       const hasOAuth = tokenSet.has(e.id);
+      const provider = providerByEmp.get(e.id) ?? null;
       const sync = syncByEmp.get(e.id) ?? null;
 
       const { count: ec } = await this.supabase
@@ -279,6 +290,34 @@ export class SystemDiagnosticsService {
         );
       }
 
+      let mailFetchProbe: MailFetchProbeResult | null = null;
+      if (opts?.includeMailProbe && provider === 'zoho' && hasOAuth) {
+        try {
+          mailFetchProbe = await this.emailIngestionService.probeGmailFetch(ctx.companyId, e.id, {
+            maxPages: 1,
+          });
+        } catch (err) {
+          mailFetchProbe = {
+            ok: false,
+            employee_id: e.id,
+            employee_email: e.email,
+            employee_name: e.name,
+            oauth_configured: hasOAuth,
+            live: {
+              list_after_iso: '',
+              list_query: '',
+              resuming_paged_list: false,
+              pages_fetched: 0,
+              message_ids_counted: 0,
+              has_more_list_pages: false,
+              gmail_error: (err as Error).message ?? 'Zoho probe failed',
+            },
+            database: { total_email_messages_stored: ec ?? 0 },
+            notes: ['Zoho probe failed.'],
+          };
+        }
+      }
+
       mailboxes.push({
         employee_id: e.id,
         name: e.name,
@@ -286,6 +325,7 @@ export class SystemDiagnosticsService {
         department_id: e.department_id,
         gmail_status: e.gmail_status,
         has_oauth_token: hasOAuth,
+        oauth_provider: provider,
         tracking_paused: e.tracking_paused === true,
         ai_enabled: e.ai_enabled !== false,
         tracking_start_at: e.tracking_start_at,
@@ -294,6 +334,7 @@ export class SystemDiagnosticsService {
         mail_sync_last_processed_at: sync?.last_processed_at ?? null,
         email_message_count: ec ?? 0,
         conversation_count: cc ?? 0,
+        mail_fetch_probe: mailFetchProbe,
         blockers,
         hints,
       });

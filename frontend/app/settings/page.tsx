@@ -49,6 +49,7 @@ type DiagnosticsMailbox = {
   name: string;
   email: string;
   has_oauth_token: boolean;
+  oauth_provider?: string | null;
   tracking_paused: boolean;
   email_message_count: number;
   conversation_count: number;
@@ -56,6 +57,17 @@ type DiagnosticsMailbox = {
   mail_sync_start_date: string | null;
   mail_sync_last_processed_at: string | null;
   portal_employee_login_linked: boolean;
+  mail_fetch_probe?: {
+    ok: boolean;
+    live: {
+      list_after_iso: string;
+      list_query: string;
+      message_ids_counted: number;
+      has_more_list_pages: boolean;
+      gmail_error: string | null;
+    };
+    database: { total_email_messages_stored: number };
+  } | null;
   blockers: string[];
   hints: string[];
 };
@@ -331,7 +343,7 @@ export default function SettingsPage() {
     setDiagError(null);
     setDiagLoading(true);
     try {
-      const res = await apiFetch('/system/diagnostics', token);
+      const res = await apiFetch('/system/diagnostics?include_probe=1', token);
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setDiagError((body as { message?: string }).message || 'Diagnostics failed');
@@ -701,8 +713,9 @@ export default function SettingsPage() {
                         {m.name} · {m.email}
                       </p>
                       <p className="text-xs text-slate-500">
-                        OAuth: {m.has_oauth_token ? 'yes' : 'no'} · Paused: {m.tracking_paused ? 'yes' : 'no'} · Messages:{' '}
-                        {m.email_message_count} · Conversations: {m.conversation_count}
+                        Provider: {m.oauth_provider ?? 'google'} · OAuth: {m.has_oauth_token ? 'yes' : 'no'} · Paused:{' '}
+                        {m.tracking_paused ? 'yes' : 'no'} · Messages: {m.email_message_count} · Conversations:{' '}
+                        {m.conversation_count}
                         {m.tracking_start_at
                           ? ` · Tracking since (inbox window): ${new Date(m.tracking_start_at).toLocaleString()}`
                           : ''}
@@ -714,6 +727,22 @@ export default function SettingsPage() {
                           : ''}
                         {m.portal_employee_login_linked ? ' · Portal-linked mailbox' : ' · Team mailbox'}
                       </p>
+                      {m.mail_fetch_probe ? (
+                        <div className="mt-2 rounded-md border border-indigo-100 bg-indigo-50/60 px-2.5 py-2 text-[11px] text-indigo-950">
+                          <p className="font-semibold">Mail fetch probe (Zoho)</p>
+                          <p className="mt-1 text-indigo-900">
+                            IDs listed: {m.mail_fetch_probe.live.message_ids_counted}
+                            {m.mail_fetch_probe.live.gmail_error
+                              ? ` · Error: ${m.mail_fetch_probe.live.gmail_error}`
+                              : ''}
+                          </p>
+                          {m.mail_fetch_probe.live.list_after_iso ? (
+                            <p className="text-indigo-900">
+                              after: {new Date(m.mail_fetch_probe.live.list_after_iso).toLocaleString()}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {m.blockers.length > 0 ? (
                         <ul className="mt-2 space-y-1 text-xs text-red-700">
                           {m.blockers.map((b, i) => (

@@ -1,4 +1,4 @@
-import { Controller, Get, Req } from '@nestjs/common';
+import { Controller, Get, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { getRequestContext } from '../common/request-context';
 import { SettingsService } from '../settings/settings.service';
@@ -32,8 +32,13 @@ export class SystemController {
 
   /** CEO / department HEAD: why mail may not show on dashboards (settings, OAuth, crawl, tracking window, counts). */
   @Get('diagnostics')
-  async diagnostics(@Req() req: Request) {
+  async diagnostics(
+    @Req() req: Request,
+    @Query('include_probe') includeProbe?: string,
+  ) {
     const ctx = getRequestContext(req);
-    return this.systemDiagnosticsService.run(ctx);
+    return this.systemDiagnosticsService.run(ctx, {
+      includeMailProbe: includeProbe === '1' || includeProbe === 'true',
+    });
   }
 }
