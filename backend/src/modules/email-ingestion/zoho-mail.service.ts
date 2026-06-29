@@ -48,6 +48,7 @@ export class ZohoMailService {
   private readonly logger = new Logger(ZohoMailService.name);
   private readonly folderByMessageId = new Map<string, Map<string, string>>();
   private readonly timeByMessageId = new Map<string, Map<string, number>>();
+  private readonly rowByMessageId = new Map<string, Map<string, ZohoListMessage>>();
 
   constructor(private readonly oauthTokenService: OauthTokenService) {}
 
@@ -130,6 +131,17 @@ export class ZohoMailService {
     return this.folderByMessageId.get(employeeId)?.get(messageId);
   }
 
+  private cacheMessageRow(employeeId: string, messageId: string, row: ZohoListMessage): void {
+    const byEmployee =
+      this.rowByMessageId.get(employeeId) ?? new Map<string, ZohoListMessage>();
+    byEmployee.set(messageId, row);
+    this.rowByMessageId.set(employeeId, byEmployee);
+  }
+
+  private lookupMessageRow(employeeId: string, messageId: string): ZohoListMessage | undefined {
+    return this.rowByMessageId.get(employeeId)?.get(messageId);
+  }
+
   private cacheMessageTime(employeeId: string, messageId: string, timeMs: number | null): void {
     if (!timeMs || !Number.isFinite(timeMs)) return;
     const byEmployee =
@@ -154,6 +166,7 @@ export class ZohoMailService {
       const id = zohoId(m.messageId);
       if (!id) continue;
       this.cacheFolderId(employeeId, id, m.folderId);
+      this.cacheMessageRow(employeeId, id, m);
       const listTime = this.messageTimeMs(m, timeField);
       if (listTime != null) this.cacheMessageTime(employeeId, id, listTime);
       all.push(id);
@@ -506,6 +519,18 @@ export class ZohoMailService {
       } catch (err) {
         lastErr = err as Error;
       }
+    }
+
+    const cached = this.lookupMessageRow(employeeId, id);
+    if (cached) {
+      this.logger.warn(
+        `Zoho details unavailable for ${id}; falling back to list row summary.`,
+      );
+      return {
+        ...cached,
+        messageId: id,
+        content: cached.summary ?? '',
+      };
     }
 
     throw lastErr ?? new Error(`Zoho get message failed for ${id}`);
