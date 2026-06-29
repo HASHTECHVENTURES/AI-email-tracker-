@@ -20,6 +20,15 @@ export function PortalCredentialsDownloadModal({
   onClose,
 }: PortalCredentialsDownloadModalProps) {
   const [copied, setCopied] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
+  function handleSavePdf() {
+    setPdfError(null);
+    const ok = openCredentialsPrintWindow(payload);
+    if (!ok) {
+      setPdfError('Could not open print. Try Download .txt or Copy instead.');
+    }
+  }
 
   async function handleCopy() {
     const ok = await copyCredentialsToClipboard(payload);
@@ -88,7 +97,7 @@ export function PortalCredentialsDownloadModal({
         <div className="mt-4 flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => openCredentialsPrintWindow(payload)}
+            onClick={handleSavePdf}
             className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700"
           >
             Save as PDF
@@ -109,8 +118,9 @@ export function PortalCredentialsDownloadModal({
           </button>
         </div>
         <p className="mt-3 text-xs text-slate-500">
-          Save as PDF opens a printable page — choose &quot;Save as PDF&quot; in the print dialog.
+          Save as PDF opens the print dialog — choose &quot;Save as PDF&quot; as the destination.
         </p>
+        {pdfError ? <p className="mt-2 text-xs text-red-600">{pdfError}</p> : null}
 
         <div className="mt-4 flex justify-end">
           <button

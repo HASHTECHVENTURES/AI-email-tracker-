@@ -181,15 +181,63 @@ export function downloadCredentialsTextFile(payload: PortalCredentialPayload): v
   URL.revokeObjectURL(url);
 }
 
-export function openCredentialsPrintWindow(payload: PortalCredentialPayload): void {
-  const win = window.open('', '_blank', 'noopener,noreferrer,width=720,height=900');
-  if (!win) return;
-  win.document.write(buildCredentialsHtml(payload));
-  win.document.close();
-  win.focus();
-  win.onload = () => {
-    win.print();
-  };
+function printHtmlDocument(html: string): boolean {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.cssText =
+    'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none';
+  document.body.appendChild(iframe);
+  const frameWin = iframe.contentWindow;
+  const frameDoc = frameWin?.document;
+  if (!frameWin || !frameDoc) {
+    iframe.remove();
+    return false;
+  }
+  frameDoc.open();
+  frameDoc.write(html);
+  frameDoc.close();
+  frameWin.focus();
+  frameWin.print();
+  window.setTimeout(() => iframe.remove(), 1500);
+  return true;
+}
+
+/** Opens the browser print dialog so the user can choose Save as PDF. */
+export function openCredentialsPrintWindow(payload: PortalCredentialPayload): boolean {
+  const html = buildCredentialsHtml(payload);
+
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const blobUrl = URL.createObjectURL(blob);
+  const popup = window.open(blobUrl, '_blank', 'noopener,noreferrer,width=720,height=900');
+
+  const revoke = () => URL.revokeObjectURL(blobUrl);
+
+  if (popup) {
+    let printed = false;
+    const triggerPrint = () => {
+      if (printed || popup.closed) return;
+      printed = true;
+      try {
+        popup.focus();
+        popup.print();
+      } catch {
+        /* print may be blocked until the document is ready */
+      }
+    };
+    popup.addEventListener('load', () => {
+      triggerPrint();
+      revoke();
+    });
+    // `load` is not always fired for blob URLs; print after a short delay as well.
+    window.setTimeout(() => {
+      triggerPrint();
+      revoke();
+    }, 400);
+    return true;
+  }
+
+  revoke();
+  return printHtmlDocument(html);
 }
 
 export async function copyCredentialsToClipboard(payload: PortalCredentialPayload): Promise<boolean> {
