@@ -276,29 +276,39 @@ export class ZohoMailService {
     const top = Math.min(Math.max(limit, 1), 200);
     const receivedTime = Date.now() + 120_000;
     const fromDate = formatZohoSearchDate(afterDate);
-    const searchKeys = ['newMails', 'in:Inbox', 'in:inbox', `fromDate:${fromDate}`];
+    const today = formatZohoSearchDate(new Date());
+    const searchKeys = [
+      'newMails',
+      'in:Inbox',
+      'in:inbox',
+      `fromDate:${fromDate}::toDate:${today}`,
+      `fromDate:${fromDate}`,
+    ];
+    const startVariants = [1, 0];
     for (const searchKey of searchKeys) {
-      const url =
-        `/api/accounts/${encodeURIComponent(meta.accountId)}/messages/search` +
-        `?searchKey=${encodeURIComponent(searchKey)}` +
-        `&receivedTime=${receivedTime}&limit=${top}&start=1&includeto=true`;
-      try {
-        const res = await retryWithBackoff(
-          () => this.zohoFetch(employeeId, meta.mailApiBase, url),
-          { operationName: `zoho.search(${employeeId})`, attempts: 2, timeoutMs: 15_000 },
-        );
-        const rows = await this.parseZohoListResponse(res);
-        const ids = this.extractIdsFromRows(employeeId, rows, afterMs, 'receivedTime');
-        if (ids.length > 0) {
-          this.logger.log(
-            `Zoho search fallback (${searchKey}) returned ${ids.length} message(s) for employee ${employeeId}`,
+      for (const start of startVariants) {
+        const url =
+          `/api/accounts/${encodeURIComponent(meta.accountId)}/messages/search` +
+          `?searchKey=${encodeURIComponent(searchKey)}` +
+          `&receivedTime=${receivedTime}&limit=${top}&start=${start}&includeto=true`;
+        try {
+          const res = await retryWithBackoff(
+            () => this.zohoFetch(employeeId, meta.mailApiBase, url),
+            { operationName: `zoho.search(${employeeId})`, attempts: 2, timeoutMs: 15_000 },
           );
-          return ids;
+          const rows = await this.parseZohoListResponse(res);
+          const ids = this.extractIdsFromRows(employeeId, rows, afterMs, 'receivedTime');
+          if (ids.length > 0) {
+            this.logger.log(
+              `Zoho search fallback (${searchKey}, start=${start}) returned ${ids.length} message(s) for employee ${employeeId}`,
+            );
+            return ids;
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Zoho search fallback (${searchKey}, start=${start}) failed for ${employeeId}: ${(err as Error).message}`,
+          );
         }
-      } catch (err) {
-        this.logger.warn(
-          `Zoho search fallback (${searchKey}) failed for ${employeeId}: ${(err as Error).message}`,
-        );
       }
     }
     return [];
