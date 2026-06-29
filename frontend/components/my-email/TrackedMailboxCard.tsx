@@ -1,6 +1,6 @@
 'use client';
 
-export type MailProvider = 'google' | 'microsoft';
+export type MailProvider = 'google' | 'microsoft' | 'zoho';
 
 export type TrackedMailbox = {
   id: string;
@@ -27,6 +27,8 @@ type TrackedMailboxCardProps = {
   /** Microsoft 365 / Outlook OAuth — same mailbox owner rules as Gmail. */
   onConnectOutlook?: () => void;
   showConnectOutlook?: boolean;
+  onConnectZoho?: () => void;
+  showConnectZoho?: boolean;
   onRemove: () => void;
   onTogglePause?: (paused: boolean) => void;
   /** CEO team view: pull mail for this mailbox immediately. */
@@ -39,7 +41,9 @@ type TrackedMailboxCardProps = {
 
 function connectedProvider(mb: TrackedMailbox): MailProvider | null {
   if (mb.gmail_connected !== true) return null;
-  return mb.mail_provider === 'microsoft' ? 'microsoft' : 'google';
+  if (mb.mail_provider === 'microsoft') return 'microsoft';
+  if (mb.mail_provider === 'zoho') return 'zoho';
+  return 'google';
 }
 
 export function TrackedMailboxCard({
@@ -48,6 +52,8 @@ export function TrackedMailboxCard({
   onConnectGmail,
   onConnectOutlook,
   showConnectOutlook = true,
+  onConnectZoho,
+  showConnectZoho = true,
   onRemove,
   onTogglePause,
   onSyncNow,
@@ -69,19 +75,33 @@ export function TrackedMailboxCard({
     showConnectOutlook &&
     onConnectOutlook &&
     !(hideReconnectWhenConnected && isConnected) &&
-    (!isConnected || provider === 'microsoft' || provider === 'google');
+    (!isConnected || provider === 'microsoft' || provider === 'google' || provider === 'zoho');
+
+  const showZohoButton =
+    showConnectZoho &&
+    onConnectZoho &&
+    !(hideReconnectWhenConnected && isConnected) &&
+    (!isConnected || provider === 'zoho' || provider === 'google' || provider === 'microsoft');
 
   const gmailButtonLabel = isConnected && provider === 'google' ? 'Reconnect Gmail' : 'Connect Gmail';
   const outlookButtonLabel =
     isConnected && provider === 'microsoft'
       ? 'Reconnect Outlook'
-      : isConnected && provider === 'google'
+      : isConnected
         ? 'Switch to Outlook'
         : 'Connect Outlook';
+  const zohoButtonLabel =
+    isConnected && provider === 'zoho'
+      ? 'Reconnect Zoho'
+      : isConnected
+        ? 'Switch to Zoho'
+        : 'Connect Zoho';
 
   const connectionLabel =
     provider === 'microsoft'
       ? 'Connected via Outlook'
+      : provider === 'zoho'
+        ? 'Connected via Zoho Mail'
       : provider === 'google'
         ? 'Connected via Gmail'
         : 'Mail not connected';
@@ -110,6 +130,15 @@ export function TrackedMailboxCard({
               className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-900 hover:bg-sky-100 hover:shadow-sm"
             >
               {outlookButtonLabel}
+            </button>
+          ) : null}
+          {showZohoButton ? (
+            <button
+              type="button"
+              onClick={onConnectZoho}
+              className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-950 hover:bg-amber-100 hover:shadow-sm"
+            >
+              {zohoButtonLabel}
             </button>
           ) : null}
           <button

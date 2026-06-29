@@ -23,6 +23,7 @@ import {
   GmailService,
 } from './gmail.service';
 import { MicrosoftGraphService } from './microsoft-graph.service';
+import { ZohoMailService } from './zoho-mail.service';
 import { buildSharedIngestRelevancePrompt } from './relevance-prompt.builder';
 import {
   looksLikeDirectHumanMail,
@@ -194,6 +195,7 @@ export class EmailIngestionService {
     private readonly employeesService: EmployeesService,
     private readonly gmailService: GmailService,
     private readonly microsoftGraphService: MicrosoftGraphService,
+    private readonly zohoMailService: ZohoMailService,
     private readonly oauthTokenService: OauthTokenService,
     private readonly conversationsService: ConversationsService,
     private readonly settingsService: SettingsService,
@@ -228,6 +230,9 @@ export class EmailIngestionService {
     opts: { maxResults: number; pageToken?: string | null },
   ): Promise<{ ids: string[]; nextPageToken: string | null }> {
     const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'zoho') {
+      return this.zohoMailService.listMessageIdsPage(employeeId, listAfterDate, opts);
+    }
     if (provider === 'microsoft') {
       return this.microsoftGraphService.listMessageIdsPage(employeeId, listAfterDate, opts);
     }
@@ -240,6 +245,9 @@ export class EmailIngestionService {
     maxResults: number,
   ): Promise<string[]> {
     const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'zoho') {
+      return this.zohoMailService.listRecentInboxHead(employeeId, afterDate, maxResults);
+    }
     if (provider === 'microsoft') {
       return this.microsoftGraphService.listRecentInboxHead(employeeId, afterDate, maxResults);
     }
@@ -257,6 +265,9 @@ export class EmailIngestionService {
     messageId: string,
   ): Promise<EmailMessage> {
     const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'zoho') {
+      return this.zohoMailService.fetchFullMessage(employeeId, employeeEmail, messageId);
+    }
     if (provider === 'microsoft') {
       return this.microsoftGraphService.fetchFullMessage(employeeId, employeeEmail, messageId);
     }
@@ -269,6 +280,9 @@ export class EmailIngestionService {
     messageId: string,
   ): Promise<boolean> {
     const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'zoho') {
+      return this.zohoMailService.peekIsOutboundFrom(employeeId, employeeEmail, messageId);
+    }
     if (provider === 'microsoft') {
       return this.microsoftGraphService.peekIsOutboundFrom(employeeId, employeeEmail, messageId);
     }
@@ -283,6 +297,15 @@ export class EmailIngestionService {
     maxMessages: number,
   ): Promise<EmailMessage[]> {
     const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'zoho') {
+      return this.zohoMailService.fetchLastMessagesInThreadForRelevance(
+        employeeId,
+        employeeEmail,
+        msg,
+        threadMetaCache as Map<string, unknown>,
+        maxMessages,
+      );
+    }
     if (provider === 'microsoft') {
       return this.microsoftGraphService.fetchLastMessagesInThreadForRelevance(
         employeeId,
@@ -303,6 +326,9 @@ export class EmailIngestionService {
 
   private async isMailNoiseAsync(msg: EmailMessage, employeeId: string): Promise<boolean> {
     const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider === 'zoho') {
+      return this.zohoMailService.isNoise(msg.labelIds);
+    }
     if (provider === 'microsoft') {
       return this.microsoftGraphService.isNoise(msg.labelIds);
     }
@@ -812,7 +838,13 @@ export class EmailIngestionService {
        */
       const provider = await this.oauthTokenService.getOAuthProvider(employee.id);
       const fallbackIds =
-        provider === 'microsoft'
+        provider === 'zoho'
+          ? await this.zohoMailService.listRecentInboxHead(
+              employee.id,
+              new Date(Date.now() - 7 * 86_400_000),
+              Math.min(120, listMaxResults),
+            )
+          : provider === 'microsoft'
           ? await this.microsoftGraphService.listRecentInboxHead(
               employee.id,
               new Date(Date.now() - 7 * 86_400_000),

@@ -67,7 +67,7 @@ export interface OrgEmployeeDto {
   /** Secondary directory row: same person as another dept; mail sync uses the primary row (`roster_duplicate = false`). */
   roster_duplicate?: boolean;
   /** OAuth provider when mail is connected (`gmail_connected` / `gmail_status = CONNECTED`). */
-  mail_provider?: 'google' | 'microsoft' | null;
+  mail_provider?: 'google' | 'microsoft' | 'zoho' | null;
 }
 
 export interface EmployeeMessageDto {
@@ -2249,11 +2249,15 @@ export class EmployeesService {
       }));
     }
 
-    const providerByEmployeeId = new Map<string, 'google' | 'microsoft'>();
+    const providerByEmployeeId = new Map<string, 'google' | 'microsoft' | 'zoho'>();
     for (const row of data ?? []) {
       const employeeId = (row as { employee_id: string }).employee_id;
-      const raw = (row as { oauth_provider?: string | null }).oauth_provider?.trim().toLowerCase();
-      providerByEmployeeId.set(employeeId, raw === 'microsoft' ? 'microsoft' : 'google');
+      const raw = (row as { oauth_provider?: string | null }).oauth_provider;
+      const p = raw?.trim().toLowerCase();
+      providerByEmployeeId.set(
+        employeeId,
+        p === 'microsoft' ? 'microsoft' : p === 'zoho' ? 'zoho' : 'google',
+      );
     }
 
     return mailboxes.map((m) => {

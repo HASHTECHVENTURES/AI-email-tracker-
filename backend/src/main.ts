@@ -14,7 +14,9 @@ function isOAuthCallback(req: Request): boolean {
     path === '/auth/google/callback' ||
     path.endsWith('/auth/google/callback') ||
     path === '/auth/microsoft/callback' ||
-    path.endsWith('/auth/microsoft/callback')
+    path.endsWith('/auth/microsoft/callback') ||
+    path === '/auth/zoho/callback' ||
+    path.endsWith('/auth/zoho/callback')
   );
 }
 

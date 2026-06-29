@@ -9,6 +9,7 @@ import { UsageModule } from '../usage/usage.module';
 import { supabaseProvider } from '../common/supabase.provider';
 import { GmailService } from './gmail.service';
 import { MicrosoftGraphService } from './microsoft-graph.service';
+import { ZohoMailService } from './zoho-mail.service';
 import { EmailIngestionService } from './email-ingestion.service';
 import { EmailIngestionController } from './email-ingestion.controller';
 import { IngestionCronService } from './ingestion-cron.service';
@@ -28,9 +29,10 @@ import { IngestionCronService } from './ingestion-cron.service';
     supabaseProvider,
     GmailService,
     MicrosoftGraphService,
+    ZohoMailService,
     EmailIngestionService,
     IngestionCronService,
   ],
-  exports: [EmailIngestionService, GmailService, MicrosoftGraphService],
+  exports: [EmailIngestionService, GmailService, MicrosoftGraphService, ZohoMailService],
 })
 export class EmailIngestionModule {}

@@ -1,7 +1,7 @@
 /** postMessage type when /auth/gmail-oauth-done closes the OAuth popup. */
 export const GMAIL_OAUTH_COMPLETE_MSG = 'ai_et_gmail_oauth_complete_v1';
 
-export type MailOAuthProvider = 'google' | 'microsoft';
+export type MailOAuthProvider = 'google' | 'microsoft' | 'zoho';
 
 export type GmailOAuthCompletePayload = {
   type: typeof GMAIL_OAUTH_COMPLETE_MSG;
@@ -29,6 +29,15 @@ function isGoogleAuthorizeUrl(url: string): boolean {
   }
 }
 
+function isZohoAuthorizeUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.includes('accounts.zoho.');
+  } catch {
+    return /accounts\.zoho\./i.test(url);
+  }
+}
+
 /** Open OAuth in a popup so the main app tab keeps the Supabase session. Falls back to full navigation if popups are blocked. */
 export function openMailOAuthWindow(
   authorizeUrl: string,
@@ -42,8 +51,16 @@ export function openMailOAuthWindow(
   if (provider === 'google' && !isGoogleAuthorizeUrl(authorizeUrl)) {
     throw new Error('Expected a Google login URL from the server.');
   }
+  if (provider === 'zoho' && !isZohoAuthorizeUrl(authorizeUrl)) {
+    throw new Error('Expected a Zoho login URL from the server.');
+  }
 
-  const windowName = provider === 'microsoft' ? 'microsoft_oauth' : 'gmail_oauth';
+  const windowName =
+    provider === 'microsoft'
+      ? 'microsoft_oauth'
+      : provider === 'zoho'
+        ? 'zoho_oauth'
+        : 'gmail_oauth';
   const w = window.open(
     authorizeUrl,
     windowName,
@@ -67,9 +84,9 @@ export function openGmailOAuthWindow(authorizeUrl: string): Window | null {
 }
 
 export function mailOAuthSuccessMessage(provider?: MailOAuthProvider | null): string {
-  return provider === 'microsoft'
-    ? 'Outlook connected successfully.'
-    : 'Gmail connected successfully.';
+  if (provider === 'microsoft') return 'Outlook connected successfully.';
+  if (provider === 'zoho') return 'Zoho Mail connected successfully.';
+  return 'Gmail connected successfully.';
 }
 
 /** Turn raw OAuth / sync token errors into actionable copy for the UI. */
@@ -77,10 +94,10 @@ export function humanizeMailSyncError(message: string | null | undefined): strin
   const msg = (message ?? '').trim();
   if (!msg) return 'Something went wrong.';
   if (/invalid_grant/i.test(msg)) {
-    return 'Mail access expired or Gmail/Outlook tokens got mixed up. On your mailbox card, click Reconnect Outlook (or Switch to Outlook) and sign in again with your Outlook account.';
+    return 'Mail access expired or tokens got mixed up. Reconnect your mailbox (Gmail, Outlook, or Zoho) on the mailbox card.';
   }
   if (/token refresh failed/i.test(msg)) {
-    return 'Could not refresh mail access. Reconnect Outlook or Gmail on your mailbox card, then press Sync now.';
+    return 'Could not refresh mail access. Reconnect your mailbox, then press Sync now.';
   }
   return msg;
 }
@@ -97,7 +114,9 @@ export function subscribeGmailOAuthComplete(
       connected: d.connected === true,
       employee_id: typeof d.employee_id === 'string' ? d.employee_id : null,
       provider:
-        d.provider === 'microsoft' || d.provider === 'google' ? d.provider : null,
+        d.provider === 'microsoft' || d.provider === 'google' || d.provider === 'zoho'
+          ? d.provider
+          : null,
     });
   };
   window.addEventListener('message', fn);

@@ -21,7 +21,13 @@ function GmailOauthDoneInner() {
     const employeeId = searchParams.get('employee_id');
     const providerRaw = searchParams.get('provider');
     const provider: MailOAuthProvider | null =
-      providerRaw === 'microsoft' ? 'microsoft' : providerRaw === 'google' ? 'google' : null;
+      providerRaw === 'microsoft'
+        ? 'microsoft'
+        : providerRaw === 'zoho'
+          ? 'zoho'
+          : providerRaw === 'google'
+            ? 'google'
+            : null;
 
     if (typeof window === 'undefined') return;
 

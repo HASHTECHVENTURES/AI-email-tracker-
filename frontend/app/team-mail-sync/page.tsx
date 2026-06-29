@@ -24,7 +24,7 @@ type TeamMailbox = {
   email: string;
   department_name?: string;
   gmail_connected?: boolean;
-  mail_provider?: 'google' | 'microsoft' | null;
+  mail_provider?: 'google' | 'microsoft' | 'zoho' | null;
   gmail_status?: 'CONNECTED' | 'EXPIRED' | 'REVOKED';
   last_synced_at?: string | null;
   tracking_paused?: boolean;
@@ -54,9 +54,13 @@ function relativeTime(iso: string | null | undefined): string {
 
 function mailConnectionLabel(mb: TeamMailbox): { text: string; className: string } {
   if (mb.gmail_connected) {
-    return mb.mail_provider === 'microsoft'
-      ? { text: 'Outlook connected', className: 'text-emerald-700' }
-      : { text: 'Gmail connected', className: 'text-emerald-700' };
+    if (mb.mail_provider === 'microsoft') {
+      return { text: 'Outlook connected', className: 'text-emerald-700' };
+    }
+    if (mb.mail_provider === 'zoho') {
+      return { text: 'Zoho Mail connected', className: 'text-emerald-700' };
+    }
+    return { text: 'Gmail connected', className: 'text-emerald-700' };
   }
   const s = mb.gmail_status;
   if (s === 'REVOKED') return { text: 'Revoked', className: 'text-red-700' };
@@ -207,7 +211,13 @@ function TeamMailSyncInner() {
     if (connected === '1') {
       const providerRaw = searchParams.get('provider');
       const provider =
-        providerRaw === 'microsoft' ? 'microsoft' : providerRaw === 'google' ? 'google' : null;
+        providerRaw === 'microsoft'
+          ? 'microsoft'
+          : providerRaw === 'zoho'
+            ? 'zoho'
+            : providerRaw === 'google'
+              ? 'google'
+              : null;
       setSuccess(mailOAuthSuccessMessage(provider));
       void loadTeamData(token);
     }
@@ -288,6 +298,35 @@ function TeamMailSyncInner() {
         return;
       }
       openMailOAuthWindow(body.url, 'microsoft');
+    } finally {
+      setConnectingId(null);
+    }
+  }
+
+  async function connectZoho(mailboxId: string, opts?: { reconnect?: boolean }) {
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return;
+    setConnectingId(mailboxId);
+    setError(null);
+    try {
+      const qs = new URLSearchParams({ employee_id: mailboxId });
+      if (opts?.reconnect) qs.set('reconnect', '1');
+      const res = await apiFetch(
+        `/auth/zoho/authorize-url?${qs.toString()}`,
+        session.access_token,
+      );
+      const body = (await res.json().catch(() => ({}))) as { url?: string; message?: string };
+      if (!res.ok) {
+        if (await tryRecoverFromUnauthorized(res, ctxSignOut)) return;
+      }
+      if (!res.ok || !body.url) {
+        setError(body.message || 'Could not start Zoho connection');
+        return;
+      }
+      openMailOAuthWindow(body.url, 'zoho');
     } finally {
       setConnectingId(null);
     }
@@ -400,7 +439,8 @@ function TeamMailSyncInner() {
                           Open threads
                         </Link>
                         {selectedMailbox.gmail_connected &&
-                        selectedMailbox.mail_provider !== 'microsoft' ? (
+                        selectedMailbox.mail_provider !== 'microsoft' &&
+                        selectedMailbox.mail_provider !== 'zoho' ? (
                           <button
                             type="button"
                             disabled={connectingId === selectedMailbox.id}
@@ -438,6 +478,26 @@ function TeamMailSyncInner() {
                               : selectedMailbox.gmail_connected
                                 ? 'Switch to Outlook'
                                 : 'Connect Outlook'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={connectingId === selectedMailbox.id}
+                          onClick={() =>
+                            void connectZoho(selectedMailbox.id, {
+                              reconnect:
+                                selectedMailbox.gmail_connected === true &&
+                                selectedMailbox.mail_provider !== 'zoho',
+                            })
+                          }
+                          className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950 shadow-sm hover:bg-amber-100 disabled:opacity-60"
+                        >
+                          {connectingId === selectedMailbox.id
+                            ? 'Opening…'
+                            : selectedMailbox.mail_provider === 'zoho'
+                              ? 'Reconnect Zoho'
+                              : selectedMailbox.gmail_connected
+                                ? 'Switch to Zoho'
+                                : 'Connect Zoho'}
                         </button>
                       </div>
                     </div>
@@ -561,6 +621,19 @@ function TeamMailSyncInner() {
                               className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-900 shadow-sm hover:bg-sky-100 disabled:opacity-60"
                             >
                               Outlook
+                            </button>
+                            <button
+                              type="button"
+                              disabled={connectingId === mb.id}
+                              onClick={() =>
+                                void connectZoho(mb.id, {
+                                  reconnect:
+                                    mb.gmail_connected === true && mb.mail_provider !== 'zoho',
+                                })
+                              }
+                              className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-950 shadow-sm hover:bg-amber-100 disabled:opacity-60"
+                            >
+                              Zoho
                             </button>
                           </div>
                         </td>

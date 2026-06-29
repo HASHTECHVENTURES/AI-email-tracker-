@@ -31,6 +31,13 @@ import {
   MICROSOFT_MAIL_SCOPES,
   microsoftLoginHintForEmail,
 } from '../common/microsoft-oauth-credentials';
+import {
+  buildZohoAuthorizeUrl,
+  exchangeZohoAuthorizationCode,
+  getZohoAccountsServer,
+  isZohoOAuthConfigured,
+  resolveZohoOAuthMeta,
+} from '../common/zoho-oauth-credentials';
 
 function mePayload(
   u: NonNullable<Request['user']>,
@@ -382,6 +389,195 @@ export class AuthController {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Microsoft OAuth callback failed', err);
+      res.redirect(`${frontendBase}/employees?oauth_error=exchange_failed`);
+    }
+  }
+
+  /** Returns Zoho Mail OAuth URL (caller redirects browser). Requires Bearer auth. */
+  @Get('zoho/authorize-url')
+  async zohoAuthorizeUrl(
+    @Req() req: Request,
+    @Query('employee_id') employeeId: string,
+    @Query('reconnect') reconnect?: string,
+  ) {
+    if (!req.user) {
+      throw new UnauthorizedException('Sign in required');
+    }
+    if (!employeeId?.trim()) {
+      throw new BadRequestException('employee_id is required');
+    }
+    if (!isZohoOAuthConfigured()) {
+      throw new BadRequestException(
+        'Zoho OAuth is not configured. Set ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, and redirect URI on the server.',
+      );
+    }
+    const normalizedEmployeeId = employeeId.trim();
+    await this.employeesService.assertCanInitiateGmailOAuth(
+      getRequestContext(req),
+      normalizedEmployeeId,
+      req.user.id,
+      req.user.email?.trim().toLowerCase() ?? '',
+      req.user.linkedEmployeeId ?? undefined,
+    );
+    const state = await this.oauthStateService.createState({
+      employeeId: normalizedEmployeeId,
+      companyId: req.user.companyId,
+      userId: req.user.id,
+      role: req.user.role,
+    });
+    const hasToken = await this.oauthTokenService.hasToken(normalizedEmployeeId);
+    const existingProvider = hasToken
+      ? await this.oauthTokenService.getOAuthProvider(normalizedEmployeeId)
+      : null;
+    const forceConsent =
+      reconnect === '1' ||
+      reconnect === 'true' ||
+      existingProvider === 'google' ||
+      existingProvider === 'microsoft';
+    if (forceConsent) {
+      // Zoho uses prompt=consent in buildZohoAuthorizeUrl always for refresh token reliability.
+    }
+    return { url: buildZohoAuthorizeUrl(state, getZohoAccountsServer()) };
+  }
+
+  @PublicRoute()
+  @Get('zoho/callback')
+  async handleZohoCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Query('error') oauthError: string | undefined,
+    @Query('error_description') errorDescription: string | undefined,
+    @Query('accounts-server') accountsServerQuery: string | undefined,
+    @Res() res: Response,
+  ) {
+    const frontendBase = (process.env.FRONTEND_URL || 'http://localhost:3001').replace(/\/$/, '');
+
+    try {
+      if (oauthError) {
+        const hint = errorDescription ? `${oauthError}:${errorDescription}` : oauthError;
+        // eslint-disable-next-line no-console
+        console.error('Zoho OAuth callback error', hint);
+        res.redirect(
+          `${frontendBase}/employees?oauth_error=${encodeURIComponent(oauthError)}`,
+        );
+        return;
+      }
+
+      if (!code || !state) {
+        res.redirect(`${frontendBase}/employees?oauth_error=missing_code_or_state`);
+        return;
+      }
+      if (!isZohoOAuthConfigured()) {
+        res.redirect(`${frontendBase}/employees?oauth_error=not_configured`);
+        return;
+      }
+
+      let stateToken = state.trim();
+      if (stateToken.includes('%')) {
+        try {
+          stateToken = decodeURIComponent(stateToken);
+        } catch {
+          /* use trimmed original */
+        }
+      }
+
+      const payload = await this.oauthStateService.verifyAndConsumeState(stateToken);
+      const actor = await this.saasAuthService.findProfileByAuthId(payload.user_id);
+      if (!actor || actor.companyId !== payload.company_id) {
+        throw new UnauthorizedException('invalid_actor_context');
+      }
+      const oauthCtx: RequestContext = {
+        companyId: actor.companyId,
+        role: actor.role,
+        userId: actor.id,
+        employeeId: actor.role === 'EMPLOYEE' ? actor.linkedEmployeeId ?? undefined : undefined,
+        departmentId: actor.role === 'HEAD' ? actor.departmentId ?? undefined : undefined,
+      };
+      await this.employeesService.assertCanInitiateGmailOAuth(
+        oauthCtx,
+        payload.employee_id,
+        actor.id,
+        actor.email?.trim().toLowerCase() ?? '',
+        actor.linkedEmployeeId ?? undefined,
+      );
+
+      const validEmployee = await this.employeesService.employeeExists(payload.employee_id);
+      if (!validEmployee) {
+        throw new BadRequestException('invalid_employee');
+      }
+
+      let accountsServer = getZohoAccountsServer();
+      if (accountsServerQuery?.trim()) {
+        try {
+          accountsServer = decodeURIComponent(accountsServerQuery.trim()).replace(/\/$/, '');
+        } catch {
+          accountsServer = accountsServerQuery.trim().replace(/\/$/, '');
+        }
+      }
+
+      const tokens = await exchangeZohoAuthorizationCode(code.trim(), accountsServer);
+      if (!tokens.access_token) {
+        throw new BadRequestException('missing_access_token');
+      }
+      let refreshToken = tokens.refresh_token;
+      if (!refreshToken) {
+        refreshToken =
+          (await this.oauthTokenService.getExistingRefreshTokenPlaintext(
+            payload.employee_id,
+            'zoho',
+          )) ?? undefined;
+      }
+      if (!refreshToken) {
+        throw new BadRequestException(
+          'missing_refresh_token: Zoho did not issue a refresh token. Click Connect Zoho again and accept all permissions.',
+        );
+      }
+
+      const employee = await this.employeesService.getById(actor.companyId, payload.employee_id);
+      const employeeEmail = employee?.email?.trim() ?? '';
+      const zohoMeta = await resolveZohoOAuthMeta(
+        tokens.access_token,
+        employeeEmail,
+        accountsServer,
+      );
+
+      await this.oauthTokenService.upsertTokens(
+        payload.employee_id,
+        tokens.access_token,
+        refreshToken,
+        new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000),
+        tokens.scope,
+        'zoho',
+        zohoMeta,
+      );
+
+      await this.employeesService.ensureMailSyncAfterOAuth(payload.employee_id);
+      await this.auditLogService.log({
+        userId: actor.id,
+        companyId: actor.companyId,
+        action: 'zoho_connect',
+        entity: 'employee',
+        entityId: payload.employee_id,
+      });
+
+      const mailboxType = await this.employeesService.getMailboxType(payload.employee_id);
+      const isActorLinkedMailbox =
+        !!actor.linkedEmployeeId && actor.linkedEmployeeId === payload.employee_id;
+      let nextPath = '/employees';
+      if (mailboxType === 'SELF' || isActorLinkedMailbox) {
+        nextPath = '/my-email';
+      } else if (actor.role === 'HEAD') {
+        nextPath = '/team-mail-sync';
+      }
+      const done = new URL(`${frontendBase}/auth/gmail-oauth-done`);
+      done.searchParams.set('connected', '1');
+      done.searchParams.set('employee_id', payload.employee_id);
+      done.searchParams.set('provider', 'zoho');
+      done.searchParams.set('next', nextPath);
+      res.redirect(done.toString());
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Zoho OAuth callback failed', err);
       res.redirect(`${frontendBase}/employees?oauth_error=exchange_failed`);
     }
   }

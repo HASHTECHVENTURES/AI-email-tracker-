@@ -9,8 +9,19 @@ import {
   getMicrosoftOAuthCredentials,
   MICROSOFT_MAIL_SCOPES,
 } from '../common/microsoft-oauth-credentials';
+import {
+  refreshZohoAccessToken,
+  type ZohoOAuthMeta,
+} from '../common/zoho-oauth-credentials';
 
-export type OAuthProvider = 'google' | 'microsoft';
+export type OAuthProvider = 'google' | 'microsoft' | 'zoho';
+
+export function normalizeOAuthProvider(raw?: string | null): OAuthProvider {
+  const p = raw?.trim().toLowerCase();
+  if (p === 'microsoft') return 'microsoft';
+  if (p === 'zoho') return 'zoho';
+  return 'google';
+}
 
 interface OAuthTokenRow {
   employee_id: string;
@@ -19,6 +30,7 @@ interface OAuthTokenRow {
   expires_at: string;
   scope: string | null;
   oauth_provider?: string | null;
+  oauth_meta?: ZohoOAuthMeta | null;
 }
 
 @Injectable()
@@ -132,11 +144,9 @@ export class OauthTokenService {
       .maybeSingle();
     if (error || !data) return null;
     if (expectedProvider) {
-      const stored =
-        (data as { oauth_provider?: string | null }).oauth_provider?.trim().toLowerCase() ===
-        'microsoft'
-          ? 'microsoft'
-          : 'google';
+      const stored = normalizeOAuthProvider(
+        (data as { oauth_provider?: string | null }).oauth_provider,
+      );
       if (stored !== expectedProvider) return null;
     }
     try {
@@ -155,8 +165,35 @@ export class OauthTokenService {
       .select('oauth_provider')
       .eq('employee_id', tokenEmployeeId)
       .maybeSingle();
-    const p = (data as { oauth_provider?: string } | null)?.oauth_provider?.trim().toLowerCase();
-    return p === 'microsoft' ? 'microsoft' : 'google';
+    return normalizeOAuthProvider(
+      (data as { oauth_provider?: string } | null)?.oauth_provider,
+    );
+  }
+
+  async getZohoMeta(employeeId: string): Promise<ZohoOAuthMeta | null> {
+    const tokenEmployeeId = (await this.resolveTokenEmployeeId(employeeId)) ?? employeeId;
+    const { data } = await this.supabase
+      .from('employee_oauth_tokens')
+      .select('oauth_meta, oauth_provider')
+      .eq('employee_id', tokenEmployeeId)
+      .maybeSingle();
+    if (!data) return null;
+    if (normalizeOAuthProvider((data as { oauth_provider?: string }).oauth_provider) !== 'zoho') {
+      return null;
+    }
+    const meta = (data as { oauth_meta?: ZohoOAuthMeta | null }).oauth_meta;
+    return meta ?? null;
+  }
+
+  async updateZohoMeta(employeeId: string, meta: ZohoOAuthMeta): Promise<void> {
+    const tokenEmployeeId = (await this.resolveTokenEmployeeId(employeeId)) ?? employeeId;
+    const { error } = await this.supabase
+      .from('employee_oauth_tokens')
+      .update({ oauth_meta: meta, updated_at: new Date().toISOString() })
+      .eq('employee_id', tokenEmployeeId);
+    if (error) {
+      this.logger.warn(`updateZohoMeta failed for ${employeeId}: ${error.message}`);
+    }
   }
 
   async upsertTokens(
@@ -166,21 +203,23 @@ export class OauthTokenService {
     expiresAt: Date,
     scope?: string,
     oauthProvider: OAuthProvider = 'google',
+    oauthMeta?: ZohoOAuthMeta | null,
   ): Promise<void> {
+    const row: Record<string, unknown> = {
+      employee_id: employeeId,
+      access_token_enc: this.encryptionService.encrypt(accessToken),
+      refresh_token_enc: this.encryptionService.encrypt(refreshToken),
+      expires_at: expiresAt.toISOString(),
+      scope: scope ?? null,
+      oauth_provider: oauthProvider,
+      updated_at: new Date().toISOString(),
+    };
+    if (oauthMeta != null) {
+      row.oauth_meta = oauthMeta;
+    }
     const { error } = await this.supabase
       .from('employee_oauth_tokens')
-      .upsert(
-        {
-          employee_id: employeeId,
-          access_token_enc: this.encryptionService.encrypt(accessToken),
-          refresh_token_enc: this.encryptionService.encrypt(refreshToken),
-          expires_at: expiresAt.toISOString(),
-          scope: scope ?? null,
-          oauth_provider: oauthProvider,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'employee_id' },
-      );
+      .upsert(row, { onConflict: 'employee_id' });
 
     if (error) {
       this.logger.error(`Failed to upsert tokens for ${employeeId}`, error.message);
@@ -189,10 +228,12 @@ export class OauthTokenService {
   }
 
   private async refresh(employeeId: string, row: OAuthTokenRow): Promise<string> {
-    const provider: OAuthProvider =
-      row.oauth_provider?.trim().toLowerCase() === 'microsoft' ? 'microsoft' : 'google';
+    const provider = normalizeOAuthProvider(row.oauth_provider);
     if (provider === 'microsoft') {
       return this.refreshMicrosoft(employeeId, row);
+    }
+    if (provider === 'zoho') {
+      return this.refreshZoho(employeeId, row);
     }
     return this.refreshGoogle(employeeId, row);
   }
@@ -315,6 +356,59 @@ export class OauthTokenService {
       const msg = String((err as Error).message || '').toLowerCase();
       const status =
         msg.includes('invalid_grant') || msg.includes('revoked') ? 'REVOKED' : 'EXPIRED';
+      await this.supabase
+        .from('employees')
+        .update({ gmail_status: status })
+        .eq('id', employeeId);
+      throw new Error(`Token refresh failed for employee ${employeeId}: ${(err as Error).message}`);
+    }
+  }
+
+  private async refreshZoho(employeeId: string, row: OAuthTokenRow): Promise<string> {
+    this.logger.log(`Refreshing Zoho OAuth token for employee ${employeeId}`);
+    const meta = row.oauth_meta;
+    const accountsServer = meta?.accountsServer?.trim();
+    if (!accountsServer) {
+      throw new Error('Zoho accounts server missing from oauth_meta');
+    }
+    const refreshToken = this.encryptionService.decrypt(row.refresh_token_enc);
+
+    try {
+      const data = await retryWithBackoff(
+        () => refreshZohoAccessToken(refreshToken, accountsServer),
+        {
+          operationName: `oauth.refresh.zoho(${employeeId})`,
+          attempts: 3,
+          timeoutMs: 10_000,
+        },
+      );
+      if (!data.access_token) {
+        throw new Error('Zoho refresh returned no access_token');
+      }
+      const newExpiry = new Date(Date.now() + (data.expires_in ?? 3600) * 1000);
+      const newRefresh = data.refresh_token ?? refreshToken;
+
+      await this.upsertTokens(
+        employeeId,
+        data.access_token,
+        newRefresh,
+        newExpiry,
+        data.scope ?? row.scope ?? undefined,
+        'zoho',
+        meta ?? undefined,
+      );
+
+      await this.supabase
+        .from('employees')
+        .update({ gmail_status: 'CONNECTED' })
+        .eq('id', employeeId);
+
+      return data.access_token;
+    } catch (err) {
+      this.logger.error(`Zoho OAuth refresh failed for ${employeeId}: ${(err as Error).message}`);
+      const msg = String((err as Error).message || '').toLowerCase();
+      const status =
+        msg.includes('invalid') || msg.includes('revoked') ? 'REVOKED' : 'EXPIRED';
       await this.supabase
         .from('employees')
         .update({ gmail_status: status })

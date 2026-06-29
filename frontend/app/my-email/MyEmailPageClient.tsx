@@ -2776,6 +2776,33 @@ function MyEmailPageInner() {
     }
   }
 
+  async function connectZoho(mailboxId: string, opts?: { reconnect?: boolean }) {
+    const supabase = createClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return;
+    const qs = new URLSearchParams({ employee_id: mailboxId });
+    if (opts?.reconnect) qs.set('reconnect', '1');
+    const res = await apiFetch(
+      `/auth/zoho/authorize-url?${qs.toString()}`,
+      session.access_token,
+    );
+    const body = (await res.json().catch(() => ({}))) as {
+      url?: string;
+      message?: string;
+    };
+    if (!res.ok || !body.url) {
+      setError(body.message || 'Could not start Zoho connection');
+      return;
+    }
+    try {
+      openMailOAuthWindow(body.url, 'zoho');
+    } catch (err) {
+      setError((err as Error).message || 'Could not open Zoho sign-in');
+    }
+  }
+
   /** Signed-in user’s own inbox row (CEO or department manager) — uses session profile for POST /self-tracking/mailboxes. */
   async function connectMyInbox(provider: 'google' | 'microsoft' = 'google') {
     if (!token || !me) return;
@@ -5286,6 +5313,12 @@ function MyEmailPageInner() {
                                 mb.gmail_connected === true && mb.mail_provider === 'google',
                             })
                           }
+                          onConnectZoho={() =>
+                            void connectZoho(mb.id, {
+                              reconnect:
+                                mb.gmail_connected === true && mb.mail_provider !== 'zoho',
+                            })
+                          }
                           onRemove={() => void removeMailbox(mb.id)}
                           onTogglePause={(paused) => void toggleTrackingPause(mb, paused)}
                           removing={deletingId === mb.id}
@@ -5518,6 +5551,12 @@ function MyEmailPageInner() {
                             void connectOutlook(mb.id, {
                               reconnect:
                                 mb.gmail_connected === true && mb.mail_provider === 'google',
+                            })
+                          }
+                          onConnectZoho={() =>
+                            void connectZoho(mb.id, {
+                              reconnect:
+                                mb.gmail_connected === true && mb.mail_provider !== 'zoho',
                             })
                           }
                           onRemove={() => void removeMailbox(mb.id)}
