@@ -510,7 +510,7 @@ export class EmailIngestionService {
 
       const cycleSettings = await this.settingsService.getAll();
       const ingestedEmployeeIds = new Set<string>();
-      await this.ingestPriorityZohoEmptyMailboxes(cycleSettings, results, ingestedEmployeeIds);
+      await this.ingestPriorityZohoSelfMailboxes(cycleSettings, results, ingestedEmployeeIds);
 
       for (const companyId of companyIds) {
         const emailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(companyId);
@@ -694,8 +694,8 @@ export class EmailIngestionService {
     }
   }
 
-  /** Run Zoho mailboxes with zero stored mail before large Gmail backlogs in other tenants. */
-  private async ingestPriorityZohoEmptyMailboxes(
+  /** Run Zoho SELF mailboxes before large Gmail backlogs in other tenants. */
+  private async ingestPriorityZohoSelfMailboxes(
     cycleSettings: SystemSettings,
     results: IngestionResult[],
     ingestedEmployeeIds: Set<string>,
@@ -708,12 +708,6 @@ export class EmailIngestionService {
       const employeeId = (row as { employee_id: string }).employee_id;
       if (!employeeId || ingestedEmployeeIds.has(employeeId)) continue;
 
-      const { count } = await this.supabase
-        .from('email_messages')
-        .select('provider_message_id', { count: 'exact', head: true })
-        .eq('employee_id', employeeId);
-      if ((count ?? 0) > 0) continue;
-
       const { data: empRow } = await this.supabase
         .from('employees')
         .select(
@@ -722,12 +716,13 @@ export class EmailIngestionService {
         .eq('id', employeeId)
         .maybeSingle();
       if (!empRow || (empRow as { is_active?: boolean }).is_active === false) continue;
+      const mailboxTypeRaw = (empRow as { mailbox_type?: string }).mailbox_type;
+      if (mailboxTypeRaw === 'TEAM') continue;
 
       const companyId = (empRow as { company_id: string }).company_id;
       const emailCrawlOn = await this.companyPolicyService.isEmailCrawlEnabledForCompany(companyId);
       if (!emailCrawlOn) continue;
 
-      const mailboxTypeRaw = (empRow as { mailbox_type?: string }).mailbox_type;
       const mailboxType: Employee['mailboxType'] =
         mailboxTypeRaw === 'TEAM' ? 'TEAM' : mailboxTypeRaw === 'SELF' ? 'SELF' : 'SELF';
       const employee: Employee = {
@@ -745,7 +740,7 @@ export class EmailIngestionService {
         lastSyncedAt: (empRow as { last_synced_at?: string | null }).last_synced_at ?? null,
       };
 
-      this.logger.log(`Priority Zoho bootstrap ingest for ${employee.email}`);
+      this.logger.log(`Priority Zoho ingest for ${employee.email}`);
       try {
         const result = await this.ingestForEmployee(companyId, employee, cycleSettings);
         results.push(result);
