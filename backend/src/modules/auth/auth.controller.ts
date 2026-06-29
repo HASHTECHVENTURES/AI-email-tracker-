@@ -18,6 +18,7 @@ import { PublicRoute } from '../common/public-route.decorator';
 import { AllowPendingOnboarding } from '../common/allow-pending-onboarding.decorator';
 import { OauthStateService } from './oauth-state.service';
 import { AuditLogService } from '../common/audit-log.service';
+import { PasswordService } from './password.service';
 import { getRequestContext, type RequestContext } from '../common/request-context';
 import {
   getGoogleOAuthCredentials,
@@ -57,6 +58,7 @@ export class AuthController {
     private readonly saasAuthService: SaasAuthService,
     private readonly employeesService: EmployeesService,
     private readonly auditLogService: AuditLogService,
+    private readonly passwordService: PasswordService,
   ) {}
 
   @Get('status')
@@ -96,6 +98,23 @@ export class AuthController {
       );
     }
     return mePayload(u, managed);
+  }
+
+  @Post('change-password')
+  async changePassword(
+    @Req() req: Request,
+    @Body() body: { current_password?: string; new_password?: string },
+  ) {
+    if (!req.user) {
+      throw new UnauthorizedException('Sign in required');
+    }
+    const current = body.current_password?.trim() ?? '';
+    const next = body.new_password?.trim() ?? '';
+    if (!current || !next) {
+      throw new BadRequestException('current_password and new_password are required');
+    }
+    await this.passwordService.changeOwnPassword(req.user.email, req.user.id, current, next);
+    return { ok: true, message: 'Password updated. Use the new password on your next sign-in.' };
   }
 
   @Post('onboarding')

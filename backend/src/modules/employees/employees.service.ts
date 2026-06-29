@@ -806,6 +806,35 @@ export class EmployeesService {
       throw new ForbiddenException('Employees cannot change other users passwords');
     }
 
+    if (ctx.role === 'HEAD') {
+      const { data: emp } = await this.supabase
+        .from('employees')
+        .select('department_id')
+        .eq('id', employeeId)
+        .eq('company_id', ctx.companyId)
+        .maybeSingle();
+      if (!emp || !ctx.departmentId || (emp as { department_id: string }).department_id !== ctx.departmentId) {
+        throw new ForbiddenException('You can only manage employees in your department');
+      }
+    }
+
+    return this.setOrProvisionEmployeePortalPasswordInternal(ctx.companyId, employeeId, newPassword);
+  }
+
+  /** Platform admin: set or create Employee portal login (no manager/CEO role checks). */
+  async setOrProvisionEmployeePortalPasswordForPlatformAdmin(
+    companyId: string,
+    employeeId: string,
+    newPassword: string,
+  ): Promise<{ ok: true; action: 'password_updated' | 'login_created' }> {
+    return this.setOrProvisionEmployeePortalPasswordInternal(companyId, employeeId, newPassword);
+  }
+
+  private async setOrProvisionEmployeePortalPasswordInternal(
+    companyId: string,
+    employeeId: string,
+    newPassword: string,
+  ): Promise<{ ok: true; action: 'password_updated' | 'login_created' }> {
     const password = newPassword.trim();
     if (password.length < 8) {
       throw new BadRequestException('Password must be at least 8 characters');
@@ -821,11 +850,11 @@ export class EmployeesService {
       .from('employees')
       .select('id, name, email, company_id, department_id')
       .eq('id', employeeId)
-      .eq('company_id', ctx.companyId)
+      .eq('company_id', companyId)
       .maybeSingle();
 
     if (empErr) {
-      this.logger.error(`setOrProvisionEmployeePortalPassword load: ${empErr.message}`);
+      this.logger.error(`setOrProvisionEmployeePortalPasswordInternal load: ${empErr.message}`);
       throw empErr;
     }
     if (!emp) {
@@ -833,13 +862,6 @@ export class EmployeesService {
     }
 
     const row = emp as { id: string; name: string; email: string; company_id: string; department_id: string };
-
-    if (ctx.role === 'HEAD') {
-      if (!ctx.departmentId || row.department_id !== ctx.departmentId) {
-        throw new ForbiddenException('You can only manage employees in your department');
-      }
-    }
-
     const email = row.email.trim().toLowerCase();
     const fullName = row.name.trim();
 
@@ -859,6 +881,26 @@ export class EmployeesService {
       return { ok: true, action: 'password_updated' };
     }
 
+    const { data: byEmail } = await this.supabase
+      .from('users')
+      .select('id')
+      .eq('company_id', companyId)
+      .ilike('email', email)
+      .maybeSingle();
+
+    if (byEmail) {
+      const authId = (byEmail as { id: string }).id;
+      const { error: updErr } = await this.supabase.auth.admin.updateUserById(authId, { password });
+      if (updErr) {
+        throw new BadRequestException(updErr.message || 'Could not update password');
+      }
+      await this.supabase
+        .from('users')
+        .update({ linked_employee_id: employeeId })
+        .eq('id', authId);
+      return { ok: true, action: 'password_updated' };
+    }
+
     const { data: authData, error: authErr } = await this.supabase.auth.admin.createUser({
       email,
       password,
@@ -870,10 +912,10 @@ export class EmployeesService {
       const msg = authErr?.message ?? 'Could not create login';
       if (/already been registered|already exists|duplicate/i.test(msg)) {
         throw new BadRequestException(
-          'This email already has an auth account. If it is not linked to this employee, contact your administrator.',
+          'This email already has an auth account. Link or reset it from Portal users.',
         );
       }
-      this.logger.error(`setOrProvisionEmployeePortalPassword createUser: ${msg}`);
+      this.logger.error(`setOrProvisionEmployeePortalPasswordInternal createUser: ${msg}`);
       throw new BadRequestException(msg);
     }
 
@@ -883,7 +925,7 @@ export class EmployeesService {
       id: newAuthId,
       email,
       full_name: fullName,
-      company_id: ctx.companyId,
+      company_id: companyId,
       role: 'EMPLOYEE',
       department_id: row.department_id,
       linked_employee_id: employeeId,
@@ -891,7 +933,7 @@ export class EmployeesService {
 
     if (profileErr) {
       await this.safeDeleteAuthUser(newAuthId);
-      this.logger.error(`setOrProvisionEmployeePortalPassword users insert: ${profileErr.message}`);
+      this.logger.error(`setOrProvisionEmployeePortalPasswordInternal users insert: ${profileErr.message}`);
       throw new BadRequestException('Could not create app profile for this login.');
     }
 

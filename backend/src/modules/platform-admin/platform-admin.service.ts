@@ -16,6 +16,8 @@ import {
   istWeekStartIso,
   type IstDayBounds,
 } from './activity-ist';
+import { PasswordService } from '../auth/password.service';
+import { EmployeesService } from '../employees/employees.service';
 
 /** Counts of `public.users` rows per role for one company (portal logins, not org chart). */
 export interface PortalLoginRoleCounts {
@@ -60,6 +62,7 @@ export interface CompanyDetailEmployee {
   department_name: string | null;
   conversation_count: number;
   message_count: number;
+  has_portal_login: boolean;
 }
 
 export interface CompanyAiUsage {
@@ -103,7 +106,11 @@ export interface PlatformStats {
 export class PlatformAdminService {
   private readonly logger = new Logger(PlatformAdminService.name);
 
-  constructor(@Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient) {}
+  constructor(
+    @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
+    private readonly passwordService: PasswordService,
+    private readonly employeesService: EmployeesService,
+  ) {}
 
   async getStats(): Promise<PlatformStats> {
     const [companiesRes, usersRes, empsRes, convosRes, aiOffRes, crawlOffRes] = await Promise.all([
@@ -556,6 +563,10 @@ export class PlatformAdminService {
     ]);
 
     const users = ((usersRes.data ?? []) as CompanyDetailUser[]);
+    const linkedEmployeeIds = new Set(
+      users.map((u) => u.linked_employee_id).filter((id): id is string => Boolean(id)),
+    );
+    const userEmails = new Set(users.map((u) => u.email.trim().toLowerCase()));
     const deptMap = new Map<string, string>();
     for (const d of (deptsRes.data ?? []) as { id: string; name: string }[]) {
       deptMap.set(d.id, d.name);
@@ -600,6 +611,8 @@ export class PlatformAdminService {
       department_name: e.department_id ? deptMap.get(e.department_id) ?? null : null,
       conversation_count: convoCounts.get(e.id) ?? 0,
       message_count: msgCounts.get(e.id) ?? 0,
+      has_portal_login:
+        linkedEmployeeIds.has(e.id) || userEmails.has(e.email.trim().toLowerCase()),
     }));
 
     const [aiClassifiedRes, aiQuotaFallbackRes, aiEnrichedRes, histRunsRes, lastHistRes] = await Promise.all([
@@ -658,6 +671,37 @@ export class PlatformAdminService {
         departments: deptMap.size,
       },
     };
+  }
+
+  async setCompanyUserPassword(
+    companyId: string,
+    userId: string,
+    newPassword: string,
+  ): Promise<{ ok: true; action: 'password_updated' }> {
+    const { data: user, error } = await this.supabase
+      .from('users')
+      .select('id, email, company_id')
+      .eq('id', userId)
+      .eq('company_id', companyId)
+      .maybeSingle();
+
+    if (error) throw new BadRequestException(error.message);
+    if (!user) throw new NotFoundException('Portal user not found in this company');
+
+    await this.passwordService.updatePasswordByAuthId(userId, newPassword);
+    return { ok: true, action: 'password_updated' };
+  }
+
+  async setCompanyEmployeePortalPassword(
+    companyId: string,
+    employeeId: string,
+    newPassword: string,
+  ): Promise<{ ok: true; action: 'password_updated' | 'login_created' }> {
+    return this.employeesService.setOrProvisionEmployeePortalPasswordForPlatformAdmin(
+      companyId,
+      employeeId,
+      newPassword,
+    );
   }
 
   async deleteCompany(companyId: string): Promise<void> {

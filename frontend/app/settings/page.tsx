@@ -11,6 +11,7 @@ import { isDepartmentManagerRole } from '@/lib/roles';
 import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { AppShell } from '@/components/AppShell';
 import { PortalPageLoader } from '@/components/PortalPageLoader';
+import { ChangePasswordCard } from '@/components/ChangePasswordCard';
 
 type Me = { role: string; company_name?: string | null };
 type Settings = {
@@ -750,6 +751,12 @@ export default function SettingsPage() {
           ) : null}
         </section>
       )}
+
+      {token ? (
+        <div className="mt-8">
+          <ChangePasswordCard accessToken={token} />
+        </div>
+      ) : null}
     </AppShell>
   );
 }

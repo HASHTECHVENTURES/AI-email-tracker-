@@ -4,6 +4,7 @@ import { supabaseProvider } from '../common/supabase.provider';
 import { OauthTokenService } from './oauth-token.service';
 import { AuthController } from './auth.controller';
 import { SaasAuthService } from './saas-auth.service';
+import { PasswordService } from './password.service';
 import { AppAuthGuard } from './app-auth.guard';
 import { EmployeesModule } from '../employees/employees.module';
 import { EncryptionService } from './encryption.service';
@@ -20,9 +21,10 @@ import { AuditLogService } from '../common/audit-log.service';
     OauthStateService,
     AuditLogService,
     SaasAuthService,
+    PasswordService,
     AppAuthGuard,
     { provide: APP_GUARD, useExisting: AppAuthGuard },
   ],
-  exports: [OauthTokenService, EncryptionService, OauthStateService, supabaseProvider, AppAuthGuard],
+  exports: [OauthTokenService, EncryptionService, OauthStateService, supabaseProvider, AppAuthGuard, PasswordService],
 })
 export class AuthModule {}

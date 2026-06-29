@@ -15,6 +15,7 @@ const devDocumentNoStore = [
   '/companies/:path*',
   '/billing',
   '/activity',
+  '/account',
 ];
 
 const nextConfig = {

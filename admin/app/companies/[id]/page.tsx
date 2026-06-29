@@ -10,6 +10,7 @@ import { formatBytes, formatDate, formatInr, formatUsd } from '@/lib/admin/forma
 import { usePlatformAdmin } from '@/lib/admin/use-platform-admin';
 import { apiFetch } from '@/lib/api';
 import type { CompanyBillingDetail, CompanyDetail } from '@/lib/admin/types';
+import { PortalPasswordModal, type PortalPasswordTarget } from '@/components/admin/PortalPasswordModal';
 
 function formatDayLabel(day: string): string {
   const [y, m, d] = day.split('-').map(Number);
@@ -46,6 +47,8 @@ function AdminCompanyDetailPageContent() {
   const [pageLoading, setPageLoading] = useState(true);
   const [pending, setPending] = useState<'ai' | 'email' | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [passwordTarget, setPasswordTarget] = useState<PortalPasswordTarget | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const savingRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -119,6 +122,12 @@ function AdminCompanyDetailPageContent() {
         title={detail.name}
         description={`Created ${formatDate(detail.created_at)} · ${detail.totals.employees} mailboxes · ${detail.totals.conversations} conversations`}
       />
+
+      {notice ? (
+        <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          {notice}
+        </div>
+      ) : null}
 
       <div className="mb-8 grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatCard label="Messages stored" value={detail.totals.messages.toLocaleString()} />
@@ -222,6 +231,7 @@ function AdminCompanyDetailPageContent() {
                 <th className="px-4 py-3">Department</th>
                 <th className="px-4 py-3 text-right">Msgs</th>
                 <th className="px-4 py-3 text-right">Convos</th>
+                <th className="px-4 py-3">Portal login</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -234,6 +244,23 @@ function AdminCompanyDetailPageContent() {
                   <td className="px-4 py-3 text-slate-600">{e.department_name ?? '—'}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{e.message_count}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{e.conversation_count}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPasswordTarget({
+                          kind: 'employee',
+                          employeeId: e.id,
+                          email: e.email,
+                          name: e.name,
+                          hasLogin: e.has_portal_login === true,
+                        })
+                      }
+                      className="text-sm font-medium text-brand-600 hover:underline"
+                    >
+                      {e.has_portal_login ? 'Change password' : 'Set password'}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -243,27 +270,69 @@ function AdminCompanyDetailPageContent() {
 
       <section>
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Portal users</h2>
+        <p className="mb-3 text-xs text-slate-500">
+          CEO, managers, and employees with portal logins. Reset passwords here or under mailboxes for employee-linked accounts.
+        </p>
         <div className="overflow-x-auto rounded-2xl border border-slate-200/80 bg-white shadow-sm">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase text-slate-400">
               <tr>
-                <th className="px-4 py-3">Email</th>
+                <th className="px-4 py-3">User</th>
                 <th className="px-4 py-3">Role</th>
                 <th className="px-4 py-3">Joined</th>
+                <th className="px-4 py-3">Password</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {detail.users.map((u) => (
+              {[...detail.users]
+                .sort((a, b) => {
+                  const order = { CEO: 0, HEAD: 1, EMPLOYEE: 2 };
+                  return (order[a.role as keyof typeof order] ?? 9) - (order[b.role as keyof typeof order] ?? 9);
+                })
+                .map((u) => (
                 <tr key={u.id}>
-                  <td className="px-4 py-3">{u.email}</td>
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-slate-900">{u.full_name?.trim() || u.email}</div>
+                    <div className="text-xs text-slate-500">{u.email}</div>
+                  </td>
                   <td className="px-4 py-3">{u.role}</td>
                   <td className="px-4 py-3 text-slate-500">{formatDate(u.created_at)}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPasswordTarget({
+                          kind: 'user',
+                          userId: u.id,
+                          email: u.email,
+                          name: u.full_name?.trim() || u.email,
+                          role: u.role,
+                        })
+                      }
+                      className="text-sm font-medium text-brand-600 hover:underline"
+                    >
+                      Reset password
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </section>
+
+      {passwordTarget && token ? (
+        <PortalPasswordModal
+          companyId={companyId}
+          target={passwordTarget}
+          token={token}
+          onClose={() => setPasswordTarget(null)}
+          onSaved={(msg) => {
+            setNotice(msg);
+            void load();
+          }}
+        />
+      ) : null}
     </AdminShell>
   );
 }

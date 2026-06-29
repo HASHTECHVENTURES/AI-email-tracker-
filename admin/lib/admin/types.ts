@@ -53,6 +53,7 @@ export type CompanyDetail = {
     department_name: string | null;
     conversation_count: number;
     message_count: number;
+    has_portal_login?: boolean;
   }>;
   ai_usage: {
     ai_classified_messages: number;

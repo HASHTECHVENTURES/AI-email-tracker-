@@ -9,6 +9,7 @@ import {
   Post,
   Req,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { PlatformAdminGuard, isPlatformAdminUser } from './platform-admin.guard';
@@ -90,6 +91,34 @@ export class PlatformAdminController {
   @UseGuards(PlatformAdminGuard)
   companyDetail(@Param('id') id: string) {
     return this.platformAdminService.getCompanyDetail(id);
+  }
+
+  @Patch('companies/:companyId/users/:userId/password')
+  @UseGuards(PlatformAdminGuard)
+  async setCompanyUserPassword(
+    @Param('companyId') companyId: string,
+    @Param('userId') userId: string,
+    @Body() body: { password?: string },
+  ) {
+    const password = body.password?.trim() ?? '';
+    if (!password) {
+      throw new BadRequestException('password is required (min 8 characters)');
+    }
+    return this.platformAdminService.setCompanyUserPassword(companyId, userId, password);
+  }
+
+  @Patch('companies/:companyId/employees/:employeeId/portal-password')
+  @UseGuards(PlatformAdminGuard)
+  async setCompanyEmployeePortalPassword(
+    @Param('companyId') companyId: string,
+    @Param('employeeId') employeeId: string,
+    @Body() body: { password?: string },
+  ) {
+    const password = body.password?.trim() ?? '';
+    if (!password) {
+      throw new BadRequestException('password is required (min 8 characters)');
+    }
+    return this.platformAdminService.setCompanyEmployeePortalPassword(companyId, employeeId, password);
   }
 
   @Delete('companies/:id')

@@ -8,6 +8,7 @@ const NAV = [
   { href: '/companies', label: 'Companies' },
   { href: '/billing', label: 'Billing & usage' },
   { href: '/activity', label: 'Activity' },
+  { href: '/account', label: 'Account' },
 ] as const;
 
 function navActive(pathname: string, href: string, exact?: boolean): boolean {
