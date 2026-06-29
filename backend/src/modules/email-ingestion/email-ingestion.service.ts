@@ -354,6 +354,37 @@ export class EmailIngestionService {
     return this.fetchMailFullMessage(employeeId, employeeEmail, messageId);
   }
 
+  /**
+   * Zoho detail payloads often carry wrong sent times. Prefer list timestamps and, on first
+   * sync for an empty mailbox, trust ids returned from the list API instead of dropping mail.
+   */
+  async reconcileZohoMessageWindow(
+    employeeId: string,
+    messageId: string,
+    msg: EmailMessage,
+    windowStart: Date,
+    windowEnd: Date,
+    options?: { zohoBootstrap?: boolean },
+  ): Promise<{ msg: EmailMessage; inWindow: boolean }> {
+    const provider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    if (provider !== 'zoho') {
+      return {
+        msg,
+        inWindow: msg.sentAt >= windowStart && msg.sentAt <= windowEnd,
+      };
+    }
+    const listedMs = this.zohoMailService.getListedMessageTime(employeeId, messageId);
+    const next =
+      listedMs != null ? { ...msg, sentAt: new Date(listedMs) } : msg;
+    if (next.sentAt >= windowStart && next.sentAt <= windowEnd) {
+      return { msg: next, inWindow: true };
+    }
+    if (options?.zohoBootstrap) {
+      return { msg: next, inWindow: true };
+    }
+    return { msg: next, inWindow: false };
+  }
+
   async fetchHistoricalThreadForRelevance(
     employeeId: string,
     employeeEmail: string,
@@ -763,6 +794,12 @@ export class EmailIngestionService {
     const syncState = await this.getSyncState(employee.id);
     const resumeToken = syncState?.gmail_list_page_token ?? null;
     const resumeEpoch = syncState?.gmail_list_query_after_epoch ?? null;
+    const mailProvider = await this.oauthTokenService.getOAuthProvider(employee.id);
+    const { count: storedMsgCount } = await this.supabase
+      .from('email_messages')
+      .select('provider_message_id', { count: 'exact', head: true })
+      .eq('employee_id', employee.id);
+    const zohoBootstrap = mailProvider === 'zoho' && (storedMsgCount ?? 0) === 0;
 
     const listAfterDate = this.liveListAfterDate(
       syncState,
@@ -987,7 +1024,7 @@ export class EmailIngestionService {
       }
 
       try {
-        const msg = await this.fetchMailFullMessage(employee.id, employee.email, msgId);
+        let msg = await this.fetchMailFullMessage(employee.id, employee.email, msgId);
 
         if (
           await this.conversationsService.isThreadPermanentlyResolved(
@@ -1016,7 +1053,16 @@ export class EmailIngestionService {
         }
 
         const startAt = new Date(tracking.trackingStartAt);
-        if (msg.sentAt < startAt) {
+        const zohoWindow = await this.reconcileZohoMessageWindow(
+          employee.id,
+          msgId,
+          msg,
+          startAt,
+          new Date(),
+          { zohoBootstrap },
+        );
+        msg = zohoWindow.msg;
+        if (!zohoWindow.inWindow) {
           skippedFiltered += 1;
           skippedBeforeTrackingWindow += 1;
           continue;

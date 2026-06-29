@@ -88,15 +88,29 @@ export class ZohoMailService {
     const row = msg as Record<string, unknown>;
     const candidates: unknown[] = [
       msg[prefer],
-      prefer === 'receivedTime' ? row.receivedtime : row.sentdateingmt,
-      msg.sentDateInGMT,
+      prefer === 'receivedTime'
+        ? [row.receivedtime, row.receivedTime, row.received_time]
+        : [row.sentdateingmt, row.sentDateInGMT, row.sent_date_in_gmt],
       msg.receivedTime,
-    ];
+      row.receivedtime,
+      msg.sentDateInGMT,
+      row.sentdateingmt,
+    ].flat();
     for (const raw of candidates) {
       const ms = this.parseTimeMs(raw as string | number | undefined);
       if (ms != null) return ms;
     }
     return null;
+  }
+
+  /** Timestamp captured when this message id was listed (same ingest/historical request). */
+  getListedMessageTime(employeeId: string, messageId: string): number | null {
+    const id = zohoId(messageId);
+    const cached = this.lookupMessageTime(employeeId, id);
+    if (cached != null) return cached;
+    const row = this.lookupMessageRow(employeeId, id);
+    if (!row) return null;
+    return this.messageTimeMs(row, 'receivedTime') ?? this.messageTimeMs(row, 'sentDateInGMT');
   }
 
   private async parseZohoListResponse(res: Response): Promise<ZohoListMessage[]> {
@@ -571,12 +585,12 @@ export class ZohoMailService {
     const replyToEmail = msg.replyTo?.trim() || null;
     const subject = msg.subject ?? '';
     // List API receivedTime is reliable for inbox mail; details often return stale/wrong sentDateInGMT.
-    const cachedSentMs = this.lookupMessageTime(employeeId, zohoId(messageId));
+    const listedMs = this.getListedMessageTime(employeeId, messageId);
     const rawSentMs =
       this.messageTimeMs(msg, 'receivedTime') ??
       this.messageTimeMs(msg, 'sentDateInGMT') ??
       null;
-    const sentMs = cachedSentMs ?? rawSentMs ?? Date.now();
+    const sentMs = listedMs ?? rawSentMs ?? Date.now();
     const sentAt = new Date(sentMs);
     const rawBody = msg.content ?? msg.summary ?? '';
     const bodyText = /<[a-z][\s\S]*>/i.test(rawBody) ? this.htmlToPlainText(rawBody) : rawBody;

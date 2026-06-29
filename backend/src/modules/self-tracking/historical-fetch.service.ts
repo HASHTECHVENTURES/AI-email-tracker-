@@ -195,6 +195,13 @@ export class HistoricalFetchService {
     const startDate = new Date(startMs);
     const endDate = new Date(endMs);
 
+    const { count: storedMsgCount } = await this.supabase
+      .from('email_messages')
+      .select('provider_message_id', { count: 'exact', head: true })
+      .eq('employee_id', employeeId);
+    const mailProvider = await this.oauthTokenService.getOAuthProvider(employeeId);
+    const zohoBootstrap = mailProvider === 'zoho' && (storedMsgCount ?? 0) === 0;
+
     const messageIds: string[] = [];
     let pageToken: string | null = null;
     for (let page = 0; page < 10; page++) {
@@ -342,7 +349,7 @@ export class HistoricalFetchService {
           stoppedEarly = true;
           break;
         }
-        const msg = await this.emailIngestionService.fetchHistoricalFullMessage(
+        let msg = await this.emailIngestionService.fetchHistoricalFullMessage(
           employeeId,
           employee.email,
           msgId,
@@ -377,7 +384,16 @@ export class HistoricalFetchService {
           continue;
         }
 
-        if (msg.sentAt < startDate || msg.sentAt > endDate) {
+        const zohoWindow = await this.emailIngestionService.reconcileZohoMessageWindow(
+          employeeId,
+          msgId,
+          msg,
+          startDate,
+          endDate,
+          { zohoBootstrap },
+        );
+        msg = zohoWindow.msg;
+        if (!zohoWindow.inWindow) {
           onProgress?.({
             phase: 'ai_decision',
             index,
