@@ -1,5 +1,7 @@
 'use client';
 
+import { redirectToAdminApp } from '@/lib/admin-app-url';
+
 import {
   Suspense,
   useCallback,
@@ -204,7 +206,7 @@ function ManagerMyMailInner() {
       return;
     }
     if (me.role === 'PLATFORM_ADMIN') {
-      router.replace('/admin');
+      redirectToAdminApp('/');
       return;
     }
     if (!isDepartmentManagerRole(me.role)) {

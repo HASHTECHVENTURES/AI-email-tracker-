@@ -1,5 +1,7 @@
 'use client';
 
+import { redirectToAdminApp } from '@/lib/admin-app-url';
+
 import {
   Suspense,
   useCallback,
@@ -2605,7 +2607,7 @@ function MyEmailPageInner() {
       return;
     }
     if (me.role === 'PLATFORM_ADMIN') {
-      router.replace('/admin');
+      redirectToAdminApp('/');
       return;
     }
     /** My Email: CEO full workspace; HEAD/EMPLOYEE — scoped mailboxes and follow-ups. */
@@ -4622,7 +4624,7 @@ function MyEmailPageInner() {
   }
 
   if (me.role === 'PLATFORM_ADMIN') {
-    router.replace('/admin');
+    redirectToAdminApp('/');
     return (
       <div className="flex min-h-screen items-center justify-center bg-surface">
         <PortalPageLoader variant="embedded" />

@@ -21,7 +21,7 @@ export default function AdminCompaniesPage() {
     error,
     setError,
     reload,
-  } = usePlatformAdmin('/admin/companies');
+  } = usePlatformAdmin('/companies');
   const [pending, setPending] = useState<{ id: string; field: 'ai' | 'email' } | null>(null);
   const savingRef = useRef<Set<string>>(new Set());
 
@@ -120,7 +120,7 @@ export default function AdminCompaniesPage() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <Link href={`/admin/companies/${c.id}`} className="font-medium text-brand-600 hover:underline">
+                    <Link href={`/companies/${c.id}`} className="font-medium text-brand-600 hover:underline">
                       Manage →
                     </Link>
                   </td>

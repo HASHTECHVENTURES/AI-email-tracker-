@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client';
 import { formatAuthClientError } from '@/lib/supabase/public-env';
 import { getBrowserSession } from '@/lib/supabase/session';
 import { apiFetch } from '@/lib/api';
+import { adminAppUrl, redirectToAdminApp } from '@/lib/admin-app-url';
 import { useAuth } from '@/lib/auth-context';
 import { PasswordInput } from '@/components/PasswordInput';
 
@@ -185,11 +186,10 @@ function AuthPageInner() {
   );
   const safeNext = hasExplicitNext ? (nextPathRaw as string) : '/dashboard';
 
-  /** Platform operators use /admin/* only — never the tenant dashboard. */
+  /** Platform operators use the standalone admin app — never the tenant dashboard. */
   function postLoginPath(role: string | undefined, path: string): string {
     if (role === 'PLATFORM_ADMIN') {
-      if (path.startsWith('/admin')) return path;
-      return '/admin';
+      return adminAppUrl('/');
     }
     return path;
   }
@@ -291,19 +291,19 @@ function AuthPageInner() {
     }
   }, []);
 
-  /** Platform operators must never enter tenant onboarding; send them directly to /admin. */
+  /** Platform operators must never enter tenant onboarding; send them to the admin app. */
   const redirectIfPlatformAdmin = useCallback(
     async (accessToken: string): Promise<boolean> => {
       const res = await apiFetch('/platform-admin/me', accessToken);
       if (!res.ok) return false;
       const body = (await res.json().catch(() => ({}))) as { allowed?: boolean };
       if (body.allowed) {
-        router.replace('/admin');
+        redirectToAdminApp('/');
         return true;
       }
       return false;
     },
-    [router],
+    [],
   );
 
   const finalizeOnboarding = useCallback(

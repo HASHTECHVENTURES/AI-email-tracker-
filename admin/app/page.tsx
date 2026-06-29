@@ -11,7 +11,7 @@ import { useEffect, useState } from 'react';
 import type { BillingOverview } from '@/lib/admin/types';
 
 export default function AdminDashboardPage() {
-  const { allowed, loading, stats, companies, me, signOut, token } = usePlatformAdmin('/admin');
+  const { allowed, loading, stats, companies, me, signOut, token } = usePlatformAdmin('/');
   const [billing, setBilling] = useState<BillingOverview | null>(null);
 
   useEffect(() => {
@@ -56,7 +56,7 @@ export default function AdminDashboardPage() {
           <section>
             <div className="mb-3 flex items-end justify-between gap-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">This month (est.)</h2>
-              <Link href="/admin/billing" className="text-sm font-medium text-brand-600 hover:underline">
+              <Link href="/billing" className="text-sm font-medium text-brand-600 hover:underline">
                 Full billing →
               </Link>
             </div>
@@ -72,7 +72,7 @@ export default function AdminDashboardPage() {
         <section>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Companies</h2>
-            <Link href="/admin/companies" className="text-sm font-medium text-brand-600 hover:underline">
+            <Link href="/companies" className="text-sm font-medium text-brand-600 hover:underline">
               View all →
             </Link>
           </div>
@@ -95,7 +95,7 @@ export default function AdminDashboardPage() {
                     <td className="px-4 py-3">{c.admin_ai_enabled ? 'On' : 'Off'}</td>
                     <td className="px-4 py-3">{c.admin_email_crawl_enabled ? 'On' : 'Off'}</td>
                     <td className="px-4 py-3 text-right">
-                      <Link href={`/admin/companies/${c.id}`} className="text-brand-600 hover:underline">
+                      <Link href={`/companies/${c.id}`} className="text-brand-600 hover:underline">
                         Open
                       </Link>
                     </td>

@@ -4,10 +4,10 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const NAV = [
-  { href: '/admin', label: 'Overview', exact: true },
-  { href: '/admin/companies', label: 'Companies' },
-  { href: '/admin/billing', label: 'Billing & usage' },
-  { href: '/admin/activity', label: 'Activity' },
+  { href: '/', label: 'Overview', exact: true },
+  { href: '/companies', label: 'Companies' },
+  { href: '/billing', label: 'Billing & usage' },
+  { href: '/activity', label: 'Activity' },
 ] as const;
 
 function navActive(pathname: string, href: string, exact?: boolean): boolean {
@@ -64,7 +64,7 @@ export function AdminShell({
                 </Link>
               ))}
               <Link
-                href="/admin/companies/new"
+                href="/companies/new"
                 className="mt-2 block w-full rounded-xl border border-dashed border-slate-300 px-3 py-2.5 text-center text-sm font-semibold text-slate-700 hover:border-slate-400 hover:bg-slate-50"
               >
                 + Add company
@@ -104,7 +104,7 @@ export function AdminShell({
                   {item.label}
                 </Link>
               ))}
-              <Link href="/admin/companies/new" className={navMobileClass(pathname === '/admin/companies/new')}>
+              <Link href="/companies/new" className={navMobileClass(pathname === '/companies/new')}>
                 + Company
               </Link>
             </nav>

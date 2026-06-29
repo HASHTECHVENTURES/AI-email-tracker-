@@ -1,5 +1,7 @@
 'use client';
 
+import { redirectToAdminApp } from '@/lib/admin-app-url';
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -320,7 +322,7 @@ export default function DashboardPage() {
       return;
     }
     if (me.role === 'PLATFORM_ADMIN') {
-      router.replace('/admin');
+      redirectToAdminApp('/');
       return;
     }
     let cancelled = false;

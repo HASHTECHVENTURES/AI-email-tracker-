@@ -21,7 +21,7 @@ type ActivityData = {
 };
 
 export default function AdminActivityPage() {
-  const { allowed, loading, me, signOut, token } = usePlatformAdmin('/admin/activity');
+  const { allowed, loading, me, signOut, token } = usePlatformAdmin('/activity');
   const [data, setData] = useState<ActivityData | null>(null);
   const [actLoading, setActLoading] = useState(true);
 

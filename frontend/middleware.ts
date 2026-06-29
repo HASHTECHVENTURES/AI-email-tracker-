@@ -80,7 +80,6 @@ export async function middleware(request: NextRequest) {
     }
 
     const protectedPaths = [
-      '/admin',
       '/dashboard',
       '/conversation',
       '/departments',
@@ -92,15 +91,22 @@ export async function middleware(request: NextRequest) {
       '/my-mail',
       '/team-mail-sync',
     ];
-    const isAdminLogin = pathname === '/admin/login';
-    const isProtected = !isAdminLogin && protectedPaths.some((p) => pathname.startsWith(p));
+    const isProtected = protectedPaths.some((p) => pathname.startsWith(p));
+
+    if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+      const adminBase = process.env.NEXT_PUBLIC_ADMIN_APP_URL?.trim().replace(/\/$/, '');
+      if (adminBase) {
+        const suffix = pathname === '/admin' ? '/' : pathname.replace(/^\/admin/, '') || '/';
+        return NextResponse.redirect(new URL(suffix, `${adminBase}/`));
+      }
+    }
 
     const canAccessProtected =
       hasValidUser || (!clearedStaleSession && hasSupabaseSessionCookie);
 
     if (!canAccessProtected && isProtected) {
       const redirectUrl = request.nextUrl.clone();
-      redirectUrl.pathname = pathname.startsWith('/admin') ? '/admin/login' : '/auth';
+      redirectUrl.pathname = '/auth';
       // Do not clone the full query string (e.g. Gmail OAuth adds connected=, employee_id=).
       // Only forward a safe subset so /auth stays predictable and we can re-attach success after login.
       redirectUrl.search = '';
@@ -121,12 +127,12 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
+    '/admin',
+    '/admin/:path*',
     '/auth',
     '/auth/:path*',
     '/portal',
     '/portal/:path*',
-    '/admin',
-    '/admin/:path*',
     '/dashboard',
     '/dashboard/:path*',
     '/conversation/:path*',

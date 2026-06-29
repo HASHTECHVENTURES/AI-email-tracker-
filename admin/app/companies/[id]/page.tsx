@@ -15,7 +15,7 @@ export default function AdminCompanyDetailPage() {
   const params = useParams();
   const router = useRouter();
   const companyId = String(params.id ?? '');
-  const { allowed, loading, me, signOut, token } = usePlatformAdmin(`/admin/companies/${companyId}`);
+  const { allowed, loading, me, signOut, token } = usePlatformAdmin(`/companies/${companyId}`);
   const [detail, setDetail] = useState<CompanyDetail | null>(null);
   const [billing, setBilling] = useState<CompanyBillingRow | null>(null);
   const [pageLoading, setPageLoading] = useState(true);
@@ -65,7 +65,7 @@ export default function AdminCompanyDetailPage() {
       const res = await apiFetch(`/platform-admin/companies/${encodeURIComponent(companyId)}`, token, {
         method: 'DELETE',
       });
-      if (res.ok) router.push('/admin/companies');
+      if (res.ok) router.push('/companies');
     } finally {
       setDeleting(false);
     }
@@ -84,7 +84,7 @@ export default function AdminCompanyDetailPage() {
   return (
     <AdminShell title={detail.name} userDisplayName={me?.full_name ?? me?.email} onSignOut={() => void signOut()}>
       <div className="mb-4">
-        <Link href="/admin/companies" className="text-sm text-brand-600 hover:underline">
+        <Link href="/companies" className="text-sm text-brand-600 hover:underline">
           ← All companies
         </Link>
       </div>

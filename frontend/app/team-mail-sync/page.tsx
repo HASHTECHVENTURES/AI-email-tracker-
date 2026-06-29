@@ -1,5 +1,7 @@
 'use client';
 
+import { redirectToAdminApp } from '@/lib/admin-app-url';
+
 import Link from 'next/link';
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
@@ -172,7 +174,7 @@ function TeamMailSyncInner() {
       return;
     }
     if (me.role === 'PLATFORM_ADMIN') {
-      router.replace('/admin');
+      redirectToAdminApp('/');
       return;
     }
     if (!isDepartmentManagerRole(me.role)) {

@@ -8,9 +8,9 @@ import { useRefetchOnFocus } from '@/lib/use-refetch-on-focus';
 import { useSupabaseRealtimeRefresh } from '@/lib/use-supabase-realtime-refresh';
 import type { CompanyRow, PlatformStats } from './types';
 
-export function usePlatformAdmin(loginNext = '/admin') {
+export function usePlatformAdmin(loginNext = '/') {
   const router = useRouter();
-  const { token, authLoading, me, signOut } = useAuth();
+  const { token, loading: authLoading, me, signOut } = useAuth();
   const [allowed, setAllowed] = useState<boolean | null>(null);
   const [stats, setStats] = useState<PlatformStats | null>(null);
   const [companies, setCompanies] = useState<CompanyRow[]>([]);
@@ -49,7 +49,7 @@ export function usePlatformAdmin(loginNext = '/admin') {
   useEffect(() => {
     if (authLoading) return;
     if (!token) {
-      router.replace(`/admin/login?next=${encodeURIComponent(loginNext)}`);
+      router.replace(`/login?next=${encodeURIComponent(loginNext)}`);
       return;
     }
     setLoading(true);

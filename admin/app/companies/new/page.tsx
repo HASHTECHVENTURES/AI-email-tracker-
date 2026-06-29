@@ -10,7 +10,7 @@ import { apiFetch } from '@/lib/api';
 
 export default function AdminNewCompanyPage() {
   const router = useRouter();
-  const { allowed, loading, me, signOut, token } = usePlatformAdmin('/admin/companies/new');
+  const { allowed, loading, me, signOut, token } = usePlatformAdmin('/companies/new');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -38,7 +38,7 @@ export default function AdminNewCompanyPage() {
         return;
       }
       const created = (await res.json()) as { id?: string };
-      router.push(created.id ? `/admin/companies/${created.id}` : '/admin/companies');
+      router.push(created.id ? `/companies/${created.id}` : '/companies');
     } finally {
       setCreating(false);
     }

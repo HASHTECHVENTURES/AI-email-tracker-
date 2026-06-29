@@ -1,7 +1,6 @@
 'use client';
 
 import { FormEvent, Suspense, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { PasswordInput } from '@/components/PasswordInput';
 import { apiFetch } from '@/lib/api';
@@ -16,13 +15,13 @@ function AdminLoginInner() {
   const searchParams = useSearchParams();
   const nextPath = useMemo(() => {
     const raw = searchParams.get('next');
-    if (!raw || !raw.startsWith('/')) return '/admin';
-    if (raw.startsWith('//')) return '/admin';
+    if (!raw || !raw.startsWith('/')) return '/';
+    if (raw.startsWith('//')) return '/';
     return raw;
   }, [searchParams]);
 
-  const [email, setEmail] = useState('email@gmail.com');
-  const [password, setPassword] = useState('Hello1234@');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,7 +39,7 @@ function AdminLoginInner() {
         if (meRes.ok) {
           const body = (await meRes.json().catch(() => ({}))) as { allowed?: boolean };
           if (body.allowed) {
-            router.replace('/admin');
+            router.replace('/');
           }
         }
       } catch (err) {
@@ -84,7 +83,7 @@ function AdminLoginInner() {
         setError('This account does not have platform admin access.');
         return;
       }
-      router.replace(nextPath.startsWith('/admin') ? nextPath : '/admin');
+      router.replace(nextPath.startsWith('/') ? nextPath : '/');
     } catch (err) {
       setError(formatAuthClientError(err));
     } finally {
@@ -132,7 +131,13 @@ function AdminLoginInner() {
 
         {error ? <p className="mt-4 text-sm text-red-600">{error}</p> : null}
         <p className="mt-4 text-xs text-gray-500">
-          Need normal workspace login? <Link href="/auth" className="text-indigo-600 hover:underline">Go to auth</Link>
+          Need workspace login?{' '}
+          <a
+            href={process.env.NEXT_PUBLIC_APP_URL?.trim() || '/'}
+            className="text-indigo-600 hover:underline"
+          >
+            Go to main app
+          </a>
         </p>
       </div>
     </div>

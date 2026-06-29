@@ -1,5 +1,7 @@
 'use client';
 
+import { redirectToAdminApp } from '@/lib/admin-app-url';
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
@@ -94,7 +96,7 @@ export default function DepartmentsPage() {
       return;
     }
     if (authMe.role === 'PLATFORM_ADMIN') {
-      router.replace('/admin');
+      redirectToAdminApp('/');
       return;
     }
     if (authMe.role === 'EMPLOYEE') {
@@ -248,7 +250,7 @@ function DepartmentsPageInner() {
       return;
     }
     if (authMe.role === 'PLATFORM_ADMIN') {
-      router.replace('/admin');
+      redirectToAdminApp('/');
       return;
     }
     if (authMe.role === 'EMPLOYEE') {

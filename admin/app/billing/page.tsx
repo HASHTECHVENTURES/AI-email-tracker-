@@ -11,7 +11,7 @@ import { apiFetch } from '@/lib/api';
 import type { BillingOverview } from '@/lib/admin/types';
 
 export default function AdminBillingPage() {
-  const { allowed, loading, me, signOut, token } = usePlatformAdmin('/admin/billing');
+  const { allowed, loading, me, signOut, token } = usePlatformAdmin('/billing');
   const [billing, setBilling] = useState<BillingOverview | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
@@ -93,7 +93,7 @@ export default function AdminBillingPage() {
                       <td className="px-4 py-3 text-right tabular-nums">{formatInr(row.storage_cost_inr)}</td>
                       <td className="px-4 py-3 text-right tabular-nums font-semibold text-brand-700">{formatInr(row.total_cost_inr)}</td>
                       <td className="px-4 py-3 text-right">
-                        <Link href={`/admin/companies/${row.company_id}`} className="text-brand-600 hover:underline">
+                        <Link href={`/companies/${row.company_id}`} className="text-brand-600 hover:underline">
                           Details
                         </Link>
                       </td>

@@ -1,5 +1,7 @@
 'use client';
 
+import { redirectToAdminApp } from '@/lib/admin-app-url';
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch, readApiErrorMessage, tryRecoverFromUnauthorized } from '@/lib/api';
@@ -77,7 +79,7 @@ export default function MessagesPage() {
       return;
     }
     if (authMe.role === 'PLATFORM_ADMIN') {
-      router.replace('/admin');
+      redirectToAdminApp('/');
       return;
     }
     if (!allowEmployeeMessages) {
@@ -218,7 +220,7 @@ function MessagesPageInner() {
       return;
     }
     if (authMe.role === 'PLATFORM_ADMIN') {
-      router.replace('/admin');
+      redirectToAdminApp('/');
       return;
     }
     const allowEmployeeMessages =

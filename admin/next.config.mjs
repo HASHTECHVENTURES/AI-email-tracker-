@@ -10,25 +10,11 @@ const isDev = process.env.NODE_ENV === 'development';
  */
 const devDocumentNoStore = [
   '/',
-  '/auth',
-  '/auth/:path*',
-  '/dashboard',
-  '/dashboard/:path*',
-  '/conversation/:path*',
-  '/departments/:path*',
-  '/employees',
-  '/employees/:path*',
-  '/settings',
-  '/settings/:path*',
-  '/messages/:path*',
-  '/manager-messages',
-  '/manager-messages/:path*',
-  '/my-email',
-  '/my-email/:path*',
-  '/my-mail',
-  '/my-mail/:path*',
-  '/email-archive',
-  '/email-archive/:path*',
+  '/login',
+  '/companies',
+  '/companies/:path*',
+  '/billing',
+  '/activity',
 ];
 
 const nextConfig = {
