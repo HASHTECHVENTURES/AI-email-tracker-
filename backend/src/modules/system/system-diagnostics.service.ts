@@ -296,6 +296,15 @@ export class SystemDiagnosticsService {
           mailFetchProbe = await this.emailIngestionService.probeGmailFetch(ctx.companyId, e.id, {
             maxPages: 1,
           });
+          const fetchSample = await this.emailIngestionService.probeZohoFetchSample(
+            ctx.companyId,
+            e.id,
+          );
+          if (fetchSample.error) {
+            mailFetchProbe.notes.push(`Zoho sample fetch error: ${fetchSample.error}`);
+          } else if (fetchSample.messageId) {
+            mailFetchProbe.notes.push(`Zoho sample fetch ok: ${fetchSample.messageId}`);
+          }
         } catch (err) {
           mailFetchProbe = {
             ok: false,

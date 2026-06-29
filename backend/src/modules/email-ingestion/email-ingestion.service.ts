@@ -2155,6 +2155,36 @@ export class EmailIngestionService {
     };
   }
 
+  async probeZohoFetchSample(
+    companyId: string,
+    employeeId: string,
+  ): Promise<{ messageId?: string; error?: string }> {
+    const employee = await this.employeesService.getById(companyId, employeeId);
+    if (!employee) {
+      return { error: 'Employee not found' };
+    }
+    const tracking = await this.employeesService.getTrackingState(companyId, employeeId);
+    const syncState = await this.getSyncState(employeeId);
+    const listAfterDate = this.liveListAfterDate(
+      syncState,
+      tracking?.trackingStartAt,
+      syncState?.gmail_list_page_token ?? null,
+      syncState?.gmail_list_query_after_epoch ?? null,
+    );
+    try {
+      const { ids } = await this.listMailIdsPage(employeeId, listAfterDate, '', {
+        maxResults: 20,
+        pageToken: null,
+      });
+      const sampleId = ids[0];
+      if (!sampleId) return { error: 'No Zoho message IDs returned' };
+      await this.fetchMailFullMessage(employeeId, employee.email, sampleId);
+      return { messageId: sampleId };
+    } catch (err) {
+      return { error: (err as Error).message ?? 'Zoho fetch failed' };
+    }
+  }
+
   private mergeSentHighWater(
     prevIso: string | null | undefined,
     batchLatest: Date | null,

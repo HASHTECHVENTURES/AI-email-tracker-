@@ -67,6 +67,7 @@ type DiagnosticsMailbox = {
       gmail_error: string | null;
     };
     database: { total_email_messages_stored: number };
+    notes?: string[];
   } | null;
   blockers: string[];
   hints: string[];
@@ -740,6 +741,13 @@ export default function SettingsPage() {
                             <p className="text-indigo-900">
                               after: {new Date(m.mail_fetch_probe.live.list_after_iso).toLocaleString()}
                             </p>
+                          ) : null}
+                          {m.mail_fetch_probe.notes?.length ? (
+                            <ul className="mt-1 space-y-0.5 text-indigo-900">
+                              {m.mail_fetch_probe.notes.map((n, i) => (
+                                <li key={i}>• {n}</li>
+                              ))}
+                            </ul>
                           ) : null}
                         </div>
                       ) : null}
