@@ -61,10 +61,10 @@ export default function AdminDashboardPage() {
               </Link>
             </div>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <StatCard label="API cost" value={formatInr(billing.platform_totals.api_cost_inr)} sub={`${billing.platform_totals.api_calls} calls`} />
+              <StatCard label="API cost" value={formatInr(billing.platform_totals.api_cost_inr)} sub={`${billing.platform_totals.api_calls.toLocaleString()} calls`} />
+              <StatCard label="Measured API" value={formatInr(billing.platform_totals.live_api_cost_inr)} sub={`${billing.platform_totals.live_api_calls} live`} />
               <StatCard label="Storage cost" value={formatInr(billing.platform_totals.storage_cost_inr)} accent="text-violet-600" />
               <StatCard label="Total billable" value={formatInr(billing.platform_totals.total_cost_inr)} accent="text-brand-600" />
-              <StatCard label="Tokens used" value={billing.platform_totals.total_tokens.toLocaleString()} />
             </div>
           </section>
         ) : null}

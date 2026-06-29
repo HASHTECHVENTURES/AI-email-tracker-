@@ -78,6 +78,7 @@ export type BillingOverview = {
     gemini_input_usd_per_1m: number;
     gemini_output_usd_per_1m: number;
     storage_usd_per_gb_month: number;
+    backfill_calibration: number;
   };
   period: { from: string; to: string };
   metering: {
@@ -86,12 +87,17 @@ export type BillingOverview = {
     live_api_calls: number;
     estimated_backfill_calls: number;
     storage_note: string;
+    calibration_note: string;
   };
   platform_totals: {
     api_calls: number;
     total_tokens: number;
     api_cost_usd: number;
     api_cost_inr: number;
+    live_api_calls: number;
+    estimated_api_calls: number;
+    live_api_cost_inr: number;
+    estimated_api_cost_inr: number;
     storage_bytes: number;
     storage_cost_usd: number;
     storage_cost_inr: number;
@@ -110,6 +116,10 @@ export type CompanyBillingRow = {
   total_tokens: number;
   api_cost_usd: number;
   api_cost_inr: number;
+  live_api_calls: number;
+  estimated_api_calls: number;
+  live_api_cost_inr: number;
+  estimated_api_cost_inr: number;
   storage_bytes: number;
   storage_gb: number;
   storage_cost_usd: number;
