@@ -36,6 +36,7 @@ import {
   buildZohoAuthorizeUrl,
   exchangeZohoAuthorizationCode,
   getZohoAccountsServer,
+  accountsServerFromLocation,
   isZohoOAuthConfigured,
   resolveZohoOAuthMeta,
   zohoOAuthErrorCode,
@@ -469,6 +470,7 @@ export class AuthController {
     @Query('error') oauthError: string | undefined,
     @Query('error_description') errorDescription: string | undefined,
     @Query('accounts-server') accountsServerQuery: string | undefined,
+    @Query('location') locationQuery: string | undefined,
     @Res() res: Response,
   ) {
     const frontendBase = (process.env.FRONTEND_URL || 'http://localhost:3001').replace(/\/$/, '');
@@ -534,6 +536,9 @@ export class AuthController {
         } catch {
           accountsServer = accountsServerQuery.trim().replace(/\/$/, '');
         }
+      } else {
+        const fromLocation = accountsServerFromLocation(locationQuery);
+        if (fromLocation) accountsServer = fromLocation;
       }
 
       const tokens = await exchangeZohoAuthorizationCode(code.trim(), accountsServer);
@@ -560,6 +565,7 @@ export class AuthController {
         tokens.access_token,
         employeeEmail,
         accountsServer,
+        tokens.api_domain,
       );
 
       await this.oauthTokenService.upsertTokens(

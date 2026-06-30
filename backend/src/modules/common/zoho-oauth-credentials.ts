@@ -31,15 +31,66 @@ export function getZohoAccountsServer(): string {
   );
 }
 
+/** Map Zoho OAuth `location` callback param (e.g. `in`, `eu`) to accounts server URL. */
+export function accountsServerFromLocation(location: string | undefined): string | null {
+  const loc = location?.trim().toLowerCase();
+  if (!loc) return null;
+  const map: Record<string, string> = {
+    in: 'https://accounts.zoho.in',
+    us: 'https://accounts.zoho.com',
+    com: 'https://accounts.zoho.com',
+    eu: 'https://accounts.zoho.eu',
+    au: 'https://accounts.zoho.com.au',
+    jp: 'https://accounts.zoho.jp',
+    uk: 'https://accounts.zoho.uk',
+    ca: 'https://accounts.zohocloud.ca',
+    sa: 'https://accounts.zoho.sa',
+  };
+  return map[loc] ?? null;
+}
+
+/** Map token `api_domain` (e.g. https://www.zohoapis.in) to Zoho Mail API host. */
+export function mailApiBaseFromApiDomain(apiDomain: string | undefined): string | null {
+  const host = apiDomain?.trim().toLowerCase() ?? '';
+  if (!host) return null;
+  if (host.includes('zoho.in') || host.includes('zohoapis.in')) return 'https://mail.zoho.in';
+  if (host.includes('zoho.eu') || host.includes('zohoapis.eu')) return 'https://mail.zoho.eu';
+  if (host.includes('zoho.com.au') || host.includes('zohoapis.com.au')) {
+    return 'https://mail.zoho.com.au';
+  }
+  if (host.includes('zoho.jp') || host.includes('zohoapis.jp')) return 'https://mail.zoho.jp';
+  if (host.includes('zoho.uk') || host.includes('zohoapis.uk')) return 'https://mail.zoho.uk';
+  if (host.includes('zohocloud.ca') || host.includes('zohoapis.ca')) {
+    return 'https://mail.zoho.com';
+  }
+  if (host.includes('zoho.sa') || host.includes('zohoapis.sa')) return 'https://mail.zoho.com';
+  if (host.includes('zoho.com') || host.includes('zohoapis.com')) return 'https://mail.zoho.com';
+  return null;
+}
+
 export function mailApiBaseFromAccountsServer(accountsServer: string): string {
-  const fromEnv = process.env.ZOHO_MAIL_API_BASE?.trim();
-  if (fromEnv) return stripTrailingSlash(fromEnv);
   const host = accountsServer.toLowerCase();
   if (host.includes('zoho.in')) return 'https://mail.zoho.in';
   if (host.includes('zoho.eu')) return 'https://mail.zoho.eu';
   if (host.includes('zoho.com.au')) return 'https://mail.zoho.com.au';
   if (host.includes('zoho.jp')) return 'https://mail.zoho.jp';
+  if (host.includes('zoho.uk')) return 'https://mail.zoho.uk';
+  if (host.includes('zohocloud.ca')) return 'https://mail.zoho.com';
+  if (host.includes('zoho.sa')) return 'https://mail.zoho.com';
+  const fromEnv = process.env.ZOHO_MAIL_API_BASE?.trim();
+  if (fromEnv && host.includes('zoho.in')) return stripTrailingSlash(fromEnv);
   return 'https://mail.zoho.com';
+}
+
+/** Prefer OAuth token `api_domain`, then accounts server DC; env override only for India. */
+export function resolveZohoMailApiBase(
+  accountsServer: string,
+  apiDomain?: string | null,
+): string {
+  return (
+    mailApiBaseFromApiDomain(apiDomain ?? undefined) ??
+    mailApiBaseFromAccountsServer(accountsServer)
+  );
 }
 
 export function getZohoOAuthCredentials(): {
@@ -196,8 +247,9 @@ export async function resolveZohoOAuthMeta(
   accessToken: string,
   employeeEmail: string,
   accountsServer: string,
+  apiDomain?: string | null,
 ): Promise<ZohoOAuthMeta> {
-  const mailApiBase = mailApiBaseFromAccountsServer(accountsServer);
+  const mailApiBase = resolveZohoMailApiBase(accountsServer, apiDomain);
   const res = await fetch(`${mailApiBase}/api/accounts`, {
     headers: {
       Authorization: `Zoho-oauthtoken ${accessToken}`,
